@@ -1,0 +1,60 @@
+package images
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+func PublishPodmanImage(ctx context.Context, rootDir, dockerRepo, imageName, tag, contextPath, koDefaultPlatforms string, extraFlags []string) (string, error) {
+	if len(extraFlags) != 0 {
+		return "", fmt.Errorf("Docker build flags are not supported by the Podman publisher")
+	}
+	platforms, err := dockerfilePlatforms(rootDir, koDefaultPlatforms)
+	if err != nil {
+		return "", err
+	}
+	if platforms != "linux/amd64" {
+		return "", fmt.Errorf("the AKS Podman publisher requires linux/amd64, got %q", platforms)
+	}
+	authfile := os.Getenv("REGISTRY_AUTH_FILE")
+	if !filepath.IsAbs(authfile) {
+		return "", fmt.Errorf("Podman publishing requires an absolute isolated REGISTRY_AUTH_FILE")
+	}
+	repo := strings.TrimSuffix(dockerRepo, "/") + "/" + imageName
+	ref := repo + ":" + tag
+	run := func(args ...string) error {
+		cmd := exec.CommandContext(ctx, "podman", args...)
+		cmd.Dir, cmd.Stdout, cmd.Stderr = rootDir, os.Stderr, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("Podman %s for %s: %w", args[0], imageName, err)
+		}
+		return nil
+	}
+	if err := run("build", "--authfile", authfile, "--platform", platforms, "-t", ref, contextPath); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp("", "substrate-aks-podman-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "digest")
+	if err := run("push", "--authfile", authfile, "--digestfile", path, ref, "docker://"+ref); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading pushed Podman image digest: %w", err)
+	}
+	digest := strings.TrimSpace(string(data))
+	hash, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+	if !strings.HasPrefix(digest, "sha256:") || err != nil || len(hash) != 32 {
+		return "", fmt.Errorf("Podman push did not return a valid sha256 digest")
+	}
+	return repo + "@" + digest, nil
+}

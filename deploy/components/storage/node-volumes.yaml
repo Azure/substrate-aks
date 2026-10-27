@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: atelet
+  namespace: ate-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: atelet
+        volumeMounts:
+        - name: image-credential-provider-bin
+          mountPath: /run/image-credential-provider/bin
+          readOnly: true
+        - name: image-credential-provider-config
+          mountPath: /run/image-credential-provider/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        - name: azure-cloud-config
+          mountPath: /etc/kubernetes/azure.json
+          readOnly: true
+      volumes:
+      - name: image-credential-provider-bin
+        hostPath:
+          path: /var/lib/kubelet/credential-provider
+          type: Directory
+      - name: image-credential-provider-config
+        configMap:
+          name: substrate-aks-acr-credentials
+      - name: azure-cloud-config
+        hostPath:
+          path: /etc/kubernetes/azure.json
+          type: File

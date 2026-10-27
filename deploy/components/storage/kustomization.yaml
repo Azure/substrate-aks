@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+- path: cleanup.yaml
+- path: workload.yaml
+{{if eq .Mode "node"}}
+- path: node-volumes.yaml
+- path: actor-images.yaml
+  target:
+    group: apps
+    version: v1
+    kind: DaemonSet
+    name: atelet
+    namespace: ate-system
+configMapGenerator:
+- name: substrate-aks-acr-credentials
+  namespace: ate-system
+  behavior: {{if .CredentialConfigExists}}replace{{else}}create{{end}}
+  files:
+  - config.yaml=credential-provider.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+{{end}}

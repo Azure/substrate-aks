@@ -1,0 +1,5 @@
+/bin/
+/.substrate-aks/
+/azure.json
+/deploy.json
+*.test

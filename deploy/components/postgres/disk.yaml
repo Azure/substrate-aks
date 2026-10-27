@@ -1,0 +1,11 @@
+- op: test
+  path: /spec/volumeClaimTemplates/0/metadata/name
+  value: data
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: managed-csi
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/resources
+  value:
+    requests:
+      storage: 32Gi

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-otel-config
+  namespace: ate-system
+data:
+  $patch: replace
+  OTEL_SDK_DISABLED: "true"
+  OTEL_TRACES_EXPORTER: none
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
+  ATE_WORKER_OTEL_LOGS_EXPORTER: none
+  ATE_WORKER_OTEL_TRACES_EXPORTER: none
+  ATE_WORKER_OTEL_METRICS_EXPORTER: none

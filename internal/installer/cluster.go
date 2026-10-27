@@ -1,0 +1,415 @@
+package installer
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+func (a App) Doctor(ctx context.Context) error {
+	a.progress("Checking Azure CLI, Git, Go and kubectl are installed")
+	var failures []error
+	for _, tool := range []string{"az", "git", "go", "kubectl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			failures = append(failures, fmt.Errorf("install %s: %w", tool, err))
+		}
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	for _, check := range []struct {
+		name string
+		args []string
+	}{
+		{"Azure Bicep", []string{"az", "bicep", "version"}},
+		{"Go toolchain", []string{"go", "version"}},
+		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}},
+	} {
+		a.progress("Checking %s", check.name)
+		data, err := a.Runner.Run(ctx, Command{Args: check.args})
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", check.name, err))
+		} else if check.args[0] == "kubectl" {
+			if err := checkKubectlVersion(data); err != nil {
+				failures = append(failures, err)
+			}
+		}
+	}
+	if len(failures) == 0 && a.ContainerEngine != "" {
+		if _, _, err := a.imageBuildEngine(ctx); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func checkKubectlVersion(data []byte) error {
+	var version struct {
+		ClientVersion struct {
+			Major string `json:"major"`
+			Minor string `json:"minor"`
+		} `json:"clientVersion"`
+	}
+	if err := json.Unmarshal(data, &version); err != nil {
+		return fmt.Errorf("reading kubectl client version: %w", err)
+	}
+	minor, err := strconv.Atoi(strings.TrimSuffix(version.ClientVersion.Minor, "+"))
+	if err != nil || version.ClientVersion.Major != "1" || minor < 36 || minor > 38 {
+		return errors.New("AKS 1.37 requires a supported kubectl client within one minor version (1.36-1.38)")
+	}
+	return nil
+}
+
+func (a App) Check(ctx context.Context) error {
+	if _, err := a.infrastructure(ctx); err != nil {
+		return err
+	}
+	if err := a.credentials(ctx); err != nil {
+		return err
+	}
+	return a.checkCluster(ctx)
+}
+
+func (a App) checkCluster(ctx context.Context) error {
+	a.progress("Checking kubectl compatibility and AKS version")
+	client, err := a.kubectl(ctx, nil, "version", "--client", "--output=json")
+	if err != nil {
+		return err
+	}
+	if err := checkKubectlVersion(client); err != nil {
+		return err
+	}
+	data, err := a.kubectl(ctx, nil, "get", "--raw", "/version")
+	if err != nil {
+		return err
+	}
+	var version struct {
+		GitVersion string `json:"gitVersion"`
+	}
+	if err := json.Unmarshal(data, &version); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(version.GitVersion, "v1.37.") {
+		return fmt.Errorf("expected AKS 1.37, got %q", version.GitVersion)
+	}
+	a.progress("Checking required Kubernetes certificate APIs")
+	data, err = a.kubectl(ctx, nil, "api-resources", "--api-group=certificates.k8s.io", "--output=name")
+	if err != nil {
+		return err
+	}
+	for _, resource := range []string{"podcertificaterequests.certificates.k8s.io", "clustertrustbundles.certificates.k8s.io"} {
+		found := false
+		for _, line := range strings.Fields(string(data)) {
+			found = found || line == resource
+		}
+		if !found {
+			return fmt.Errorf("AKS does not serve required API %s; a Kubernetes version alone is insufficient", resource)
+		}
+	}
+	a.progress("Waiting for cluster nodes to be ready (up to 5 minutes)")
+	if _, err := a.kubectl(ctx, nil, "wait", "node", "--all", "--for=condition=Ready", "--timeout=300s"); err != nil {
+		return err
+	}
+	a.progress("Checking node architecture, version and microVM pool size")
+	data, err = a.kubectl(ctx, nil, "get", "nodes", "--output=json")
+	if err != nil {
+		return err
+	}
+	var nodes struct {
+		Items []struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Status struct {
+				NodeInfo struct {
+					KubeletVersion  string `json:"kubeletVersion"`
+					Architecture    string `json:"architecture"`
+					OperatingSystem string `json:"operatingSystem"`
+				} `json:"nodeInfo"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return err
+	}
+	workers := 0
+	for _, node := range nodes.Items {
+		if node.Status.NodeInfo.Architecture != "amd64" || node.Status.NodeInfo.OperatingSystem != "linux" {
+			return errors.New("this iteration requires Linux amd64 nodes and matching images/runtime assets")
+		}
+		if !strings.HasPrefix(node.Status.NodeInfo.KubeletVersion, "v1.37.") {
+			return fmt.Errorf("node kubelet %q is not 1.37", node.Status.NodeInfo.KubeletVersion)
+		}
+		if node.Metadata.Labels["substrate-aks/runtime"] == "microvm" {
+			workers++
+		}
+	}
+	if workers != a.Config.AKS.WorkerPool.Count {
+		return fmt.Errorf("expected %d microVM nodes, found %d", a.Config.AKS.WorkerPool.Count, workers)
+	}
+	return nil
+}
+
+const kvmProbe = `apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: substrate-aks-kvm-probe
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: substrate-aks-kvm-probe
+  template:
+    metadata:
+      labels:
+        app: substrate-aks-kvm-probe
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        substrate-aks/runtime: microvm
+      tolerations:
+      - key: ate.dev/sandboxClass
+        operator: Equal
+        value: microvm
+        effect: NoSchedule
+      containers:
+      - name: probe
+        image: python:3.13-alpine@sha256:bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741
+        command: [python3, -c]
+        args:
+        - |
+          import fcntl, json, os, time
+          assert os.access("/host/credential-provider/acr-credential-provider", os.X_OK), "AKS ACR credential provider missing"
+          with open("/host/azure.json") as config:
+              assert json.load(config).get("useManagedIdentityExtension"), "AKS node must use managed identity"
+          fd = os.open("/dev/kvm", os.O_RDWR)
+          assert fcntl.ioctl(fd, 0xAE00, 0) == 12, "KVM_GET_API_VERSION failed"
+          vm = fcntl.ioctl(fd, 0xAE01, 0)
+          os.close(vm)
+          os.close(fd)
+          open("/tmp/kvm-ready", "w").close()
+          time.sleep(3600)
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+        readinessProbe:
+          exec:
+            command: [test, -f, /tmp/kvm-ready]
+          periodSeconds: 2
+        volumeMounts:
+        - name: kvm
+          mountPath: /dev/kvm
+        - name: acr-provider
+          mountPath: /host/credential-provider
+          readOnly: true
+        - name: azure-cloud-config
+          mountPath: /host/azure.json
+          readOnly: true
+      volumes:
+      - name: kvm
+        hostPath:
+          path: /dev/kvm
+          type: CharDevice
+      - name: acr-provider
+        hostPath:
+          path: /var/lib/kubelet/credential-provider
+          type: Directory
+      - name: azure-cloud-config
+        hostPath:
+          path: /etc/kubernetes/azure.json
+          type: File
+`
+
+func (a App) checkKVM(ctx context.Context) (err error) {
+	a.progress("Testing microVM virtualization and private-image prerequisites on runtime nodes")
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+		defer cancel()
+		_, cleanupErr := a.kubectl(cleanupCtx, nil, "delete", "daemonset", "substrate-aks-kvm-probe",
+			"--namespace=kube-system", "--ignore-not-found", "--wait=true", "--timeout=45s")
+		err = errors.Join(err, cleanupErr)
+	}()
+	if _, err := a.kubectl(ctx, []byte(kvmProbe), "apply", "-f", "-"); err != nil {
+		return err
+	}
+	_, err = a.kubectl(ctx, nil, "rollout", "status", "daemonset/substrate-aks-kvm-probe", "--namespace=kube-system", "--timeout=180s")
+	if err != nil {
+		_, diagnosticErr := a.kubectl(ctx, nil, "describe", "pods", "--namespace=kube-system", "--selector=app=substrate-aks-kvm-probe")
+		_, logsErr := a.kubectl(ctx, nil, "logs", "--namespace=kube-system", "--selector=app=substrate-aks-kvm-probe", "--all-containers=true", "--tail=40")
+		return errors.Join(fmt.Errorf("microVM node preflight failed; check KVM, AKS ACR credential provider and managed identity: %w", err), diagnosticErr, logsErr)
+	}
+	return nil
+}
+
+func (a App) guardInstall(ctx context.Context, fp, operation string) error {
+	a.progress("Checking installation ownership and retry compatibility")
+	ns, err := a.kubectl(ctx, nil, "get", "namespace", "ate-system", "--ignore-not-found", "--output=json")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(ns)) == "" {
+		if operation != "ate-system" {
+			return errors.New("install Substrate before deploying components, running the demo or setting up the client")
+		}
+		return nil
+	}
+	data, err := a.kubectl(ctx, nil, "get", "configmap", "substrate-aks-install", "--namespace=ate-system", "--ignore-not-found", "--output=json")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		var record struct {
+			Data map[string]string `json:"data"`
+		}
+		if err := json.Unmarshal(data, &record); err != nil {
+			return err
+		}
+		if record.Data["fingerprint"] != fp || record.Data["installationId"] != a.Config.Installation.ID {
+			return errors.New("installed source/images/configuration differ; upgrades are not implemented, use the recorded config or a fresh installation")
+		}
+		phase := record.Data["phase"]
+		if operation != "ate-system" && phase != "deployed" &&
+			!((operation == "atelet" || operation == "apiserver") && phase == "installing:"+operation) {
+			return fmt.Errorf("installation phase is %q; retry that install component before running %s", phase, operation)
+		}
+		return nil
+	}
+	data, err = a.kubectl(ctx, nil, "get", "deployment", "ate-api-server", "--namespace=ate-system", "--ignore-not-found", "--output=json")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		return errors.New("refusing to adopt an existing Substrate installation without this CLI's install record")
+	}
+	if operation != "ate-system" {
+		return errors.New("no completed installation record; run the full install first")
+	}
+	return nil
+}
+
+func (a App) recordInstall(ctx context.Context, fp, phase string) error {
+	data, err := json.Marshal(object{
+		"apiVersion": "v1", "kind": "List", "items": []any{
+			object{"apiVersion": "v1", "kind": "Namespace", "metadata": object{"name": "ate-system"}},
+			object{"apiVersion": "v1", "kind": "ConfigMap", "metadata": object{"name": "substrate-aks-install", "namespace": "ate-system"},
+				"data": object{"installationId": a.Config.Installation.ID, "fingerprint": fp, "phase": phase,
+					"repository": a.Config.Substrate.Source.Repository, "commit": a.Config.Substrate.Source.Commit}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.kubectl(ctx, data, "apply", "-f", "-")
+	return err
+}
+
+func (a App) Install(ctx context.Context, component string) error {
+	a.progress("Validating image and runtime asset configuration")
+	if component != "ate-system" && component != "atelet" && component != "apiserver" {
+		return errors.New("component must be ate-system, atelet or apiserver")
+	}
+	if err := a.Config.ValidateInstall(); err != nil {
+		return err
+	}
+	if err := a.CheckImages(ctx); err != nil {
+		return err
+	}
+	i, err := a.infrastructure(ctx)
+	if err != nil {
+		return err
+	}
+	root, err := a.prepare(ctx, i)
+	if err != nil {
+		return err
+	}
+	sandbox, err := sandboxManifest(root, a.Config.Substrate.Runtime.AssetsDir, i)
+	if err != nil {
+		return err
+	}
+	if err := a.credentials(ctx); err != nil {
+		return err
+	}
+	if err := a.checkCluster(ctx); err != nil {
+		return err
+	}
+	fp := fingerprint(a.Config, i)
+	if err := a.guardInstall(ctx, fp, component); err != nil {
+		return err
+	}
+	if err := a.checkKVM(ctx); err != nil {
+		return err
+	}
+	if err := a.uploadAssets(ctx, i); err != nil {
+		return err
+	}
+	a.progress("Recording the installation checkpoint")
+	if err := a.recordInstall(ctx, fp, "installing:"+component); err != nil {
+		return err
+	}
+	if err := a.upstream(ctx, root, "deploy", component); err != nil {
+		return err
+	}
+	a.progress("Configuring the microVM sandbox")
+	if _, err := a.kubectl(ctx, sandbox, "apply", "-f", "-"); err != nil {
+		return err
+	}
+	a.progress("Recording the completed installation")
+	return a.recordInstall(ctx, fp, "deployed")
+}
+
+func (a App) Prepare(ctx context.Context) (string, error) {
+	i, err := a.infrastructure(ctx)
+	if err != nil {
+		return "", err
+	}
+	return a.prepare(ctx, i)
+}
+
+func (a App) Demo(ctx context.Context) error {
+	i, err := a.infrastructure(ctx)
+	if err != nil {
+		return err
+	}
+	root, err := a.prepare(ctx, i)
+	if err != nil {
+		return err
+	}
+	if err := a.credentials(ctx); err != nil {
+		return err
+	}
+	if err := a.guardInstall(ctx, fingerprint(a.Config, i), "demo"); err != nil {
+		return err
+	}
+	return a.upstream(ctx, root, "deploy", "demo", "counter-microvm")
+}
+
+func (a App) Status(ctx context.Context) error {
+	if _, err := a.infrastructure(ctx); err != nil {
+		return err
+	}
+	if err := a.credentials(ctx); err != nil {
+		return err
+	}
+	a.progress("Fetching Substrate pods and persistent volumes")
+	_, err := a.runKubectl(ctx, nil, true, "get", "pods,pvc", "--namespace=ate-system", "--output=wide")
+	return err
+}
+
+func NewLog(c Config) (*os.File, error) {
+	dir := c.workspace() + "/logs"
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(dir+"/"+time.Now().UTC().Format("20060102T150405.000000000")+".log", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+}
