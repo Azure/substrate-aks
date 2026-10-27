@@ -61,7 +61,7 @@ needed. Upstream `ate-setup` handles the base installation and component redeplo
 | Snapshot storage | The plugin's Blob sidecars with separate node and control-plane identities |
 | MicroVM assets | Content-addressed blobs in the assets container, served by the node sidecar |
 | Actor image access | Native AKS ACR credential provider using the node's identity |
-| PostgreSQL | One replica with a 32 GiB Azure Disk; no backups or HA |
+| PostgreSQL | Bundled default: one replica with a 32 GiB Azure Disk; optional managed services use upstream's external-database contract |
 | Telemetry | GKE monitoring removed; exporters disabled |
 | Demo workers | Scheduled on the dedicated microVM node pool |
 
@@ -70,6 +70,47 @@ stores snapshots under ate-api-server's cluster-wide snapshot location.
 Renderer inputs and compatibility checks live in
 [`deploy/render.go`](../deploy/render.go) and
 [`internal/installer/manifests.go`](../internal/installer/manifests.go).
+
+Managed PostgreSQL provisioning stays in conditional Bicep modules, excluded
+from registry bootstrap. A static public IP is the explicit AKS outbound IP;
+only it is allowed through the database firewall. The cluster's user-assigned
+identity receives Network Contributor on that IP before AKS creation, avoiding
+a dependency cycle with a system-assigned cluster identity.
+
+HorizonDB API `2026-10-01-preview` separates cluster version/network/backup,
+password and Entra authentication, and provisioned pool compute/HA settings.
+The pool references the service-provided regional PostgreSQL 17 parameter group;
+a metadata-only preflight rejects missing or inconsistent groups. The connection
+host comes from the read-only cluster-scoped endpoint, not a constructed hostname
+or a legacy cluster property.
+
+Each full infrastructure deployment has a unique installation-scoped attempt
+name. Resource discovery selects the latest successful full attempt in Azure,
+including the legacy unsuffixed deployment name, then validates ownership and
+outputs. A failed rerun cannot overwrite the previous successful subscription
+deployment record. Vault/registry-only attempts are excluded from discovery,
+but failed full attempts still prevent generating replacement credentials.
+Missing successful outputs are an explicit diagnostic error; there is no
+local metadata cache or assumption that missing outputs mean deleted resources.
+
+Managed modes first reconcile an installer-owned Key Vault and a vault-scoped
+Secrets Officer grant for the configured operator identity. A bounded,
+cancellable metadata-only readiness probe tolerates initial RBAC/DNS propagation
+without exposing password values. The vault is the
+durable password authority; the full ARM deployment receives a Key Vault secret
+reference, not plaintext parameters. Previews use a public, nonsecret placeholder
+through stdin, retain Azure error diagnostics, and create neither the vault nor
+its secret. Registry-only mode
+creates neither.
+
+The declarative `deploy/database-bootstrap.yaml` Job runs the pinned upstream
+psql script before API deployment. Credentials are retrieved into installer
+memory and passed through protected inputs, without local password files.
+The CLI uses upstream's existing external
+DSN settings, Secret reconciliation and rollout annotation, rather than patching
+the API after install or adding a second settings authority. The seven adapted
+source files and bundled fingerprints remain unchanged. Managed resource,
+endpoint and schema identity are included in installation fingerprints.
 
 ## Checks outside Kustomize
 

@@ -115,12 +115,12 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 			}
 
 			path := testRecord(t, "substrate-test")
-			answers := "\n\nno\nno\n"
+			answers := "\n\nno\n\nno\n"
 			switch name {
 			case "detected":
-				answers = "\n\nyes\nno\nno\n"
+				answers = "\n\nyes\nno\n\nno\n"
 			case "chose open":
-				answers = "\n\nno\nno\nno\n"
+				answers = "\n\nno\nno\n\nno\n"
 			case "lookup failure":
 				answers = "203.0.113.8/32\n" + answers
 			}

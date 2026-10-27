@@ -21,6 +21,11 @@ identities, account and containers, and renders before these.
 deployment values. Use the [installer](../README.md#quickstart), not
 `kubectl kustomize deploy`.
 
+Managed PostgreSQL uses a separate non-root, bounded psql Job in
+`database-bootstrap.yaml`. The installer supplies a temporary Secret and the
+pinned `pkg/postgressetup/setup.sql` ConfigMap, then cleans all three resources.
+No password or DSN is embedded in the manifest.
+
 ## Working on the components
 
 Edit the YAML under [`components/`](components). The renderer is in

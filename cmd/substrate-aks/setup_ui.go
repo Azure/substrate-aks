@@ -343,6 +343,25 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.row("Storage plugin", "Azure Blob, "+c.Substrate.PluginSource.Describe(installer.DefaultPluginRepository))
 	u.row("Image builder", engine)
 
+	u.group("Database")
+	switch c.Database.Backend {
+	case installer.DatabaseFlexible:
+		u.rowDetail("PostgreSQL", "Azure Database for PostgreSQL Flexible Server",
+			"PostgreSQL 17, General Purpose Standard_D2ads_v5, 32 GiB, seven-day local backups, no HA.")
+	case installer.DatabaseHorizon:
+		u.rowDetail("PostgreSQL", "Azure HorizonDB (preview)",
+			"PostgreSQL 17, 2 Intel generation-1 vCores, one node, no HA, 7-day local backups.")
+		warnings = append(warnings, "HorizonDB is a preview service.")
+	default:
+		u.rowDetail("PostgreSQL", "Bundled in the cluster", "32 GiB Azure Disk; no backups or HA.")
+	}
+	if c.ManagedDatabase() {
+		u.row("Database region", c.DatabaseLocation())
+		u.rowDetail("Credentials", "Key Vault in the resource group",
+			"Generated passwords are not stored on this machine. The Azure identity receives vault-scoped Secrets Officer access. Teardown deletes the database and its backups; vault secrets stay soft-deleted for seven days.")
+		warnings = append(warnings, "Managed PostgreSQL adds database compute, storage, and backup charges, a Key Vault, and a static egress IP. Its public endpoint accepts only AKS egress, over verified TLS.")
+	}
+
 	access := operator != nil && !same(operator.ObjectID) || !same(reader)
 	if access {
 		u.group("Access")

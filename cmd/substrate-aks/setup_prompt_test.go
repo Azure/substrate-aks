@@ -171,3 +171,23 @@ func TestAccessibleEnginePickerRejectsEOFAndCancellation(t *testing.T) {
 		t.Fatalf("engine picker lost cancellation: %v", err)
 	}
 }
+
+func TestAccessibleDatabaseSelection(t *testing.T) {
+	for _, backend := range []string{"bundled", "flexible-server", "horizondb"} {
+		var out bytes.Buffer
+		p := newSetupPrompt(strings.NewReader("invalid\n"+backend+"\n"), newSetupUI(&out), true)
+		got, err := p.database(t.Context(), "bundled")
+		if err != nil || got != backend || !strings.Contains(out.String(), "choose bundled") {
+			t.Fatalf("selection %s: %s, %v\n%s", backend, got, err, &out)
+		}
+	}
+	var out bytes.Buffer
+	p := newSetupPrompt(strings.NewReader("\n"), newSetupUI(&out), true)
+	if got, err := p.database(t.Context(), "bundled"); err != nil || got != "bundled" {
+		t.Fatalf("lost bundled default: %s, %v", got, err)
+	}
+	p = newSetupPrompt(strings.NewReader(""), newSetupUI(&out), true)
+	if _, err := p.database(t.Context(), "bundled"); !errors.Is(err, io.EOF) {
+		t.Fatalf("missing selection did not fail: %v", err)
+	}
+}
