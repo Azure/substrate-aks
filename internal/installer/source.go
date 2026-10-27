@@ -154,6 +154,11 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 	env := []string{
 		"NO_DEV_ENV=1", "KUBECONFIG=" + a.kubeconfig(), "VERSION=" + c.Substrate.Images.Tag,
 	}
+	databaseEnv, err := a.databaseEnvironment(ctx)
+	if err != nil {
+		return err
+	}
+	env = append(env, databaseEnv...)
 	host, _, _ := strings.Cut(c.Substrate.Images.Repository, "/")
 	if strings.HasSuffix(host, ".azurecr.io") {
 		r, err := a.registry(ctx)
@@ -181,8 +186,8 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		"--credential-provider", `{"name":"k8s.io"}`,
 		"--ateapi-postgres-storage-class", "managed-csi")
 	a.progress("Deploying %s and waiting for workloads to become ready (up to 10 minutes per rollout)", strings.Join(args[1:], " "))
-	_, err := a.Runner.Run(ctx, Command{
-		Dir: root, Args: command, Env: env,
+	_, err = a.Runner.Run(ctx, Command{
+		Dir: root, Args: command, Env: env, SensitiveOutput: c.ManagedDatabase(),
 	})
 	return err
 }

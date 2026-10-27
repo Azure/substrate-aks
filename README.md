@@ -63,6 +63,8 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --container-engine=podman` | Force Podman instead of auto-detecting an image builder |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
+| `bin/substrate-aks init flex --database flexible-server --database-location westus3` | Save a new installation that uses Azure PostgreSQL Flexible Server |
+| `bin/substrate-aks init horizon --database horizondb --database-location eastus` | Save a new installation that uses Azure HorizonDB (preview) |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) for
@@ -77,7 +79,7 @@ automation options.
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |
-| Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
+| Database | Bundled PostgreSQL with a 32 GiB Azure Disk by default; optional Azure PostgreSQL Flexible Server or HorizonDB (preview) |
 | Images | Built from the pinned source and stored in a private Azure Container Registry (ACR) |
 | Storage | Azure Blob containers for snapshots and runtime assets |
 | Demo | Optional counter microVM workload |
@@ -96,6 +98,10 @@ Setup checks quota and VM availability before billing, but Azure capacity is
 not reserved. See the
 [tested configurations and remaining limits](docs/operations.md#live-acceptance-and-limitations)
 before choosing a different region or VM size.
+
+Managed PostgreSQL uses passwords retained in Key Vault because the pinned client
+cannot renew Entra database tokens. See [database configuration](docs/configuration.md#postgresql-backend)
+for costs, availability, credential retention, and destructive teardown.
 
 ## Try the demo
 

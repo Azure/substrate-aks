@@ -316,7 +316,7 @@ func TestSetupWelcomeSuppressesStandaloneInitInstructions(t *testing.T) {
 		home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher,
 		discovery: subscriptionDisplayRunner(t),
 		cidr:      "203.0.113.8/32", location: "southcentralus",
-	}, strings.NewReader("\n\nno\nno\n"), &result, &display, nil)
+	}, strings.NewReader("\n\nno\n\nno\n"), &result, &display, nil)
 	if err == nil || !strings.Contains(err.Error(), "before provisioning") {
 		t.Fatalf("unexpected setup result: %v", err)
 	}

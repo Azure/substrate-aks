@@ -27,7 +27,7 @@ func testCLIConfig(t *testing.T) string {
 	t.Helper()
 	path := testRecord(t, "substrate-test")
 	err := initialize(recordHome(path), "22222222-2222-4222-8222-222222222222",
-		"33333333-3333-4333-8333-333333333333", "", "203.0.113.8/32", "substrate-test", "southcentralus", false, nil, "", "", io.Discard)
+		"33333333-3333-4333-8333-333333333333", "", "203.0.113.8/32", "substrate-test", "southcentralus", false, nil, "", "", installer.DatabaseConfig{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

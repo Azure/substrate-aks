@@ -163,7 +163,7 @@ func TestStatusDisplaysResultsButNotSetupCommands(t *testing.T) {
 	}
 	r := script(t,
 		reply{contains: "group exists", output: "true"}, ownerReply(c),
-		reply{contains: "deployment sub show", output: string(outputs)},
+		reply{contains: "deployment sub list", output: string(outputs)},
 		reply{contains: "aks get-credentials"},
 		reply{contains: "get pods,pvc", output: "pod status"},
 	)
@@ -345,6 +345,74 @@ func TestTargetGuardRecoveryGuidance(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProvisionRetainsPreviousDeploymentAttempts(t *testing.T) {
+	c := testConfig(t)
+	failure := errors.New("resource update failed")
+	r := script(t,
+		accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+		reply{contains: "deployment sub create"},
+		accountReply(c), targetReply(), reply{contains: "group exists", output: "true"}, ownerReply(c),
+		reply{contains: "aks list", output: "[]"},
+		reply{contains: "deployment sub create", err: failure},
+	)
+	a := App{Config: c, Runner: r}
+	if err := a.Provision(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Provision(t.Context(), false); !errors.Is(err, failure) {
+		t.Fatalf("failed reprovision lost its original error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, call := range r.calls {
+		if !strings.Contains(strings.Join(call.Args, " "), "deployment sub create") {
+			continue
+		}
+		for index, arg := range call.Args {
+			if arg != "--name" {
+				continue
+			}
+			name := call.Args[index+1]
+			if !strings.HasPrefix(name, c.deploymentName()+"-run-") || len(name) > 64 || names[name] {
+				t.Fatalf("a new attempt would overwrite deployment history or use an invalid name: %q", name)
+			}
+			names[name] = true
+		}
+	}
+	if len(names) != 2 {
+		t.Fatalf("expected two independent deployment attempts, got %v", names)
+	}
+}
+
+func TestInfrastructureRejectsMissingOrInvalidSuccessfulOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, want string
+	}{
+		{"empty", "", "no successful infrastructure deployment outputs"},
+		{"null", "null\n", "no successful infrastructure deployment outputs"},
+		{"invalid JSON", "{", "reading successful infrastructure deployment outputs"},
+		{"empty object", "{}", "missing or inconsistent"},
+		{"wrong shape", "[]", "reading successful infrastructure deployment outputs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			r := script(t, reply{contains: "group exists", output: "true"}, ownerReply(c),
+				reply{contains: "deployment sub list", output: tc.output})
+			if _, err := (App{Config: c, Runner: r}).infrastructure(t.Context()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("missing or invalid outputs were accepted or poorly diagnosed: %v", err)
+			}
+		})
+	}
+	t.Run("access failure is not missing state", func(t *testing.T) {
+		c := testConfig(t)
+		failure := errors.New("deployment history access denied")
+		r := script(t, reply{contains: "group exists", output: "true"}, ownerReply(c),
+			reply{contains: "deployment sub list", err: failure})
+		if _, err := (App{Config: c, Runner: r}).infrastructure(t.Context()); !errors.Is(err, failure) {
+			t.Fatalf("discovery concealed an Azure access failure: %v", err)
+		}
+	})
 }
 
 func TestProvisionUnrestrictedAPIAccessIsExplicitAndUsesAnEmptyArray(t *testing.T) {

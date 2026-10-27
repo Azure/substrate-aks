@@ -28,6 +28,31 @@ type Config struct {
 	Azure        AzureConfig        `json:"azure"`
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
+	Database     DatabaseConfig     `json:"database"`
+}
+
+type DatabaseBackend string
+
+const (
+	DatabaseBundled  DatabaseBackend = "bundled"
+	DatabaseFlexible DatabaseBackend = "flexible-server"
+	DatabaseHorizon  DatabaseBackend = "horizondb"
+)
+
+type DatabaseConfig struct {
+	Backend  DatabaseBackend `json:"backend"`
+	Location string          `json:"location,omitempty"`
+}
+
+func (c Config) ManagedDatabase() bool {
+	return c.Database.Backend != "" && c.Database.Backend != DatabaseBundled
+}
+
+func (c Config) DatabaseLocation() string {
+	if c.Database.Location != "" {
+		return c.Database.Location
+	}
+	return c.Azure.Location
 }
 
 type InstallationConfig struct {
@@ -103,6 +128,7 @@ type RuntimeConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
+		Database:     DatabaseConfig{Backend: DatabaseBundled},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
 			WorkerPool:        WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1},
@@ -167,6 +193,18 @@ func ValidateInstallationName(name string) error {
 }
 
 func (c Config) Validate() error {
+	switch c.Database.Backend {
+	case "", DatabaseBundled:
+		if c.Database.Location != "" {
+			return errors.New("database.location is only valid for managed PostgreSQL")
+		}
+	case DatabaseFlexible, DatabaseHorizon:
+		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
+			return errors.New("database.location must be an Azure region name")
+		}
+	default:
+		return errors.New("database.backend must be bundled, flexible-server or horizondb")
+	}
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
@@ -281,3 +319,7 @@ func (c Config) ValidateInstall() error {
 
 func (c Config) workspace() string      { return c.Installation.Dir }
 func (c Config) deploymentName() string { return "substrate-" + c.Installation.ID }
+
+func (c Config) infrastructureDeploymentFilter() string {
+	return fmt.Sprintf("[?name=='%s' || starts_with(name, '%s-run-')]", c.deploymentName(), c.deploymentName())
+}

@@ -105,6 +105,54 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	}
 }
 
+func TestNewManagedConfigRejectsUnsupportedRegion(t *testing.T) {
+	bin := t.TempDir()
+	for _, tool := range []string{"git", "go", "kubelogin"} {
+		fakeTool(t, bin, tool, `test "$1" = version || test "$1" = --version || exit 19`)
+	}
+	fakeTool(t, bin, "kubectl", `printf '%s' '{"clientVersion":{"major":"1","minor":"37"}}'`)
+	// New setups probe the image builder before Azure discovery.
+	fakeTool(t, bin, "docker", `
+case "$*" in
+  "buildx inspect --bootstrap") echo "Status: running";;
+  "info --format {{json .ServerVersion}}"|"buildx version") exit 0;;
+  *) exit 19;;
+esac
+`)
+	fakeTool(t, bin, "podman", `exit 19`)
+	fakeTool(t, bin, "az", `
+case "$*" in
+  version|"bicep version") exit 0;;
+  *Microsoft.HorizonDB*) printf '%s' '{"value":[]}';;
+  *flexible-server*) printf '%s' '[{"reason":"Subscriptions are restricted from provisioning in this region."}]';;
+  "rest --method"*) printf '%s' '`+testRegionsJSON+`';;
+  *) printf 'unexpected Azure operation\n' >&2; exit 19;;
+esac
+`)
+	t.Setenv("PATH", bin)
+	for _, command := range []string{"init", "setup"} {
+		for _, backend := range []string{"flexible-server", "horizondb"} {
+			t.Run(command+"/"+backend, func(t *testing.T) {
+				path := testRecord(t, "substrate-test")
+				args := []string{command, recordName(path), "--subscription", defaultSubscription,
+					"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+					"--api-cidr", "203.0.113.8/32", "--database", backend}
+				if command == "setup" {
+					args = append(args, "--yes")
+				}
+				var output bytes.Buffer
+				err := run(t.Context(), args, &output, &output)
+				if err == nil || !strings.Contains(err.Error(), "no alternate region") {
+					t.Fatalf("unsupported region was accepted: %v", err)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("unsupported region created an installation record")
+				}
+			})
+		}
+	}
+}
+
 func TestInitUsesAzureContextDefaults(t *testing.T) {
 	path := testRecord(t, "substrate-test")
 	bin := t.TempDir()
@@ -329,7 +377,7 @@ func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
 	}
 	var out bytes.Buffer
 	if err := initialize(home, c.Azure.SubscriptionID, c.Azure.AssetPublisherObjectID, "", "203.0.113.8/32",
-		"substrate-other", "eastus2", false, nil, "", "", &out); err != nil {
+		"substrate-other", "eastus2", false, nil, "", "", installer.DatabaseConfig{}, &out); err != nil {
 		t.Fatal(err)
 	}
 	err = run(t.Context(), []string{"status"}, &out, &out)

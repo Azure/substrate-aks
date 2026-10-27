@@ -58,6 +58,18 @@ func runContractTests(m *testing.M) (code int) {
 	return m.Run()
 }
 
+func TestPinnedManagedPostgresContract(t *testing.T) {
+	root := pinnedContractRoot(t)
+	command := exec.Command("go", "test", "./cmd/ate-setup/internal/config", "./cmd/ate-setup/internal/steps",
+		"-run", "^(TestLoadPostgres.*|TestRecordNeverWritesASecret|TestPlanPostgres|TestBundledPostgresManifestExists|TestBuildAPIServerEnvVars|TestCreateAPIServerEnvVars.*|TestAnnotateAPIServerEnvHash|TestStampAPIServerEnvHash)$",
+		"-count=1")
+	command.Dir = root
+	data, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pinned external PostgreSQL selection, secret reconciliation or recording contract failed: %v\n%s", err, data)
+	}
+}
+
 func pinnedContractRoot(t *testing.T) string {
 	t.Helper()
 	if *contractRoot == "" {

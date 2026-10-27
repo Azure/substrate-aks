@@ -17,8 +17,12 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
-//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components
+//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components database-bootstrap.yaml
 var manifests embed.FS
+
+func DatabaseBootstrap() ([]byte, error) {
+	return manifests.ReadFile("database-bootstrap.yaml")
+}
 
 // AdaptBase removes the pinned GKE monitoring reference without building the
 // upstream base or moving its other resources away from their original paths.

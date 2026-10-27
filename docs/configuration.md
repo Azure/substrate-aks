@@ -27,6 +27,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1); see [microVM worker pool](#microvm-worker-pool) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
+| PostgreSQL | `bundled`; managed `flexible-server` and `horizondb` are opt-in |
 
 Each installation is saved as `installations/NAME/installation.json` in the
 installer's home directory, a per-user state directory:
@@ -57,6 +58,9 @@ placeholders are not valid deployment values.
       "resourceGroup": "created",
       "cluster": "created"
     }
+  },
+  "database": {
+    "backend": "bundled"
   },
   "azure": {
     "subscriptionId": "YOUR_SUBSCRIPTION_UUID",
@@ -134,10 +138,118 @@ a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
 [live acceptance and limitations](operations.md#live-acceptance-and-limitations).
 
+## PostgreSQL backend
+
+Choose during guided setup, or when creating a new configuration:
+
+```sh
+bin/substrate-aks init --database flexible-server --database-location westus3
+# Alternatively, for HorizonDB preview:
+bin/substrate-aks init --config horizon.json --database horizondb --database-location eastus
+```
+
+`setup --yes` accepts the same creation flags only when its config does not
+already exist. Saved configs are authoritative. Old configs without `database`
+continue to use bundled PostgreSQL.
+
+| `database.backend` | Initial profile |
+| --- | --- |
+| `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
+| `flexible-server` | PostgreSQL 17, General Purpose `Standard_D2ads_v5`, 32 GiB, seven-day locally redundant backups, no HA |
+| `horizondb` | Preview, PostgreSQL 17, two Intel generation-1 vCores, one provisioned pool node, no HA; seven-day locally redundant backups |
+
+Optional `database.location` defaults to `azure.location` and applies only to
+managed backends. It can differ from AKS, with cross-region latency and transfer
+cost implications. `init` and `setup` check subscription-specific regional
+capabilities for PostgreSQL 17 and the selected backend's fixed compute profile
+before saving a new config or starting setup stages. Full `plan` and `provision`
+repeat this read-only check; registry-only operations do not require database
+availability. If Azure no longer advertises the profile, an existing installation
+can continue with a warning only after its deployment outputs and actual database
+resource ID, region and ownership are verified. Group tags alone are insufficient;
+missing resources, invalid responses and API access failures remain errors.
+Backend/region immutability checks still apply. For new interactive installations,
+the managed database picker offers only service regions whose subscription
+capabilities advertise the required profile. Azure answers each region
+separately, so Flexible Server discovery (about 50 regions) can take up to a
+minute; setup shows it as a timed check. Discovery runs only for the selected
+managed backend, never for bundled PostgreSQL or `--yes`. It uses up to four
+concurrent read-only checks and fails explicitly
+on API or malformed-response errors; it never falls back to the general region
+catalog. Accessible mode prints the eligible choices. A picked region is not
+checked again immediately; the validation checklist rechecks the saved region
+before billing approval. Regions given by flags are checked before saving.
+Other validation failures stop noninteractive commands and saved configurations;
+no region is changed without user selection. Advertised support does **not**
+guarantee quota, live SKU capacity or successful provisioning. Live SQL probes succeeded
+in `westus3` for Flexible Server and `eastus` for HorizonDB; advertised regions
+and SKUs were not all deployable. Register `Microsoft.DBforPostgreSQL` or
+`Microsoft.HorizonDB` in the target subscription before provisioning.
+
+HorizonDB uses API `2026-10-01-preview`, with separate cluster, pool and
+authentication resources. It omits creation provenance on ordinary deployments
+and reads the service-generated cluster endpoint. Its pool requires Azure's
+regional `default-postgresql-17-provisioned` parameter group. Setup and full
+`plan`/`provision` verify that group's subscription, region and PostgreSQL
+version before provisioning; capability advertisements alone do not prove it
+exists. An unavailable group is an explicit error, not a fallback to an older
+API, another region or a customer-created parameter group.
+
+Managed modes provision the database in the installation's owned resource group,
+plus an AKS cluster identity and a static Standard egress public IP. Database
+public endpoints accept only that AKS egress IPv4, not all Azure services and
+not the operator's AKS API CIDR. Bootstrap runs inside AKS. All database
+connections use hostname/certificate verification (`sslmode=verify-full`).
+These resources add compute, storage, backup, Key Vault and IP charges.
+
+**Fresh installations only.** Backend/region changes after provisioning are
+rejected before deployment. No migration, database adoption, password rotation,
+or production-readiness claim is included.
+
+The pinned application does not acquire/renew Entra database tokens. Both
+managed options therefore use generated passwords, separate owner/runtime
+logins and least-privilege roles. An installer-owned Standard Key Vault is the
+credential authority for both backends. Credentials are **not** in `deploy.json`
+or persisted to local parameter/state files. The vault name is derived from the
+subscription, group and installation ID; retain that configuration for retries.
+Provisioning uses an ARM Key Vault secret reference. Bootstrap and application
+installation retrieve secrets into process memory and use the existing temporary
+bootstrap Secret and upstream application Secret/environment integration.
+Kubernetes Secrets and application passwords remain; this is not passwordless
+database authentication or CSI integration.
+
+The configured Azure upload identity receives **Key Vault Secrets Officer on
+this vault only**, not a subscription-wide grant. Run managed database commands
+as that identity or separately grant the installer equivalent vault access.
+The deployment identity also needs `Microsoft.KeyVault/vaults/deploy/action`.
+The vault has an authenticated public endpoint; pods need no Key Vault identity
+or direct vault access. After reconciling the vault and grant, provisioning waits
+up to three minutes for recognized RBAC/DNS propagation errors, with cancellation
+support. Other access errors fail immediately. The readiness probe lists only
+secret identifiers, so access diagnostics remain visible; password reads and
+writes still suppress subprocess output.
+Missing credentials after database deployment submission fail rather than
+generating replacement passwords. Do not edit the vault's `database-credentials`
+secret to rotate passwords; database changes and application rollouts must be
+coordinated, and automatic rotation is not implemented.
+
+For workspaces from the earlier local-credential implementation, provisioning
+imports the validated private `database-credentials.json` into the vault without
+changing passwords. The local file is removed only after verifying the vault
+copy. A conflicting vault value or failed write preserves the local file and
+fails explicitly; installation alone does not create/import a missing secret.
+
+**Resource-group teardown deletes the managed database and its retained service
+backups.** This installer provides no restore workflow or automatic recovery.
+The vault and its secrets are soft-deleted with seven-day retention; teardown
+does not purge them. Reusing a deleted installation's vault name can require
+explicit Azure recovery or purge permissions. Prefer a fresh installation ID.
+
 ## Azure identity and permissions
 
 The operator needs permission to list resource groups, create subscription-scope
-deployments, provision the resources, and assign roles.
+deployments, provision the resources (including selected managed PostgreSQL and
+Key Vault resources), and assign roles.
 **Contributor alone is insufficient** because it cannot assign roles.
 
 Select your subscription before creating a config:

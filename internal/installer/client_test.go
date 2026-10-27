@@ -41,7 +41,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	}
 	return root, []reply{
 		{contains: "group exists", output: "true"}, ownerReply(c),
-		{contains: "deployment sub show", output: string(outputs)},
+		{contains: "deployment sub list", output: string(outputs)},
 		{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
 		{contains: "git diff --name-only HEAD"},
 		{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"},
