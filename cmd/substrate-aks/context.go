@@ -10,11 +10,12 @@ import (
 )
 
 func offerContextSwitch(ctx context.Context, o setupOptions, c installer.Config, prompt *setupPrompt, ui *setupUI, out io.Writer) (bool, error) {
-	if o.yes {
-		return false, nil
-	}
 	selection, err := installer.PlanContextSwitch(o.contextFile)
 	if err != nil {
+		if o.yes {
+			return false, fmt.Errorf("Substrate is installed, but context handoff is unavailable: %w\nChoose a valid --context-file PATH and retry: %s", err,
+				cliCommand("client", "--config", o.path, "--use-context"))
+		}
 		ui.warning("Kube-context handoff unavailable: " + err.Error())
 		ui.note("Your kubeconfig has not been changed. Use the printed private KUBECONFIG export.")
 		return false, nil
@@ -28,13 +29,15 @@ func offerContextSwitch(ctx context.Context, o setupOptions, c installer.Config,
 	ui.row("Previous context", previous)
 	ui.row("New context", c.AKS.ClusterName)
 	ui.note("Import this installation and select its context. Unrelated entries are preserved; conflicting names are never overwritten.")
-	accepted, err := prompt.confirm(ctx, "Import and select this kube-context?", false)
-	if errors.Is(err, io.EOF) {
-		ui.note("No handoff consent received; kubeconfig unchanged. Use the printed private KUBECONFIG export.")
-		return false, nil
-	}
-	if err != nil || !accepted {
-		return false, err
+	if !o.yes {
+		accepted, err := prompt.confirm(ctx, "Import and select this kube-context?", false)
+		if errors.Is(err, io.EOF) {
+			ui.note("No handoff consent received; kubeconfig unchanged. Use the printed private KUBECONFIG export.")
+			return false, nil
+		}
+		if err != nil || !accepted {
+			return false, err
+		}
 	}
 	if err := (installer.App{Config: c}).SelectContext(ctx, selection); err != nil {
 		return false, fmt.Errorf("Substrate is installed, but context handoff failed: %w\nPrivate kubeconfig is unchanged. Retry client handoff: %s", err,

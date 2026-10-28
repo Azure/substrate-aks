@@ -44,7 +44,7 @@ installs Substrate, optionally deploys the demo, and prints client shell exports
 | Default terminal | Interactive huh forms |
 | `--accessible`, `TERM=dumb`, or redirected output | Line-oriented prompts with validated region input |
 | `NO_COLOR=1` | Disable styling |
-| `--yes` | Explicitly accept billable deployment without prompts |
+| `--yes` | Accept billable deployment and the final kube-context import/selection without prompts |
 | `--with-demo` | Also deploy the counter demo in noninteractive setup |
 | `--container-engine=auto\|docker\|podman` | Detect working builders and offer a choice when both work (`--yes` prefers Docker/buildx), or force one; applies only when building images |
 
@@ -59,7 +59,8 @@ authoritative. The wizard invokes the same lifecycle commands below, not a
 second deployment implementation. Apply its printed exports yourself; it never
 modifies shell profiles or PATH. At successful interactive completion, it offers
 an optional kube-context import and selection before printing demo next steps.
-Declining, EOF, and `--yes` leave your kubeconfig untouched.
+`--yes` accepts this handoff automatically. Declining or EOF in interactive setup
+leaves your kubeconfig untouched.
 
 ## Registry and image bootstrap
 
@@ -245,7 +246,7 @@ try localhost.
 | --- | --- |
 | Plugin installation | `go install ./cmd/kubectl-ate` from the exact configured source |
 | Binary destination | `GOBIN`, or the first `GOPATH` entry's `bin` directory; normally `~/go/bin` |
-| Kubeconfig | Installation-specific; ambient config is changed only with explicit handoff consent or `client --use-context` |
+| Kubeconfig | Installation-specific; ambient config is changed at the final handoff with interactive consent or `setup --yes`, or by `client --use-context` |
 | PATH export | Printed only if the installed plugin is not discoverable |
 | Sharing | Another installation can replace the client; teardown leaves it installed |
 
@@ -268,8 +269,9 @@ used the legacy authentication path.
 
 After client installation, setup shows the destination file and the previous/new
 contexts, then asks whether to import and select this installation. The default is
-**No**; `--yes` never opts in. The destination is a single `KUBECONFIG` file or
-`~/.kube/config`. Use setup's `--context-file PATH` to choose another file.
+**No** interactively; `--yes` accepts without prompting. The destination is a single
+`KUBECONFIG` file or `~/.kube/config`. Use setup's `--context-file PATH` to choose
+another file.
 Multi-file `KUBECONFIG` is not flattened automatically.
 
 Only the selected installation's context, cluster, and user are imported.
@@ -279,6 +281,10 @@ paths are refused rather than overwritten. Accepted updates use a private
 temporary file and atomic replacement, with a check for destination changes
 since the prompt. YAML comments/formatting are not retained. The installer's
 private kubeconfig is never changed by handoff.
+
+If an unattended handoff cannot be completed, setup reports an error instead of
+claiming success without selecting the context. The installed cluster is retained;
+use `client --use-context --context-file PATH` to complete the handoff.
 
 To explicitly perform the same handoff later:
 

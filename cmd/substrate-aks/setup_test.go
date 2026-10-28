@@ -62,7 +62,22 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 		}
 		return nil, nil
 	})
-	return setup(ctx, o, in, out, stderr, execute)
+	return setup(ctx, o, in, out, stderr, func(ctx context.Context, args []string, out, stderr io.Writer) error {
+		if err := execute(ctx, args, out, stderr); err != nil {
+			return err
+		}
+		if args[0] != "client" {
+			return nil
+		}
+		c, err := installer.LoadConfig(o.path)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return writeTestClientKubeconfig(c)
+	})
 }
 
 func testRuntimeAssets(t *testing.T) string {

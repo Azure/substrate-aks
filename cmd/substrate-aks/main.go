@@ -56,10 +56,10 @@ init flags:
 
 setup flags:
   Same configuration flags as init when creating a new file
-  --yes                                  Accept billable deployment without prompts
+  --yes                                  Accept billable deployment and select the kube-context without prompts
   --with-demo                            Also deploy the counter microVM demo
   --accessible                           Use screen-reader-friendly prompts
-  --context-file PATH                    Destination for the optional final context handoff
+  --context-file PATH                    Destination for the final context handoff
 
 client flags:
   --use-context                          Explicitly import/select this installation in your kubeconfig
@@ -116,7 +116,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		fs.StringVar(&component, "component", "ate-system", "ate-system, atelet or apiserver")
 	}
 	if command == "client" || command == "setup" {
-		fs.StringVar(&contextFile, "context-file", "", "destination for an explicitly accepted Kubernetes context handoff")
+		fs.StringVar(&contextFile, "context-file", "", "destination for the Kubernetes context handoff")
 	}
 	if command == "client" {
 		fs.BoolVar(&useContext, "use-context", false, "import and select this installation in the destination kubeconfig")
@@ -138,7 +138,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
 	}
 	if command == "setup" {
-		fs.BoolVar(&yes, "yes", false, "accept billable deployment without interactive prompts")
+		fs.BoolVar(&yes, "yes", false, "accept billable deployment and select the kube-context without prompts")
 		fs.BoolVar(&withDemo, "with-demo", false, "also deploy the counter microVM demo")
 		fs.BoolVar(&accessible, "accessible", false, "use screen-reader-friendly prompts instead of interactive forms")
 	}

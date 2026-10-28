@@ -43,8 +43,9 @@ It saves your settings in `deploy.json`.
 
 **When setup finishes, apply the final shell exports it prints** to use the
 installation's kubeconfig and `kubectl ate` client. Interactive setup offers an
-opt-in context import/selection at the end; declining or `--yes` leaves your
-default kubeconfig unchanged. Shell profiles and PATH are never edited.
+opt-in context import/selection at the end; `--yes` accepts that handoff
+automatically. Declining leaves your default kubeconfig unchanged.
+Shell profiles and PATH are never edited.
 
 **Useful variants**
 
@@ -55,7 +56,7 @@ default kubeconfig unchanged. Shell profiles and PATH are never edited.
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --container-engine=podman` | Force Podman instead of auto-detecting an image builder |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
-| `bin/substrate-aks setup --config deploy.json --yes --with-demo` | Install without prompts using a complete config; accepts billing |
+| `bin/substrate-aks setup --config deploy.json --yes --with-demo` | Install without prompts using a complete config; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for unstyled output. See the
 [configuration guide](docs/configuration.md) for identity overrides and region
