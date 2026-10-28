@@ -48,6 +48,10 @@ installs Substrate, optionally deploys the demo, and prints client shell exports
 | `--with-demo` | Also deploy the counter demo in noninteractive setup |
 | `--container-engine=auto\|docker\|podman` | Detect working builders and offer a choice when both work (`--yes` prefers Docker/buildx), or force one; applies only when building images |
 
+`--yes` skips prompts, not the startup artwork. Both modes show the same banner
+in a normal terminal; accessible, redirected, dumb, or narrow terminals retain
+the plain heading.
+
 For automation, create a complete [configuration](configuration.md) first:
 
 ```sh

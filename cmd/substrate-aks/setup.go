@@ -35,7 +35,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	}
 	ui := newSetupUI(stderr)
 	prompt := newSetupPrompt(in, ui, o.accessible)
-	ui.welcome(!o.yes && !prompt.accessible)
+	ui.welcome(!prompt.accessible)
 	runner := o.discovery
 	if runner == nil {
 		runner = installer.ExecRunner{}
