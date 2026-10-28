@@ -26,6 +26,9 @@ param operatorPrincipalType string = 'User'
 param registryName string
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
+@description('HorizonDB operation supplied by the caller: Create for a fresh cluster, Update for an existing cluster with the same installation identity.')
+@allowed(['Create', 'Update'])
+param horizonCreateMode string = 'Create'
 @secure()
 param databaseAdminPassword string = ''
 
@@ -197,6 +200,7 @@ module horizon 'horizondb.bicep' = if (databaseBackend == 'horizondb') {
     location: databaseLocation
     installationId: installationId
     adminPassword: databaseAdminPassword
+    createMode: horizonCreateMode
     egressIP: egress!.properties.ipAddress
   }
 }

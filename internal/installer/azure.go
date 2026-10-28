@@ -216,6 +216,15 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 			return err
 		}
 	}
+	horizonCreateMode := "Create"
+	if !registryOnly && a.Config.Database.Backend == DatabaseHorizon {
+		a.progress("Checking the owned HorizonDB cluster to select Create or Update")
+		var err error
+		horizonCreateMode, err = a.horizonCreateMode(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	a.progress("Preparing Azure infrastructure templates")
 	if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
 		return err
@@ -250,6 +259,7 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"registryOnly":                registryOnly,
 		"databaseBackend":             databaseBackend(c),
 		"databaseLocation":            c.DatabaseLocation(),
+		"horizonCreateMode":           horizonCreateMode,
 	} {
 		params[key] = map[string]any{"value": value}
 	}

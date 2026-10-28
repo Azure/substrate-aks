@@ -558,7 +558,7 @@ kubeconfig or Azure resource deployment:
 
 ```sh
 go test -tags=integration ./internal/installer \
-  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestHorizonBicepAPIContract|TestInfrastructureDeploymentHistorySelection' \
+  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestHorizonBicep(APIContract|CreateModeWiring)|TestHorizonStandaloneParameterExamples|TestHorizonInventoryPreservesForeignClusters|TestInfrastructureDeploymentHistorySelection' \
   -args -contract-root /absolute/path/to/pinned/substrate
 ```
 
@@ -680,8 +680,8 @@ disposable groups were deleted and confirmed absent; vaults remain soft-deleted
 for seven days. Updated real previews include the selected database and vault
 only in managed mode, with neither in bundled or registry-only mode.
 
-Fresh AKS installations also passed with Flexible Server in `westus3` and the
-previous HorizonDB API `2026-05-01-preview` in `eastus`, both with AKS in
+Fresh AKS installations also passed with Flexible Server in `westus3` and
+an earlier HorizonDB template using `2026-05-01-preview` in `eastus`, both with AKS in
 `southcentralus`. Each completed managed bootstrap and
 API startup with two ready API replicas, plus two isolated counter microVM actors.
 Two synchronous Azure Blob MEMORY snapshots and automatic HTTP-triggered and
@@ -698,14 +698,93 @@ breaking installer discovery even though workloads and counters stayed healthy.
 All four installation groups and their AKS node groups were deleted and
 independently confirmed absent.
 
-The current HorizonDB template uses `2026-10-01-preview`, omits creation
-provenance and explicitly deploys pool and authentication resources. **Fresh
-installation and repeat deployment with this API remain unverified.** In the
-tested subscription, read-only East US discovery returned
-`ParameterGroupNotFound` for the required regional
-`default-postgresql-17-provisioned` group. Setup and full provisioning now fail
-before resource creation if this prerequisite is unavailable. The installer does
-not create this read-only service resource or silently revert to the old API.
+An intermediate HorizonDB template used `2026-10-01-preview`, omitted creation
+provenance and explicitly deployed pool and authentication resources. Default
+parameter groups were discovered by their actual regional resource IDs, not the
+documentation's example name. The tested subscription returned no East US
+defaults, but advertised `default_pg17` in Japan East and three other regions.
+Missing or ambiguous defaults failed before provisioning; that implementation
+did not create this read-only service resource or silently select another region/API.
+
+An isolated Japan East test successfully provisioned the new API's cluster,
+pool, authentication, restricted firewall and AKS infrastructure. Live inspection
+confirmed PostgreSQL 17, Intel generation 1, two provisioned vCores, one node,
+HA disabled, seven-day local backups and the regional `default_pg17` association.
+This run exposed pool-before-authentication ordering and the write-once
+`administratorLogin` reconciliation requirement. The tested intermediate
+implementation corrected ordering and omitted an already initialized login,
+including when no full deployment previously succeeded. Those child-resource
+rules do not apply to the legacy API now selected by the modules.
+
+After these fixes, the exact same saved configuration passed both full preview
+and infrastructure reprovisioning. Installer status discovered the new successful
+deployment. Pool identity/profile and the static egress IP were unchanged; AKS
+and the database reported successful provisioning and the firewall still allowed
+only that egress IPv4. After the preceding failed attempt, status also recovered
+the earlier successful outputs. This establishes infrastructure reconciliation,
+not application continuity across reprovisioning.
+
+**New-API fresh-install and counter acceptance were blocked:** the service's
+advertised ReadWrite hostname has `cluster.rw` labels before a suffix covered
+only by a single-label wildcard certificate. A read-only SQL probe with
+`sslmode=verify-full` rejected the hostname, and independent certificate
+inspection confirmed the SAN mismatch. Bootstrap failed and cleaned up its
+temporary resources; application migrations and counter tests could not run.
+TLS was not weakened and no guessed hostname or old API was substituted.
+HorizonDB must advertise a writable hostname covered by its certificate, or
+correct the certificate, before that new-API acceptance gate can pass.
+The isolated installation and its recorded AKS node resource group were deleted
+and independently confirmed absent; the vault was not purged.
+
+A second isolated fresh installation in Korea Central also passed infrastructure
+provisioning and cluster checks with the expected database profile and single-IP
+firewall. A credential-free PostgreSQL TLS probe from AKS reproduced the same
+hostname mismatch: the certificate chain was trusted, but its SANs did not cover
+the advertised `cluster.rw` hostname. The probe Pod was removed. Testing stopped
+before image publication, SQL bootstrap, application installation, counters or
+same-config reprovisioning. The mismatch is therefore not confined to Japan East;
+these two runs do not establish its prevalence in other regions or API versions.
+The Korea installation and its recorded AKS node group were also deleted and
+independently confirmed absent; the vault was not purged.
+
+The current modules return to the previously fresh-install-tested
+`2026-05-01-preview` shape, with an explicit Create/Update lifecycle parameter
+instead of always sending Create. The installer verifies live cluster identity,
+ownership, region, PostgreSQL version, administrator and successful provisioning
+before selecting Update. An explicitly empty inventory selects Create; access
+failures, malformed responses and busy/failed clusters do not. This does not depend on
+successful full-deployment history or permit adoption/API migration.
+Direct infrastructure users supply the same lifecycle parameter themselves;
+see [standalone examples](infrastructure.md).
+
+An isolated East US database / South Central US AKS run passed fresh provisioning
+with this parameterized legacy template. Strict TLS from AKS verified the actual
+advertised FQDN and trusted certificate chain. Exact same-config plan, provision
+and status passed using Update. The standalone subscription parameter-file example
+also passed actual Azure what-if and Update deployment, without invoking Go or
+reading an installer configuration. Database identity, credentials metadata,
+static Standard egress and its single-IP firewall were unchanged.
+
+Normal setup then passed managed SQL bootstrap, migrations, two ready API replicas
+and two ready demo workers, with no bundled PostgreSQL. Both application DSNs
+targeted the actual external host/database with distinct owner/runtime passwords
+and `sslmode=verify-full`. Durable Azure Blob MEMORY snapshots and automatic and
+explicit resume preserved memory/file/rootfs counters through 1, 2, 3 and 4.
+Another full plan/provision/check/status with the actors running passed; API pod
+identities and zero restart counts were unchanged. Counters then advanced to
+5 and 3 for the two actors, and another snapshot/automatic resume advanced the
+first to 6. Database identity/profile, credentials metadata and egress remained
+unchanged. CPU type and backup properties were not returned by the inspected
+legacy response and remain unverified, not confirmed matching.
+
+The first cold actor HTTP activation returned a router 504 before the actor
+reached Running. That failed attempt was retained. The complete exact counter
+sequence passed after activation readiness, including HTTP-triggered resume;
+this is not a claim that cold-activation latency is resolved.
+Both test actors were deleted, the actor list was empty, and local port-forwards
+were stopped. Guarded teardown completed, and independent subscription-scoped
+checks confirmed both the installation and actual AKS node resource groups absent.
+The vault was not purged; its soft-delete retention remains.
 
 Full provision attempts now use distinct `substrate-<installation-id>-run-<suffix>`
 subscription deployment names. Resource discovery uses the latest successful full
@@ -716,16 +795,16 @@ inspect the installation's subscription deployment history and retry with the
 original configuration; missing outputs alone do not establish that resources
 are absent. Access errors and invalid/mismatched metadata remain errors.
 
-The installed Bicep type catalog does not yet include this HorizonDB preview
-API. Templates compile, but Bicep warns that it cannot validate the resource
-properties. Compiled-template contracts check the documented API shape; they
-do not replace live provider validation.
+The installed Bicep type catalog emitted missing-preview-type warnings for the
+newer API. The selected legacy template compiles with its catalog types.
+Compiled-template contracts check the documented API shape; they do not
+replace live provider validation.
 
 **Still unverified:** cross-node restore, sustained load, egress IP stability
-after infrastructure changes, unauthorized-IP rejection, live component retries,
-database reconnection after pod restarts, HorizonDB reprovisioning and renewable
-Entra database credentials. These are not established by the scoped live runs,
-SQL probes, Docker bootstrap execution or Azure previews. Preview HorizonDB
+after sizing/network changes, unauthorized-IP rejection, live component retries,
+database reconnection after pod restarts, full new-API HorizonDB application
+acceptance and renewable Entra database credentials. These are not established
+by the scoped live runs, SQL probes, Docker bootstrap execution or Azure previews. Preview HorizonDB
 operations can remain provisioning/deleting for extended periods and fail;
 inspect Azure operation status rather than assuming an accepted request succeeded.
 

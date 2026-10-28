@@ -539,11 +539,6 @@ func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
 					}})
 				case strings.Contains(args, "deployment sub list"):
 					return outputs, nil
-				case strings.Contains(args, "/parameterGroups/default-postgresql-17-provisioned?"):
-					return json.Marshal(map[string]string{
-						"id":      "/subscriptions/" + c.Azure.SubscriptionID + "/providers/Microsoft.HorizonDb/locations/eastus/parameterGroups/default-postgresql-17-provisioned",
-						"version": "17",
-					})
 				case strings.Contains(args, "resource show --ids "+id):
 					return json.Marshal(map[string]any{"id": id, "location": "eastus",
 						"tags": map[string]string{"substrate-aks-installation": c.Installation.ID}})
@@ -582,9 +577,6 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 		{"horizondb", "eastus", `{"value":[{"location":"eastus","clusterCapabilities":{"supportedPostgreSqlVersions":[{"name":"17"}]},"poolCapabilities":{"supportedProcessors":[{"name":"Intel","supportedGenerations":[{"computeGeneration":1,"supportedComputeModels":[{"type":"Provisioned","supportedComputeSizes":[{"vCores":2}]}]}]}]}}]}`},
 	} {
 		outcomes := []string{"select supported region", "EOF before selection", "cancel discovery"}
-		if backend.name == "horizondb" {
-			outcomes = append(outcomes, "missing default parameter group")
-		}
 		for _, outcome := range outcomes {
 			t.Run(backend.name+"/"+outcome, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -605,15 +597,6 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 					}
 					if args == "az ad signed-in-user show --only-show-errors --output json" {
 						return []byte(`{"id":"` + defaultPublisher + `"}`), nil
-					}
-					if strings.Contains(args, "/parameterGroups/default-postgresql-17-provisioned?") {
-						if outcome == "missing default parameter group" {
-							return nil, errors.New("ParameterGroupNotFound")
-						}
-						return json.Marshal(map[string]string{
-							"id":      "/subscriptions/" + defaultSubscription + "/providers/Microsoft.HorizonDb/locations/eastus/parameterGroups/default-postgresql-17-provisioned",
-							"version": "17",
-						})
 					}
 					if !strings.Contains(args, "postgres flexible-server list-skus") && !strings.Contains(args, "/capabilities?") {
 						t.Fatalf("unexpected discovery command: %v", command.Args)
@@ -641,7 +624,7 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 					return []byte(backend.capabilities), nil
 				})
 				answers := "\n\n\n"
-				if outcome == "select supported region" || outcome == "missing default parameter group" {
+				if outcome == "select supported region" {
 					// Approve billing and decline the demo; the first stage stops setup
 					// so the new installation is kept for inspection.
 					answers += "southcentralus\n" + backend.region + "\nyes\nno\n"
@@ -657,12 +640,7 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 					}
 					return stopAtFirstStage(ctx, args, out, stderr)
 				})
-				if outcome == "missing default parameter group" {
-					if err == nil || !strings.Contains(err.Error(), "ParameterGroupNotFound") ||
-						strings.Contains(output.String(), "Continue with this billable installation?") {
-						t.Fatalf("missing service prerequisite reached billing confirmation: %v\n%s", err, &output)
-					}
-				} else if outcome == "select supported region" {
+				if outcome == "select supported region" {
 					if !errors.Is(err, errFirstStage) {
 						t.Fatalf("setup did not recover and reach the first stage: %v\n%s", err, &output)
 					}

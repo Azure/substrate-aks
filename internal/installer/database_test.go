@@ -365,6 +365,9 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 					replies = append(replies, databasePreflightReplies(c)...)
 				}
 				replies = append(replies, reply{contains: "group exists", output: "false"})
+				if backend == DatabaseHorizon && !registry {
+					replies = append(replies, reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"})
+				}
 				if !registry {
 					replies = append(replies, reply{contains: c.deploymentName() + "-vault"},
 						reply{contains: "deployment sub list", output: "[]"})
@@ -390,6 +393,17 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 					}
 					if !bytes.Contains(data, []byte(c.databaseVaultID())) || !bytes.Contains(data, []byte(`"reference"`)) {
 						t.Fatal("ARM did not receive a Key Vault reference")
+					}
+					if backend == DatabaseHorizon {
+						var parameters struct {
+							Parameters map[string]struct{ Value any }
+						}
+						if err := json.Unmarshal(data, &parameters); err != nil {
+							t.Fatal(err)
+						}
+						if parameters.Parameters["horizonCreateMode"].Value != "Create" {
+							t.Fatal("fresh HorizonDB provisioning did not select Create")
+						}
 					}
 					for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
 						if bytes.Contains(data, []byte(password)) || strings.Contains(strings.Join(last.Args, " "), password) {
@@ -451,8 +465,11 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 				replies := append([]reply{accountReply(c), targetReply()}, databasePreflightReplies(c)...)
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
 				if !tc.reject {
-					replies = append(replies, reply{contains: "aks list", output: "[]"},
-						reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+					replies = append(replies, reply{contains: "aks list", output: "[]"})
+					if backend == DatabaseHorizon {
+						replies = append(replies, reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"})
+					}
+					replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
 				}
 				r := script(t, replies...)
 				err = (App{Config: c, Runner: r}).Provision(t.Context(), true)
@@ -470,7 +487,8 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 
 func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
 	c, _ := managedTestConfig(t, DatabaseHorizon)
-	r := script(t, accountReply(c), targetReply(), databaseRegionReply(c.Database.Backend), horizonParameterGroupReply(c), reply{contains: "group exists", output: "false"},
+	r := script(t, accountReply(c), targetReply(), databaseRegionReply(c.Database.Backend), reply{contains: "group exists", output: "false"},
+		reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"},
 		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
 	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 		t.Fatal(err)
@@ -484,6 +502,131 @@ func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
 	if last.SensitiveOutput || !strings.Contains(strings.Join(last.Args, " "), "--parameters @/dev/stdin") ||
 		!bytes.Contains(last.Input, []byte("PreviewOnly-NotARealPassword1!")) {
 		t.Fatal("preview must use public placeholder input and retain Azure diagnostics")
+	}
+}
+
+func horizonExistingReplies(t *testing.T, c Config, db *DatabaseInfrastructure) []reply {
+	t.Helper()
+	inventory, err := json.Marshal([]any{object{"id": db.ResourceID, "location": c.DatabaseLocation(),
+		"tags": map[string]string{ownershipTag: c.Installation.ID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := json.Marshal(object{"id": db.ResourceID, "location": c.DatabaseLocation(),
+		"tags": map[string]string{ownershipTag: c.Installation.ID}, "state": "Succeeded",
+		"version": "17", "administratorMatches": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []reply{
+		{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: string(inventory)},
+		{contains: "resource show --ids " + db.ResourceID + " --api-version 2026-05-01-preview", output: string(existing)},
+	}
+}
+
+func TestHorizonCreateModeUsesOwnedLiveState(t *testing.T) {
+	for _, scenario := range []string{"new cluster", "unrelated cluster", "existing without successful deployment", "wrong group", "wrong owner",
+		"multiple clusters", "invalid inventory", "incomplete inventory", "wrong administrator", "unobservable administrator",
+		"new API shape", "busy cluster", "failed cluster", "changed resource", "changed owner", "malformed metadata", "access denied", "inventory access denied"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, db := managedTestConfig(t, DatabaseHorizon)
+			replies := horizonExistingReplies(t, c, db)
+			wantMode, wantError := "Update", false
+			denied := errors.New("resource access denied")
+			switch scenario {
+			case "new cluster":
+				replies[0].output = "[]"
+				replies = replies[:1]
+				wantMode = "Create"
+			case "unrelated cluster":
+				replies[0].output = strings.ReplaceAll(replies[0].output, c.Installation.ID, "another-installation")
+				replies[0].output = strings.ReplaceAll(replies[0].output, c.Azure.ResourceGroup, "another-group")
+				replies = replies[:1]
+				wantMode = "Create"
+			case "wrong group":
+				replies[0].output = strings.ReplaceAll(replies[0].output, c.Azure.ResourceGroup, "another-group")
+				replies, wantError = replies[:1], true
+			case "wrong owner":
+				replies[0].output = strings.ReplaceAll(replies[0].output, c.Installation.ID, "another-installation")
+				replies, wantError = replies[:1], true
+			case "multiple clusters":
+				replies[0].output = strings.TrimSuffix(replies[0].output, "]") + "," + strings.TrimPrefix(replies[0].output, "[")
+				replies, wantError = replies[:1], true
+			case "invalid inventory":
+				replies[0].output = "null"
+				replies, wantError = replies[:1], true
+			case "incomplete inventory":
+				replies[0].output = `[{}]`
+				replies, wantError = replies[:1], true
+			case "wrong administrator":
+				replies[1].output = strings.Replace(replies[1].output, `"administratorMatches":true`, `"administratorMatches":false`, 1)
+				wantError = true
+			case "unobservable administrator":
+				replies[1].output = strings.Replace(replies[1].output, `"administratorMatches":true`, `"administratorMatches":null`, 1)
+				wantError = true
+			case "new API shape":
+				replies[1].output = strings.Replace(replies[1].output, `"version":"17"`, `"postgreSqlVersion":"17"`, 1)
+				wantError = true
+			case "busy cluster":
+				replies[1].output = strings.Replace(replies[1].output, `"Succeeded"`, `"Updating"`, 1)
+				wantError = true
+			case "failed cluster":
+				replies[1].output = strings.Replace(replies[1].output, `"Succeeded"`, `"Failed"`, 1)
+				wantError = true
+			case "changed resource":
+				replies[1].output = strings.Replace(replies[1].output, db.ResourceID, db.ResourceID+"other", 1)
+				wantError = true
+			case "changed owner":
+				replies[1].output = strings.ReplaceAll(replies[1].output, c.Installation.ID, "another-installation")
+				wantError = true
+			case "malformed metadata":
+				replies[1].output = "{"
+				wantError = true
+			case "access denied":
+				replies[1].err = denied
+				wantError = true
+			case "inventory access denied":
+				replies[0].err = denied
+				replies, wantError = replies[:1], true
+			}
+			r := script(t, replies...)
+			mode, err := (App{Config: c, Runner: r}).horizonCreateMode(t.Context())
+			if (err != nil) != wantError || (!wantError && mode != wantMode) {
+				t.Fatalf("mode=%q error=%v; want mode=%q error=%v", mode, err, wantMode, wantError)
+			}
+			if strings.Contains(scenario, "access denied") && !errors.Is(err, denied) {
+				t.Fatalf("resource access error was lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestHorizonProvisionForwardsUpdateWithoutSuccessfulDeployment(t *testing.T) {
+	c, db := managedTestConfig(t, DatabaseHorizon)
+	group, err := json.Marshal(object{"location": c.Azure.Location, "tags": map[string]string{
+		ownershipTag: c.Installation.ID, "substrate-aks-database": string(DatabaseHorizon),
+		"substrate-aks-database-location": c.DatabaseLocation(),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replies := append([]reply{accountReply(c), targetReply()}, databasePreflightReplies(c)...)
+	replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
+	replies = append(replies, reply{contains: "aks list", output: "[]"})
+	replies = append(replies, horizonExistingReplies(t, c, db)...)
+	replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+	r := script(t, replies...)
+	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	var parameters struct {
+		Parameters map[string]struct{ Value any }
+	}
+	if err := json.Unmarshal(r.calls[len(r.calls)-1].Input, &parameters); err != nil {
+		t.Fatal(err)
+	}
+	if parameters.Parameters["horizonCreateMode"].Value != "Update" {
+		t.Fatal("reprovisioning must supply Update even without a successful deployment record")
 	}
 }
 

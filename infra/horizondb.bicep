@@ -1,72 +1,40 @@
 param location string
 param installationId string
 param egressIP string
+@description('Create a new cluster, or Update an existing cluster with the same installation identity. Callers must select the mode explicitly when reprovisioning.')
+@allowed(['Create', 'Update'])
+param createMode string = 'Create'
 @secure()
 param adminPassword string
 
-resource cluster 'Microsoft.HorizonDb/clusters@2026-10-01-preview' = {
+resource cluster 'Microsoft.HorizonDb/clusters@2026-05-01-preview' = {
   name: 'pg${uniqueString(resourceGroup().id, installationId)}'
   location: location
   tags: {
     'substrate-aks-installation': installationId
   }
   properties: {
-    postgreSqlVersion: '17'
-    network: {
-      publicAccess: 'Enabled'
-    }
-    backup: {
-      geoRedundancy: 'Disabled'
-      retentionDays: 7
-    }
-  }
-}
-
-resource passwordAuthentication 'Microsoft.HorizonDb/clusters/authentications@2026-10-01-preview' = {
-  parent: cluster
-  name: 'passwordMethod'
-  properties: {
-    state: 'Enabled'
+    version: '17'
+    createMode: createMode
     administratorLogin: 'substrateadmin'
     administratorLoginPassword: adminPassword
+    vCores: 2
+    processorType: 'Intel'
+    replicaCount: 1
+    zonePlacementPolicy: 'BestEffort'
+    authConfig: {
+      passwordAuth: 'Enabled'
+      entraIdAuth: 'Disabled'
+    }
   }
 }
 
-resource entraAuthentication 'Microsoft.HorizonDb/clusters/authentications@2026-10-01-preview' = {
+resource pool 'Microsoft.HorizonDb/clusters/pools@2026-05-01-preview' existing = {
   parent: cluster
-  name: 'microsoftEntra'
-  dependsOn: [passwordAuthentication]
-  properties: {
-    state: 'Disabled'
-  }
+  name: 'DefaultPool'
 }
 
-resource pool 'Microsoft.HorizonDb/clusters/pools@2026-10-01-preview' = {
-  parent: cluster
-  name: 'default'
-  dependsOn: [entraAuthentication]
-  properties: {
-    computeModel: {
-      type: 'Provisioned'
-      computeProcessor: 'Intel'
-      computeGeneration: 1
-      vCores: 2
-    }
-    nodeCount: 1
-    highAvailability: {
-      mode: 'Disabled'
-    }
-    parameterGroup: {
-      parameterGroupResourceId: subscriptionResourceId('Microsoft.HorizonDb/locations/parameterGroups', location, 'default-postgresql-17-provisioned')
-      applyMethod: 'Immediate'
-    }
-    scheduledMaintenance: {
-      maintenanceManagementType: 'System'
-    }
-  }
-}
-
-resource firewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-10-01-preview' = {
+resource firewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-05-01-preview' = {
   parent: pool
   name: 'aks-egress'
   properties: {
@@ -75,10 +43,5 @@ resource firewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-10-01-p
   }
 }
 
-resource endpoint 'Microsoft.HorizonDb/clusters/endpoints@2026-10-01-preview' existing = {
-  parent: cluster
-  name: cluster.name
-}
-
 output resourceId string = cluster.id
-output host string = endpoint.properties.fullyQualifiedDomainName
+output host string = cluster.properties.fullyQualifiedDomainName
