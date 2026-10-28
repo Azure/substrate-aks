@@ -41,9 +41,10 @@ The wizard uses your active Azure subscription and identity, asks for a name and
 region, and previews changes before applying them. Press `/` to filter regions.
 It saves your settings in `deploy.json`.
 
-**When setup finishes, apply the shell exports it prints** to use the installation's
-kubeconfig and `kubectl ate` client. It does not edit your shell profile or default
-kubeconfig.
+**When setup finishes, apply the final shell exports it prints** to use the
+installation's kubeconfig and `kubectl ate` client. Interactive setup offers an
+opt-in context import/selection at the end; declining or `--yes` leaves your
+default kubeconfig unchanged. Shell profiles and PATH are never edited.
 
 **Useful variants**
 

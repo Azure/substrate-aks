@@ -30,6 +30,9 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 }
 
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
+	if o.contextFile == "" {
+		o.contextFile = filepath.Join(filepath.Dir(o.path), "operator-kubeconfig")
+	}
 	if o.subscription != "" && o.publisher != "" && o.operatorID == "" {
 		o.operatorID = defaultPublisher
 	}

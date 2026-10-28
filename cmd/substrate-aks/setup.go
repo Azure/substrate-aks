@@ -24,6 +24,7 @@ type setupOptions struct {
 	containerEngine                                             string
 	local                                                       installer.Runner
 	operatorID, operatorType                                    string
+	contextFile                                                 string
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -242,6 +243,9 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		if o.containerEngine != "" {
 			reconcile = append(reconcile, "--container-engine", o.containerEngine)
 		}
+		if o.contextFile != "" {
+			reconcile = append(reconcile, "--context-file", o.contextFile)
+		}
 		for _, option := range []struct {
 			enabled bool
 			flag    string
@@ -329,7 +333,15 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	if err := stage("12. Set up kubectl and the matching kubectl-ate", "client"); err != nil {
 		return err
 	}
-	fmt.Fprintln(stderr, "\nSetup complete. Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
+	switched, err := offerContextSwitch(ctx, o, c, prompt, ui, out)
+	if err != nil {
+		return err
+	}
+	if switched {
+		fmt.Fprintln(stderr, "\nSetup complete. The selected kubeconfig now uses this installation's context. Apply the final printed exports in your current shell; PATH and shell profiles are unchanged.")
+	} else {
+		fmt.Fprintln(stderr, "\nSetup complete. Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
+	}
 	if o.withDemo {
 		fmt.Fprintln(out, "\n# Try the counter demo:")
 		fmt.Fprintln(out, "kubectl ate create actor my-counter -a ate-demo-counter-microvm --template counter-microvm")

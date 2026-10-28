@@ -59,6 +59,11 @@ setup flags:
   --yes                                  Accept billable deployment without prompts
   --with-demo                            Also deploy the counter microVM demo
   --accessible                           Use screen-reader-friendly prompts
+  --context-file PATH                    Destination for the optional final context handoff
+
+client flags:
+  --use-context                          Explicitly import/select this installation in your kubeconfig
+  --context-file PATH                    Destination; defaults to a single KUBECONFIG file or ~/.kube/config
 `
 
 func main() {
@@ -93,6 +98,8 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	var confirmation, component string
 	var subscription, publisher, reader, cidr, name, location string
 	var operatorID, operatorType string
+	var contextFile string
+	var useContext bool
 	var yes, withDemo, unrestrictedAPI, accessible bool
 	var registryOnly, checkImages, resetImages bool
 	var containerEngine string
@@ -107,6 +114,12 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	}
 	if command == "install" {
 		fs.StringVar(&component, "component", "ate-system", "ate-system, atelet or apiserver")
+	}
+	if command == "client" || command == "setup" {
+		fs.StringVar(&contextFile, "context-file", "", "destination for an explicitly accepted Kubernetes context handoff")
+	}
+	if command == "client" {
+		fs.BoolVar(&useContext, "use-context", false, "import and select this installation in the destination kubeconfig")
 	}
 	if command == "images" {
 		fs.BoolVar(&checkImages, "check", false, "verify saved images without publishing or changing configuration")
@@ -146,6 +159,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	}
 	if operatorType != "" && operatorID == "" {
 		return errors.New("--operator-principal-type requires --operator-object-id")
+	}
+	if command == "client" && contextFile != "" && !useContext {
+		return errors.New("client --context-file requires --use-context; without it client only prints private shell configuration")
 	}
 	if checkImages && resetImages {
 		return errors.New("--check and --reset-config are mutually exclusive")
@@ -191,6 +207,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			verbose: *verbose, configFlags: configFlags, unrestrictedAPI: unrestrictedAPI, accessible: accessible,
 			containerEngine: containerEngine,
 			operatorID:      operatorID, operatorType: operatorType,
+			contextFile: contextFile,
 		}, os.Stdin, out, stderr, run)
 	}
 	if command == "doctor" {
@@ -329,7 +346,20 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			return err
 		}
 		p.pause()
-		return printClientSetup(out, client)
+		if err := printClientSetup(out, client); err != nil {
+			return err
+		}
+		if useContext {
+			selection, err := installer.PlanContextSwitch(contextFile)
+			if err != nil {
+				return err
+			}
+			if err := a.SelectContext(ctx, selection); err != nil {
+				return err
+			}
+			return printSelectedContext(out, selection.Path, client.Context)
+		}
+		return nil
 	case "status":
 		return a.Status(ctx)
 	case "destroy":
