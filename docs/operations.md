@@ -342,6 +342,7 @@ Long-duration credential refresh remains a live validation gate.
 | Progress | stderr; headings, steps, completion, and an indeterminate elapsed-time spinner |
 | Plain progress | Every 20 seconds with redirected output, `--verbose`, `NO_COLOR`, or `TERM=dumb`; status also uses plain updates |
 | Results | stdout, including infrastructure preview and pod status |
+| Setup completion | Branded success banner on stderr, followed by numbered demo commands on stdout; printed only after client setup and any accepted context handoff succeed |
 | Detailed log | Mode-0600 per-command file in the installation's `logs/` directory |
 | `--verbose` | Stream underlying commands, raw build output, and diagnostics |
 
@@ -349,6 +350,10 @@ The spinner clears before other output, errors, interruption, and completion.
 Color is terminal-only; labels remain meaningful without it. Subprocess and
 actor output pass through rather than receiving installer styling. Failures
 include context, a short subprocess error excerpt when available, and a log path.
+The completion banner uses the welcome's purple accent and a green `DONE` label.
+Demo headings and commands are colorized only when their output is a terminal;
+`NO_COLOR`, dumb terminals, and redirected streams remain plain. Copyable command
+lines are never auto-wrapped or padded after shell-continuation backslashes.
 
 ```sh
 bin/substrate-aks provision --registry-only --verbose

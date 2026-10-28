@@ -16,6 +16,8 @@ type setupUI struct {
 	width    int
 }
 
+const setupAccent = "#b48cf2"
+
 func newSetupUI(out io.Writer) *setupUI {
 	width := 80
 	if file, ok := out.(interface{ Fd() uintptr }); ok && term.IsTerminal(file.Fd()) {
@@ -31,7 +33,7 @@ func (u *setupUI) welcome(decorative bool) {
 	title := u.renderer.NewStyle().Bold(true)
 	if decorative && u.width >= 64 {
 		const slab = "/___________/|\n|___________|/"
-		purple := u.renderer.NewStyle().Foreground(lipgloss.Color("#b48cf2"))
+		purple := u.renderer.NewStyle().Foreground(lipgloss.Color(setupAccent))
 		layers := purple.Render(" ____________\n" + slab + "\n" + slab + "\n" + slab)
 		mark := u.renderer.NewStyle().PaddingRight(5).Render(layers)
 		label := "\n" + purple.Bold(true).Render("s u b s t r a t e") + "\n\n" + purple.Render("on AKS") +
@@ -48,6 +50,45 @@ func (u *setupUI) welcome(decorative bool) {
 
 func (u *setupUI) section(title string) {
 	fmt.Fprintln(u.out, "\n"+u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(title))
+}
+
+func (u *setupUI) complete(cluster string, withDemo bool) {
+	brand := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color(setupAccent))
+	success := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+	content := brand.Render("Substrate on AKS") + "\n\n" + success.Render("DONE  Setup complete.") +
+		"\nCluster: " + cluster
+	if withDemo {
+		content += "\nCounter microVM demo installed."
+	}
+	if u.width < 32 {
+		fmt.Fprintln(u.out, "\n"+u.renderer.NewStyle().Width(u.width).Render(content))
+		return
+	}
+	panel := u.renderer.NewStyle().Width(u.width-2).Padding(1, 2).
+		Border(lipgloss.ASCIIBorder()).BorderForeground(lipgloss.Color(setupAccent))
+	fmt.Fprintln(u.out, "\n"+panel.Render(content))
+}
+
+func (u *setupUI) command(command string) {
+	style := u.renderer.NewStyle().Foreground(lipgloss.Color(setupAccent))
+	for _, line := range strings.Split(command, "\n") {
+		fmt.Fprintln(u.out, style.Render(line))
+	}
+}
+
+func (u *setupUI) demo() {
+	const post = "curl --fail-with-body -X POST \\\n  -H 'ate-target-actor: ate-demo-counter-microvm/my-counter' \\\n  http://localhost:8000/"
+	u.section("# Try the counter demo:")
+	u.section("# 1. Create a counter actor")
+	u.command("kubectl ate create actor my-counter \\\n  -a ate-demo-counter-microvm --template counter-microvm")
+	u.section("# 2. In another terminal, with the same KUBECONFIG")
+	u.command("kubectl -n ate-system port-forward svc/atenet-router 8000:80")
+	u.section("# 3. Increment the counters (repeat to see them increase)")
+	u.command(post)
+	u.section("# 4. Save the actor state and suspend synchronously")
+	u.command("kubectl ate suspend actor my-counter \\\n  -a ate-demo-counter-microvm --mode=sync")
+	u.section("# 5. Activate again; the counters should continue")
+	u.command(post)
 }
 
 func (u *setupUI) note(text string) {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -48,6 +49,113 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 				t.Fatalf("incorrect setup color profile: %q", text)
 			}
 		})
+	}
+}
+
+func TestSetupCompletionBanner(t *testing.T) {
+	const cluster = "substrate-cluster-with-a-long-name"
+	for _, width := range []int{24, 32, 48, 80} {
+		for _, colored := range []bool{false, true} {
+			for _, demo := range []bool{false, true} {
+				t.Run(fmt.Sprintf("width=%d/color=%v/demo=%v", width, colored, demo), func(t *testing.T) {
+					var output bytes.Buffer
+					ui := newSetupUI(&output)
+					ui.width = width
+					if colored {
+						ui.renderer.SetColorProfile(termenv.ANSI)
+					}
+					ui.complete(cluster, demo)
+					text := output.String()
+					plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
+					compact := strings.Join(strings.Fields(strings.ReplaceAll(plain, "|", "")), "")
+					for _, want := range []string{"SubstrateonAKS", "DONESetupcomplete.", cluster} {
+						if !strings.Contains(compact, want) {
+							t.Fatalf("completion banner lost %q:\n%s", want, plain)
+						}
+					}
+					if strings.Contains(compact, "CountermicroVMdemoinstalled.") != demo {
+						t.Fatalf("completion banner misstated demo deployment:\n%s", plain)
+					}
+					for _, line := range strings.Split(plain, "\n") {
+						if lipgloss.Width(line) > width {
+							t.Fatalf("completion banner overflowed %d columns: %q", width, line)
+						}
+					}
+					if strings.Contains(text, "\x1b[") != colored {
+						t.Fatalf("incorrect completion color profile: %q", text)
+					}
+					if width == 80 && !colored && demo {
+						t.Log("\n" + plain)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDemoCommandsAreStyledWithoutChangingShellSyntax(t *testing.T) {
+	const create = "kubectl ate create actor my-counter \\\n  -a ate-demo-counter-microvm --template counter-microvm"
+	const post = "curl --fail-with-body -X POST \\\n  -H 'ate-target-actor: ate-demo-counter-microvm/my-counter' \\\n  http://localhost:8000/"
+	for _, colored := range []bool{false, true} {
+		t.Run(fmt.Sprint(colored), func(t *testing.T) {
+			var output bytes.Buffer
+			ui := newSetupUI(&output)
+			ui.width = 24
+			if colored {
+				ui.renderer.SetColorProfile(termenv.ANSI)
+			}
+			ui.demo()
+			text := output.String()
+			plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
+			for _, want := range []string{
+				"# Try the counter demo:", "# 1. Create a counter actor", "# 5. Activate again",
+				create, post, "kubectl -n ate-system port-forward svc/atenet-router 8000:80",
+				"kubectl ate suspend actor my-counter \\\n  -a ate-demo-counter-microvm --mode=sync",
+			} {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("demo instructions lost or wrapped %q:\n%s", want, plain)
+				}
+			}
+			if strings.Count(plain, post) != 2 {
+				t.Fatal("demo omitted the before/after state-preservation requests")
+			}
+			firstLine, _, _ := strings.Cut(create, "\n")
+			styled := ui.renderer.NewStyle().Foreground(lipgloss.Color(setupAccent)).Render(firstLine)
+			if !strings.Contains(text, styled) || strings.Contains(text, "\x1b[") != colored {
+				t.Fatalf("demo commands have the wrong color profile: %q", text)
+			}
+		})
+	}
+}
+
+func TestDemoCommandsCanBeCopiedIntoAShell(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	for _, tool := range []string{"kubectl", "curl"} {
+		fakeTool(t, bin, tool, "printf '"+tool+"'; printf '|%s' \"$@\"; printf '\\n'")
+	}
+	t.Setenv("PATH", bin)
+	var instructions bytes.Buffer
+	newSetupUI(&instructions).demo()
+	command := exec.CommandContext(t.Context(), shell, "-eu")
+	command.Stdin = strings.NewReader(instructions.String())
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("copying the demo instructions into a shell failed: %v\n%s", err, output)
+	}
+	post := "curl|--fail-with-body|-X|POST|-H|ate-target-actor: ate-demo-counter-microvm/my-counter|http://localhost:8000/"
+	want := strings.Join([]string{
+		"kubectl|ate|create|actor|my-counter|-a|ate-demo-counter-microvm|--template|counter-microvm",
+		"kubectl|-n|ate-system|port-forward|svc/atenet-router|8000:80",
+		post,
+		"kubectl|ate|suspend|actor|my-counter|-a|ate-demo-counter-microvm|--mode=sync",
+		post,
+	}, "\n") + "\n"
+	if string(output) != want {
+		t.Fatalf("demo rendering changed shell arguments:\ngot: %s\nwant: %s", output, want)
 	}
 }
 

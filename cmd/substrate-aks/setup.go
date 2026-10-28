@@ -336,22 +336,18 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	if err != nil {
 		return err
 	}
+	ui.complete(c.AKS.ClusterName, o.withDemo)
 	if switched {
-		fmt.Fprintln(stderr, "\nSetup complete. The selected kubeconfig now uses this installation's context. Apply the final printed exports in your current shell; PATH and shell profiles are unchanged.")
+		ui.note("The selected kubeconfig now uses this installation's context. Apply the final printed exports in your current shell; PATH and shell profiles are unchanged.")
 	} else {
-		fmt.Fprintln(stderr, "\nSetup complete. Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
+		ui.note("Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
 	}
+	steps := newSetupUI(out)
 	if o.withDemo {
-		fmt.Fprintln(out, "\n# Try the counter demo:")
-		fmt.Fprintln(out, "kubectl ate create actor my-counter -a ate-demo-counter-microvm --template counter-microvm")
-		fmt.Fprintln(out, "# In another terminal with the same KUBECONFIG:")
-		fmt.Fprintln(out, "kubectl -n ate-system port-forward svc/atenet-router 8000:80")
-		fmt.Fprintln(out, "# Each POST activates the actor and increments its counters:")
-		fmt.Fprintln(out, "curl --fail-with-body -X POST -H 'ate-target-actor: ate-demo-counter-microvm/my-counter' http://localhost:8000/")
-		fmt.Fprintln(out, "# After recording the counters, suspend synchronously, then repeat the POST:")
-		fmt.Fprintln(out, "kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync")
+		steps.demo()
 	}
-	fmt.Fprintf(out, "\n# Delete all resources and persistent data when finished:\n%s\n", cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
+	steps.section("# Delete all resources and persistent data when finished:")
+	steps.command(cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
 	return nil
 }
 

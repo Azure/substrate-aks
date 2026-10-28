@@ -77,6 +77,8 @@ func TestRedirectedConsoleDisablesStylesEvenWhenColorIsForced(t *testing.T) {
 			ui := newSetupUI(file)
 			ui.welcome(false)
 			ui.warning("Billable resources")
+			ui.complete("substrate-test", true)
+			ui.demo()
 			prompt := newSetupPrompt(strings.NewReader("\n"), ui, true)
 			if _, err := prompt.text(t.Context(), "Resource group", "substrate-dev"); err != nil {
 				t.Fatal(err)
@@ -88,7 +90,8 @@ func TestRedirectedConsoleDisablesStylesEvenWhenColorIsForced(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if bytes.Contains(data, []byte{0x1b}) || !bytes.Contains(data, []byte("DONE  Complete")) {
+			if bytes.Contains(data, []byte{0x1b}) || !bytes.Contains(data, []byte("DONE  Complete")) ||
+				!bytes.Contains(data, []byte("DONE  Setup complete.")) || !bytes.Contains(data, []byte("# Try the counter demo:")) {
 				t.Fatalf("redirected output was styled or lost its status labels: %q", data)
 			}
 		})

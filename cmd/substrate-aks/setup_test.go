@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,7 +77,7 @@ func testRuntimeAssets(t *testing.T) string {
 }
 
 func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
-	for _, fail := range []string{"", "images"} {
+	for _, fail := range []string{"", "images", "demo", "client"} {
 		t.Run("failure="+fail, func(t *testing.T) {
 			path := testCLIConfig(t)
 			var commands []string
@@ -102,19 +103,27 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{path: path, yes: true, withDemo: true, discovery: subscriptionDisplayRunner(t)},
 				strings.NewReader(""), &output, &output, execute)
+			wantCommands := []string{"plan", "provision", "images", "images", "plan", "provision", "check", "prepare", "install", "status", "demo", "client"}
+			if i := slices.Index(wantCommands, fail); i >= 0 {
+				wantCommands = wantCommands[:i+1]
+			}
+			if !slices.Equal(commands, wantCommands) {
+				t.Fatalf("setup lost a required stage, changed order or continued after failure: %v", commands)
+			}
 			if fail != "" {
 				if !errors.Is(err, want) || !strings.Contains(err.Error(), "Resources are retained") {
 					t.Fatalf("stage failure lost retry/cleanup guidance: %v", err)
 				}
-				if strings.Join(commands, ",") != "plan,provision,images" {
-					t.Fatalf("setup continued after failure: %v", commands)
+				if strings.Contains(output.String(), "Setup complete.") || strings.Contains(output.String(), "# Try the counter demo:") {
+					t.Fatalf("setup printed successful completion or demo next steps after failure:\n%s", &output)
 				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if strings.Join(commands, ",") != "plan,provision,images,images,plan,provision,check,prepare,install,status,demo,client" {
-					t.Fatalf("setup lost a required stage or order: %v", commands)
+				if strings.Count(output.String(), "DONE  Setup complete.") != 1 ||
+					!strings.Contains(output.String(), "Counter microVM demo installed.") {
+					t.Fatalf("successful setup did not print its final completion banner:\n%s", &output)
 				}
 				if publications != 1 || imageChecks != 1 {
 					t.Fatalf("fresh setup must publish once and verify before provisioning AKS: publications=%d, checks=%d", publications, imageChecks)
@@ -461,6 +470,10 @@ func TestSetupReusesConfiguredImagesOnRetry(t *testing.T) {
 	}
 	if strings.Join(commands, ",") != "images,plan,provision,check,prepare,install,status,client" {
 		t.Fatalf("retry rebuilt images or changed the requested demo selection: %v", commands)
+	}
+	if strings.Count(output.String(), "DONE  Setup complete.") != 1 ||
+		strings.Contains(output.String(), "Counter microVM demo installed.") || strings.Contains(output.String(), "# Try the counter demo:") {
+		t.Fatalf("setup without the demo omitted completion or falsely advertised a deployed demo:\n%s", &output)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(after, data) {
