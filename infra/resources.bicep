@@ -7,6 +7,9 @@ param workerCount int
 param apiAuthorizedCidrs array
 param assetPublisherObjectId string
 param snapshotReaderObjectId string = ''
+param operatorObjectId string = ''
+@allowed(['User', 'ServicePrincipal', 'Group'])
+param operatorPrincipalType string = 'User'
 param registryName string
 
 var tags = {
@@ -33,6 +36,14 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
     dnsPrefix: clusterName
     kubernetesVersion: kubernetesVersion
     enableRBAC: true
+    ...(operatorObjectId != '' ? {
+      aadProfile: {
+        managed: true
+        enableAzureRBAC: true
+        tenantID: tenant().tenantId
+      }
+      disableLocalAccounts: true
+    } : {})
     oidcIssuerProfile: {
       enabled: true
     }
@@ -95,6 +106,16 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         }
       }
     ]
+  }
+}
+
+resource clusterOperator 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (operatorObjectId != '') {
+  name: guid(cluster.id, operatorObjectId, 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b')
+  scope: cluster
+  properties: {
+    principalId: operatorObjectId
+    principalType: operatorPrincipalType
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b')
   }
 }
 

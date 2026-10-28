@@ -172,7 +172,7 @@ func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 			})
 			answers := "\n\nno\nno\n"
 			if blocked {
-				answers = defaultPublisher + "\n" + answers
+				answers = defaultPublisher + "\n" + defaultPublisher + "\n" + answers
 			}
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{

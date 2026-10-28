@@ -7,7 +7,15 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+func validateEntraKubeconfig(data []byte, expected string) error {
+	return validateKubeconfigAuth(data, expected, true)
+}
+
 func validateKubeconfig(data []byte, expected string) error {
+	return validateKubeconfigAuth(data, expected, false)
+}
+
+func validateKubeconfigAuth(data []byte, expected string, entra bool) error {
 	var config struct {
 		APIVersion     string `yaml:"apiVersion"`
 		Kind           string `yaml:"kind"`
@@ -44,7 +52,23 @@ func validateKubeconfig(data []byte, expected string) error {
 			clusterFound = clusterFound || (cluster.Name == context.Context.Cluster && strings.HasPrefix(cluster.Cluster.Server, "https://"))
 		}
 		for _, user := range config.Users {
-			userFound = userFound || (user.Name == context.Context.User && len(user.User) != 0)
+			if user.Name != context.Context.User || len(user.User) == 0 {
+				continue
+			}
+			if !entra {
+				userFound = true
+				continue
+			}
+			exec, ok := user.User["exec"].(map[string]any)
+			args, argsOK := exec["args"].([]any)
+			azureCLI := false
+			for i := 0; i+1 < len(args); i++ {
+				if (args[i] == "--login" || args[i] == "-l") && args[i+1] == "azurecli" {
+					azureCLI = true
+				}
+			}
+			userFound = ok && argsOK && len(args) > 0 && args[0] == "get-token" &&
+				exec["command"] == "kubelogin" && azureCLI && len(user.User) == 1
 		}
 		if clusterFound && userFound {
 			return nil

@@ -30,6 +30,9 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 }
 
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
+	if o.subscription != "" && o.publisher != "" && o.operatorID == "" {
+		o.operatorID = defaultPublisher
+	}
 	if o.local == nil {
 		o.local = defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 			switch strings.Join(c.Args, " ") {

@@ -23,6 +23,7 @@ type setupOptions struct {
 	ipClient                                                    *http.Client
 	containerEngine                                             string
 	local                                                       installer.Runner
+	operatorID, operatorType                                    string
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -52,14 +53,22 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		local = installer.ExecRunner{}
 	}
 	ui.section("1. Check local prerequisites")
-	preflight := installer.App{Runner: local, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
+	var prior installer.Config
+	if statErr == nil {
+		var err error
+		prior, err = installer.LoadConfig(o.path)
+		if err != nil {
+			return err
+		}
+	}
+	preflight := installer.App{Config: prior, Runner: local, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
 	if err := preflight.Doctor(ctx); err != nil {
 		return fmt.Errorf("local prerequisites failed before Azure discovery or provisioning: %w", err)
 	}
 	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
 		ui.section("Discover Azure subscription and signed-in identity")
 		ui.note("Azure account and directory probes each have a 30-second timeout. Sign in with az login first.")
-		defaults, err = discoverAzureDefaults(ctx, o.subscription, o.publisher, runner)
+		defaults, err = discoverInstallationDefaults(ctx, o.subscription, o.publisher, o.operatorID, o.operatorType, runner)
 		if err != nil {
 			if o.yes || ctx.Err() != nil {
 				return err
@@ -68,6 +77,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			ui.note("Enter the missing IDs below.")
 		}
 		o.subscription, o.publisher = defaults.subscription, defaults.publisher
+		o.operatorID, o.operatorType = defaults.operator.ObjectID, defaults.operator.PrincipalType
 		o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
 		if err != nil {
 			if o.yes || ctx.Err() != nil || o.unrestrictedAPI {
@@ -86,6 +96,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			}{
 				{"Azure subscription UUID", &o.subscription, o.subscription != ""},
 				{"Azure identity Entra object UUID", &o.publisher, o.publisher != ""},
+				{"AKS operator Entra object UUID (cluster-scoped RBAC Cluster Admin)", &o.operatorID, o.operatorID != ""},
 				{"Client public IPv4 CIDR allowed to reach AKS (for example 203.0.113.8/32)", &o.cidr, o.cidr != "" || o.unrestrictedAPI},
 				{"Dedicated resource group and cluster name", &o.name, false},
 			} {
@@ -125,7 +136,8 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 				}
 			}
 		}
-		if err := initialize(o.path, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, io.Discard); err != nil {
+		operator := installer.OperatorConfig{ObjectID: o.operatorID, PrincipalType: o.operatorType}
+		if err := initialize(o.path, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, io.Discard); err != nil {
 			return err
 		}
 		created = true

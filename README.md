@@ -23,6 +23,7 @@ providing Azure infrastructure, declarative deployment configuration, and a guid
 | Go 1.27.3+ and Git | Allow automatic toolchain download or install a current supported security release |
 | Azure CLI | Authenticated to the target subscription |
 | `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
+| Azure `kubelogin` | Required for new installs; uses the existing Azure CLI login for managed Entra authentication |
 | Docker with buildx or Podman | Setup offers a choice when both work; `--yes` prefers Docker/buildx. Runtime assembly also needs `bash`, `curl`, `tar --zstd`, `zstd`, `readlink -f`, and `sha256sum`; supplied assets skip these checks |
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
@@ -64,6 +65,7 @@ validation, and [operations](docs/operations.md#guided-installation) for noninte
 | Component | Default |
 | --- | --- |
 | AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v3` |
+| Operator access | New configs: managed Entra / Azure RBAC, local accounts disabled; cluster-scoped operator grant |
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |

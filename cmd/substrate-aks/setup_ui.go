@@ -88,6 +88,14 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.row("Region", c.Azure.Location)
 	u.identity("Subscription", defaults.subscriptionName, c.Azure.SubscriptionID)
 	u.identity("Azure identity", defaults.publisherName, c.Azure.AssetPublisherObjectID)
+	if operator := c.AKS.Operator; operator != nil {
+		u.row("Operator auth", "Managed Entra / Azure RBAC; local accounts disabled")
+		u.row("AKS operator", operator.ObjectID+" ("+operator.PrincipalType+")")
+		u.note("Cluster-scoped AKS RBAC Cluster Admin, including credential-fetch access. Uses your current az login through kubelogin.")
+	} else {
+		u.row("Operator auth", "Legacy configuration (unchanged)")
+		u.note("This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
+	}
 	u.row("AKS version", c.AKS.KubernetesVersion)
 	u.row("Nodes", fmt.Sprintf("1 system + %d microVM", c.AKS.WorkerPool.Count))
 	u.row("Node size", c.AKS.WorkerPool.VMSize)

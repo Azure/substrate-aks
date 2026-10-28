@@ -250,6 +250,17 @@ try localhost.
 Credential refresh fetches and validates a private temporary kubeconfig before
 atomically replacing the installation's file. Failed or incomplete Azure CLI
 output leaves the previous credentials intact.
+For managed Entra configurations, conversion to `kubelogin --login azurecli`
+happens on that temporary file before replacement; a failed conversion or
+non-Entra result also preserves the previous file. Keep `az` and Azure's
+`kubelogin` on PATH and sign in to the cluster's tenant. `check` waits up to five
+minutes for an explicit authorization denial to clear after new RBAC grants.
+Network, authentication, and unexpected-response failures are surfaced rather
+than treated as propagation. Each authorization probe is limited to 15 seconds.
+
+The managed Entra path has local tests and compiled-template validation, but
+has not yet been validated in a fresh live deployment. Earlier live acceptance
+used the legacy authentication path.
 
 Actor requests use upstream `kubectl ate` directly, with no installer ownership
 query or source check per request. Upstream automatically port-forwards its API

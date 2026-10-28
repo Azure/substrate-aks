@@ -20,6 +20,7 @@ same configuration interactively.
 | --- | --- |
 | Subscription | Active Azure CLI subscription |
 | Upload identity | Signed-in Azure identity's Entra object ID |
+| Kubernetes operator | Signed-in identity, independently of upload overrides; managed Entra / Azure RBAC; local accounts disabled |
 | Resource group / cluster | `substrate-dev` |
 | Region | `eastus2` |
 | AKS | Kubernetes 1.37; one system node and one microVM worker |
@@ -53,6 +54,10 @@ configuration. Image/runtime fields are populated by `images`.
     "clusterName": "substrate-dev",
     "kubernetesVersion": "1.37",
     "apiAuthorizedCidrs": ["YOUR_PUBLIC_IPV4/32"],
+    "operator": {
+      "objectId": "YOUR_OPERATOR_ENTRA_OBJECT_UUID",
+      "principalType": "User"
+    },
     "workerPool": {
       "vmSize": "Standard_D4s_v3",
       "count": 1
@@ -121,6 +126,8 @@ administrator or equivalent.
 | --- | --- |
 | `--subscription UUID` | Choose the target subscription for a new config |
 | `--identity-object-id UUID` | Choose the identity that will upload images and runtime assets |
+| `--operator-object-id UUID` | Choose the identity granted cluster-scoped AKS RBAC Cluster Admin |
+| `--operator-principal-type User\|ServicePrincipal\|Group` | Type of an explicitly overridden operator; defaults to User |
 | `--snapshot-reader-object-id UUID` | Opt in a separate identity for read-only snapshot inspection |
 
 Select the active subscription with `az account set --subscription UUID` before
@@ -133,11 +140,31 @@ sign-ins resolve the **service principal object ID**, not its application/client
 ID. If directory lookup fails, interactive setup asks for the missing ID;
 `init` and `setup --yes` fail with explicit override instructions.
 
-Supplying both subscription and identity overrides skips account/directory
+Supplying subscription, upload identity, and operator object ID overrides skips account/directory
 discovery in `init`, but region validation still makes a read-only Azure call.
 Azure CLI manages authentication separately from the deployment file.
 The identity actually running `images` and uploading assets must match the
 configured upload identity.
+
+### Kubernetes operator authentication
+
+New `init` and `setup` configurations include `aks.operator`. Bicep enables managed
+Entra and Azure RBAC, disables local AKS accounts, and grants that principal
+**Azure Kubernetes Service RBAC Cluster Admin** on this cluster only. This built-in
+role also permits fetching cluster-user credentials; no local/admin certificate
+credentials or subscription-wide Kubernetes grants are used. Cluster-wide access
+is needed to install CRDs, RBAC, and Substrate system resources.
+
+The default is the current Azure CLI principal, **not an overridden publisher**.
+Service-principal discovery saves its object ID and principal type. For directory
+restrictions, supply both object IDs and the operator type explicitly.
+`kubelogin --login azurecli` reuses your existing `az login`; an operator override
+grants access but does not sign you in as that principal.
+
+Configs created before this change omit `aks.operator` and retain their legacy
+authentication behavior for management and teardown. Setup labels these configs
+as legacy and does not migrate them silently. Use a new installation for the new
+defaults; automatic migration of a running cluster is not implemented.
 
 The older `--asset-publisher-object-id` flag and JSON field
 `azure.assetPublisherObjectId` remain supported for compatibility.
@@ -185,7 +212,7 @@ edit `aks.apiAuthorizedCidrs`, then run `plan` and `provision`.
 
 | Surface | Current behavior |
 | --- | --- |
-| AKS API | Public endpoint, IP-restricted by default; local AKS credentials, not Entra-backed Kubernetes authorization |
+| AKS API | Public endpoint, IP-restricted by default; new configs use managed Entra / Azure RBAC with local accounts disabled |
 | Substrate services | No public ingress or load balancer |
 | ACR | Publicly reachable authenticated endpoint; admin/anonymous access disabled; registry RBAC, not ABAC repository roles |
 | Blob | Publicly reachable authenticated endpoints; public Blob access and shared-key authentication disabled |

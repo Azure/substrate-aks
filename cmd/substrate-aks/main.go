@@ -47,6 +47,8 @@ Common flags:
 init flags:
   --subscription UUID                    Default: active Azure CLI subscription
   --identity-object-id UUID               Default: signed-in Azure CLI identity
+  --operator-object-id UUID               Default: signed-in identity, independent of upload identity
+  --operator-principal-type TYPE          User (explicit ID default), ServicePrincipal, or Group
   --api-cidr YOUR_IP/32                   Default: detected public IPv4 /32
   --allow-unrestricted-api               Opt out of the AKS API IP allowlist
   --snapshot-reader-object-id UUID        Optional read-only snapshot inspection
@@ -90,6 +92,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	verbose := fs.Bool("verbose", false, "show subprocess commands and diagnostics")
 	var confirmation, component string
 	var subscription, publisher, reader, cidr, name, location string
+	var operatorID, operatorType string
 	var yes, withDemo, unrestrictedAPI, accessible bool
 	var registryOnly, checkImages, resetImages bool
 	var containerEngine string
@@ -113,6 +116,8 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		fs.StringVar(&subscription, "subscription", "", "Azure subscription UUID (default: active Azure CLI subscription)")
 		fs.StringVar(&publisher, "identity-object-id", "", "Azure identity Entra object UUID used for image/asset uploads (default: signed-in identity)")
 		fs.StringVar(&publisher, "asset-publisher-object-id", "", "compatibility alias for --identity-object-id")
+		fs.StringVar(&operatorID, "operator-object-id", "", "Entra object UUID granted cluster-scoped AKS RBAC Cluster Admin (default: signed-in identity)")
+		fs.StringVar(&operatorType, "operator-principal-type", "", "User, ServicePrincipal, or Group (explicit object ID defaults to User)")
 		fs.StringVar(&reader, "snapshot-reader-object-id", "", "optional Entra object UUID granted read-only snapshot access")
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
@@ -139,6 +144,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	if unrestrictedAPI && cidr != "" {
 		return errors.New("--api-cidr and --allow-unrestricted-api are mutually exclusive")
 	}
+	if operatorType != "" && operatorID == "" {
+		return errors.New("--operator-principal-type requires --operator-object-id")
+	}
 	if checkImages && resetImages {
 		return errors.New("--check and --reset-config are mutually exclusive")
 	}
@@ -148,7 +156,8 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		defaults, err := discoverAzureDefaults(ctx, subscription, publisher, installer.ExecRunner{})
+		fmt.Fprintln(stderr, "Discovering Azure subscription and installation identities (30-second timeout per probe).")
+		defaults, err := discoverInstallationDefaults(ctx, subscription, publisher, operatorID, operatorType, installer.ExecRunner{})
 		if err != nil {
 			return err
 		}
@@ -166,13 +175,13 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		}
 		printAzureDefaults(out, defaults)
 		subscription, publisher = defaults.subscription, defaults.publisher
-		return initialize(*configPath, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, out)
+		return initialize(*configPath, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, out)
 	}
 	if command == "setup" {
 		var configFlags bool
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "subscription", "identity-object-id", "asset-publisher-object-id", "snapshot-reader-object-id", "api-cidr", "allow-unrestricted-api", "name", "location":
+			case "subscription", "identity-object-id", "asset-publisher-object-id", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "api-cidr", "allow-unrestricted-api", "name", "location":
 				configFlags = true
 			}
 		})
@@ -181,6 +190,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			cidr: cidr, name: name, location: location, yes: yes, withDemo: withDemo,
 			verbose: *verbose, configFlags: configFlags, unrestrictedAPI: unrestrictedAPI, accessible: accessible,
 			containerEngine: containerEngine,
+			operatorID:      operatorID, operatorType: operatorType,
 		}, os.Stdin, out, stderr, run)
 	}
 	if command == "doctor" {
@@ -261,7 +271,10 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	}}
 	switch command {
 	case "doctor":
-		return a.Doctor(ctx)
+		if err := a.Doctor(ctx); err != nil {
+			return err
+		}
+		return a.RuntimePrerequisites(ctx)
 	case "plan":
 		if registryOnly {
 			return a.ProvisionRegistry(ctx, true)
@@ -325,7 +338,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	return nil
 }
 
-func initialize(path, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, out io.Writer) error {
+func initialize(path, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, out io.Writer) error {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return err
@@ -340,6 +353,7 @@ func initialize(path, subscription, publisher, reader, cidr, name, location stri
 		Location:               location, ResourceGroup: name,
 	}
 	c.AKS.ClusterName = name
+	c.AKS.Operator = operator
 	c.AKS.AllowUnrestrictedAPI = unrestrictedAPI
 	c.AKS.APIAuthorizedCIDRs = []string{}
 	if cidr != "" {

@@ -15,6 +15,8 @@ import (
 type azureDefaults struct {
 	subscription, subscriptionName string
 	publisher, publisherName       string
+	principalType                  string
+	operator                       installer.OperatorConfig
 }
 
 type azureAccount struct {
@@ -57,8 +59,10 @@ func discoverAzureDefaults(ctx context.Context, subscription, publisher string, 
 	var identityArgs []string
 	switch strings.ToLower(account.User.Type) {
 	case "user":
+		d.principalType = "User"
 		identityArgs = []string{"az", "ad", "signed-in-user", "show"}
 	case "serviceprincipal":
+		d.principalType = "ServicePrincipal"
 		if account.User.Name != "" {
 			identityArgs = []string{"az", "ad", "sp", "show", "--id", account.User.Name}
 		}
@@ -84,6 +88,28 @@ func discoverAzureDefaults(ctx context.Context, subscription, publisher string, 
 	return d, nil
 }
 
+func discoverInstallationDefaults(ctx context.Context, subscription, publisher, operatorID, operatorType string, runner installer.Runner) (azureDefaults, error) {
+	identity := publisher
+	if operatorID == "" {
+		identity = ""
+	}
+	d, err := discoverAzureDefaults(ctx, subscription, identity, runner)
+	d.operator = installer.OperatorConfig{ObjectID: operatorID, PrincipalType: operatorType}
+	if operatorID == "" {
+		d.operator.ObjectID, d.operator.PrincipalType = d.publisher, d.principalType
+	}
+	if d.operator.PrincipalType == "" {
+		d.operator.PrincipalType = "User"
+	}
+	if publisher != "" {
+		d.publisher, d.publisherName = publisher, ""
+	}
+	if err != nil {
+		return d, fmt.Errorf("discovering installation identities; directory restrictions can be bypassed with explicit --identity-object-id and --operator-object-id (and --operator-principal-type for non-users): %w", err)
+	}
+	return d, nil
+}
+
 func readAzureAccount(ctx context.Context, subscription string, runner installer.Runner) (azureAccount, error) {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
@@ -105,6 +131,9 @@ func readAzureAccount(ctx context.Context, subscription string, runner installer
 func printAzureDefaults(out io.Writer, d azureDefaults) {
 	fmt.Fprintf(out, "Subscription: %s\nAzure identity: %s\n",
 		formatAzureID(d.subscriptionName, d.subscription), formatAzureID(d.publisherName, d.publisher))
+	if d.operator.ObjectID != "" {
+		fmt.Fprintf(out, "AKS operator: %s (%s); managed Entra / Azure RBAC; local accounts disabled\n", d.operator.ObjectID, d.operator.PrincipalType)
+	}
 }
 
 func formatAzureID(name, id string) string {

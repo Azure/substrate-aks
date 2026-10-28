@@ -81,7 +81,7 @@ func TestSetupRejectsInvalidRegionBeforeSaveOrBilling(t *testing.T) {
 			if saved {
 				var out bytes.Buffer
 				if err := initialize(path, defaultSubscription, defaultPublisher, "", "203.0.113.8/32",
-					"substrate-test", "southcen", false, &out); err != nil {
+					"substrate-test", "southcen", false, nil, &out); err != nil {
 					t.Fatal(err)
 				}
 				var err error
@@ -123,7 +123,8 @@ func TestInitRejectsUnknownRegionBeforeSaving(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deploy.json")
 	var out bytes.Buffer
 	err := run(t.Context(), []string{"init", "--config", path, "--subscription", defaultSubscription,
-		"--identity-object-id", defaultPublisher, "--location", "southcen", "--api-cidr", "203.0.113.8/32"}, &out, &out)
+		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+		"--location", "southcen", "--api-cidr", "203.0.113.8/32"}, &out, &out)
 	if err == nil || !strings.Contains(err.Error(), "southcentralus") {
 		t.Fatalf("init accepted an unknown region: %v", err)
 	}

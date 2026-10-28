@@ -44,6 +44,12 @@ type AKSConfig struct {
 	APIAuthorizedCIDRs   []string         `json:"apiAuthorizedCidrs"`
 	AllowUnrestrictedAPI bool             `json:"allowUnrestrictedApi,omitempty"`
 	WorkerPool           WorkerPoolConfig `json:"workerPool"`
+	Operator             *OperatorConfig  `json:"operator,omitempty"`
+}
+
+type OperatorConfig struct {
+	ObjectID      string `json:"objectId"`
+	PrincipalType string `json:"principalType"`
 }
 
 type WorkerPoolConfig struct {
@@ -167,6 +173,16 @@ func (c Config) Validate() error {
 	}
 	if c.Azure.SnapshotReaderObjectID != "" && !uuidPattern.MatchString(c.Azure.SnapshotReaderObjectID) {
 		return errors.New("azure.snapshotReaderObjectId must be an Entra object UUID or omitted")
+	}
+	if operator := c.AKS.Operator; operator != nil {
+		if !uuidPattern.MatchString(operator.ObjectID) {
+			return errors.New("aks.operator.objectId must be an Entra object UUID, not an application/client ID")
+		}
+		switch operator.PrincipalType {
+		case "User", "ServicePrincipal", "Group":
+		default:
+			return errors.New("aks.operator.principalType must be User, ServicePrincipal, or Group")
+		}
 	}
 	u, err := url.Parse(c.Substrate.Source.Repository)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

@@ -12,6 +12,9 @@ param workerCount int = 1
 param apiAuthorizedCidrs array
 param assetPublisherObjectId string
 param snapshotReaderObjectId string = ''
+param operatorObjectId string = ''
+@allowed(['User', 'ServicePrincipal', 'Group'])
+param operatorPrincipalType string = 'User'
 param registryOnly bool = false
 
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -45,6 +48,8 @@ module resources 'resources.bicep' = if (!registryOnly) {
     apiAuthorizedCidrs: apiAuthorizedCidrs
     assetPublisherObjectId: assetPublisherObjectId
     snapshotReaderObjectId: snapshotReaderObjectId
+    operatorObjectId: operatorObjectId
+    operatorPrincipalType: operatorPrincipalType
     registryName: registry.outputs.registryName
   }
 }

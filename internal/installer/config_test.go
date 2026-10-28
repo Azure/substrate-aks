@@ -61,6 +61,10 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 		{"credentials in source URL", func(c *Config) { c.Substrate.Source.Repository = "https://user:password@example.invalid/repo" }},
 		{"missing publisher", func(c *Config) { c.Azure.AssetPublisherObjectID = "" }},
 		{"invalid snapshot reader", func(c *Config) { c.Azure.SnapshotReaderObjectID = "not-an-object-id" }},
+		{"missing operator object ID", func(c *Config) { c.AKS.Operator = &OperatorConfig{PrincipalType: "User"} }},
+		{"unsupported operator type", func(c *Config) {
+			c.AKS.Operator = &OperatorConfig{ObjectID: c.Azure.AssetPublisherObjectID, PrincipalType: "clientID"}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testConfig(t)

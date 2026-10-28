@@ -20,10 +20,14 @@ func (a App) Doctor(ctx context.Context) error {
 	}{
 		{"Azure CLI", []string{"az", "version"}},
 		{"Git", []string{"git", "--version"}},
+		{"AKS kubelogin (Azure CLI authentication)", []string{"kubelogin", "--version"}},
 		{"Azure Bicep", []string{"az", "bicep", "version"}},
 		{"Go toolchain", []string{"go", "version"}},
 		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}},
 	} {
+		if check.args[0] == "kubelogin" && a.Config.Installation.ID != "" && a.Config.AKS.Operator == nil {
+			continue
+		}
 		a.progress("Checking %s", check.name)
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		data, err := a.Runner.Run(probeCtx, Command{Args: check.args})
@@ -37,11 +41,6 @@ func (a App) Doctor(ctx context.Context) error {
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
-		}
-	}
-	if len(failures) == 0 && a.Config.Installation.ID != "" {
-		if err := a.RuntimePrerequisites(ctx); err != nil {
-			failures = append(failures, err)
 		}
 	}
 	if len(failures) == 0 && a.ContainerEngine != "" {
@@ -109,7 +108,38 @@ func (a App) Check(ctx context.Context) error {
 	if err := a.credentials(ctx); err != nil {
 		return err
 	}
+	if a.Config.AKS.Operator != nil {
+		if err := a.waitOperatorAccess(ctx); err != nil {
+			return err
+		}
+	}
 	return a.checkCluster(ctx)
+}
+
+func (a App) waitOperatorAccess(ctx context.Context) error {
+	a.progress("Waiting up to 5 minutes for the signed-in operator's cluster access; Azure RBAC grants can take time to propagate")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	for {
+		probeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+		data, err := a.kubectl(probeCtx, nil, "--request-timeout=15s", "auth", "can-i", "create", "customresourcedefinitions.apiextensions.k8s.io")
+		stop()
+		if err == nil && strings.TrimSpace(string(data)) == "yes" {
+			return nil
+		}
+		if strings.TrimSpace(string(data)) != "no" {
+			if err == nil {
+				err = fmt.Errorf("unexpected authorization response %q", strings.TrimSpace(string(data)))
+			}
+			return fmt.Errorf("checking Entra operator access; verify az login, the configured operator, tenant and API allowlist: %w", err)
+		}
+		a.progress("Operator access is not ready; retaining the denial and waiting for Azure RBAC propagation")
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("operator access was denied; verify az login matches aks.operator and its cluster-scoped RBAC grant: %w", ctx.Err())
+		case <-time.After(5 * time.Second):
+		}
+	}
 }
 
 func (a App) checkCluster(ctx context.Context) error {

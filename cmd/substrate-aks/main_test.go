@@ -21,6 +21,7 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	args := []string{"init",
 		"--subscription", "22222222-2222-4222-8222-222222222222",
 		"--asset-publisher-object-id", "33333333-3333-4333-8333-333333333333",
+		"--operator-object-id", defaultPublisher,
 		"--api-cidr", "203.0.113.8/32"}
 	var out bytes.Buffer
 	if err := run(t.Context(), args, &out, &out); err != nil {
@@ -32,6 +33,9 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	}
 	if c.Substrate.Source.Commit != installer.DefaultCommit {
 		t.Fatal("init did not select the experimental pin")
+	}
+	if c.AKS.Operator == nil || c.AKS.Operator.ObjectID != defaultPublisher || c.AKS.Operator.PrincipalType != "User" {
+		t.Fatal("new configuration did not enable the explicitly selected Entra operator")
 	}
 	first, err := os.ReadFile(path)
 	if err != nil {
@@ -66,7 +70,8 @@ esac
 		t.Fatal(err)
 	}
 	c, err := installer.LoadConfig(path)
-	if err != nil || c.Azure.SubscriptionID != defaultSubscription || c.Azure.AssetPublisherObjectID != defaultPublisher {
+	if err != nil || c.Azure.SubscriptionID != defaultSubscription || c.Azure.AssetPublisherObjectID != defaultPublisher ||
+		c.AKS.Operator == nil || c.AKS.Operator.ObjectID != defaultPublisher || c.AKS.Operator.PrincipalType != "User" {
 		t.Fatalf("init did not save Azure context defaults: %+v, %v", c.Azure, err)
 	}
 	if !strings.Contains(out.String(), "Development ("+defaultSubscription+")") ||
@@ -82,7 +87,7 @@ func TestInitAllowsUnrestrictedAPIOnlyExplicitly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deploy.json")
 	var out bytes.Buffer
 	args := []string{"init", "--config", path, "--subscription", defaultSubscription,
-		"--identity-object-id", defaultPublisher, "--allow-unrestricted-api"}
+		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher, "--allow-unrestricted-api"}
 	if err := run(t.Context(), args, &out, &out); err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Azure/substrate-aks/infra"
 )
@@ -206,6 +207,10 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	} {
 		params[key] = map[string]any{"value": value}
 	}
+	if operator := c.AKS.Operator; operator != nil {
+		params["operatorObjectId"] = map[string]any{"value": operator.ObjectID}
+		params["operatorPrincipalType"] = map[string]any{"value": operator.PrincipalType}
+	}
 	data, err := json.Marshal(map[string]any{
 		"$schema":        "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
 		"contentVersion": "1.0.0.0", "parameters": params,
@@ -329,6 +334,22 @@ func (a App) credentials(ctx context.Context) error {
 	}
 	if err := validateKubeconfig(data, a.Config.AKS.ClusterName); err != nil {
 		return err
+	}
+	if a.Config.AKS.Operator != nil {
+		a.progress("Configuring kubelogin to reuse the current Azure CLI login")
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := a.Runner.Run(probeCtx, Command{Args: []string{"kubelogin", "convert-kubeconfig", "--login", "azurecli", "--kubeconfig", path}})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("converting private AKS credentials; existing kubeconfig preserved: %w", err)
+		}
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := validateEntraKubeconfig(data, a.Config.AKS.ClusterName); err != nil {
+			return err
+		}
 	}
 	file, err = os.OpenFile(path, os.O_RDWR, 0600)
 	if err != nil {
