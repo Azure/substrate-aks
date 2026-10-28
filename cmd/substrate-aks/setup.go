@@ -68,7 +68,6 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	}
 	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
 		ui.section("Discover Azure subscription and signed-in identity")
-		ui.note("Azure account and directory probes each have a 30-second timeout. Sign in with az login first.")
 		defaults, err = discoverInstallationDefaults(ctx, o.subscription, o.publisher, o.operatorID, o.operatorType, runner)
 		if err != nil {
 			if o.yes || ctx.Err() != nil {
@@ -110,7 +109,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 				}
 			}
 		}
-		ui.note("Loading available Azure regions (up to 30 seconds).")
+		ui.note("Loading available Azure regions.")
 		regions, err := readAzureRegions(ctx, o.subscription, runner)
 		if err != nil {
 			return err
@@ -167,7 +166,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 	}
 	if defaults.subscriptionName == "" {
-		ui.note("Looking up the saved subscription name (up to 30 seconds).")
+		ui.note("Looking up the saved subscription name.")
 		account, lookupErr := readAzureAccount(ctx, c.Azure.SubscriptionID, runner)
 		if lookupErr == nil {
 			if !strings.EqualFold(account.ID, c.Azure.SubscriptionID) || account.Name == "" {

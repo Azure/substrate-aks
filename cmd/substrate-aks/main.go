@@ -172,7 +172,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		fmt.Fprintln(stderr, "Discovering Azure subscription and installation identities (30-second timeout per probe).")
+		fmt.Fprintln(stderr, "Discovering Azure subscription and installation identities.")
 		defaults, err := discoverInstallationDefaults(ctx, subscription, publisher, operatorID, operatorType, installer.ExecRunner{})
 		if err != nil {
 			return err

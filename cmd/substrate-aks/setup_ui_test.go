@@ -169,6 +169,11 @@ func TestSetupWelcomeSuppressesStandaloneInitInstructions(t *testing.T) {
 		t.Fatalf("unexpected setup result: %v", err)
 	}
 	plain := strings.Join(strings.Fields(display.String()), " ")
+	for _, unwanted := range []string{"30-second", "30 seconds", "Sign in with az login first."} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("setup leaked internal discovery details or premature sign-in advice: %s", plain)
+		}
+	}
 	for _, want := range []string{
 		"Substrate on AKS", "Configure your installation",
 		"Snapshot inspection", "Installation summary", "Before you continue",
