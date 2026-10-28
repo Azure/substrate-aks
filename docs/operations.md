@@ -66,6 +66,56 @@ an optional kube-context import and selection before printing demo next steps.
 `--yes` accepts this handoff automatically. Declining or EOF in interactive setup
 leaves your kubeconfig untouched.
 
+### macOS host setup
+
+Install Apple's command-line developer tools (`xcode-select --install`) for native
+Go/cgo builds and race-enabled tests. For runtime asset assembly, install the
+utilities used by the pinned script and make their unprefixed names available:
+
+```sh
+brew install coreutils gnu-tar zstd
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$(brew --prefix gnu-tar)/libexec/gnubin:$PATH"
+```
+
+These are additions to the prerequisites above, not a complete tool installation.
+Homebrew's GNU `readlink` and `tar` otherwise use prefixed names; installing a
+package alone does not ensure the pinned script will find the expected command.
+The export affects the current shell only. Supplied runtime assets skip assembly
+tool checks. Docker Desktop or Podman's machine must also be running for image
+publication, with Linux/amd64 build support on Apple Silicon.
+
+Two reported tooling warnings need to be distinguished from installation failures:
+
+- `ld: warning: -bind_at_load is deprecated on macOS` comes from Go's external
+  linker invocation, not installer flags. Go already contains an exact-warning
+  filter associated with [golang/go#63154](https://github.com/golang/go/issues/63154).
+  The flag supports correctness with older Apple linkers; do not remove it or
+  disable `-race` to hide the warning. A recurrence needs the actual Go and Apple
+  toolchain versions and the failing or successful command's exit status.
+- Homebrew Azure CLI can emit a Python `SyntaxWarning` for an invalid escape in
+  an SDK docstring. David's report names
+  `azure/mgmt/resource/deploymentstacks/models/_models.py`, not repository Python
+  code. The same warning class has appeared in other SDK packages
+  ([Azure/azure-cli#31789](https://github.com/Azure/azure-cli/issues/31789)); that
+  issue is not proof of a fix for this particular package. Successful installer
+  subprocesses keep stderr diagnostics separate from parsed stdout. Direct
+  `az` commands and `make bicep` still show upstream stderr. Do not globally
+  suppress Python warnings or patch the user's Homebrew environment.
+
+For a native reproduction, record:
+
+```sh
+sw_vers
+go version
+go env GOHOSTOS GOHOSTARCH CC CGO_ENABLED GOTOOLCHAIN
+xcode-select -p
+xcrun clang --version
+az version
+```
+
+Native macOS/Apple Silicon runtime assembly, image publication, and installation
+remain acceptance gates; successful Darwin cross-builds do not establish them.
+
 ## Registry and image bootstrap
 
 ```sh

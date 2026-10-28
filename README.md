@@ -28,6 +28,9 @@ providing Azure infrastructure, declarative deployment configuration, and a guid
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
 
+On macOS, also follow the [host setup notes](docs/operations.md#macos-host-setup)
+for command-line build tools and GNU-compatible runtime-asset utilities.
+
 ```sh
 git clone https://github.com/Azure/substrate-aks.git
 cd substrate-aks
