@@ -71,6 +71,10 @@ Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) fo
 identity overrides and [operations](docs/operations.md#guided-installation) for
 automation options.
 
+The [Bicep infrastructure can also be deployed directly](docs/infrastructure.md)
+without running the installer; SQL bootstrap and application installation remain
+separate steps.
+
 ## What gets installed
 
 | Component | Default |

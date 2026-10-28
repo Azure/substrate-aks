@@ -156,7 +156,7 @@ continue to use bundled PostgreSQL.
 | --- | --- |
 | `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
 | `flexible-server` | PostgreSQL 17, General Purpose `Standard_D2ads_v5`, 32 GiB, seven-day locally redundant backups, no HA |
-| `horizondb` | Preview, PostgreSQL 17, two Intel generation-1 vCores, one provisioned pool node, no HA; seven-day locally redundant backups |
+| `horizondb` | Preview, PostgreSQL 17, two Intel vCores, one replica, BestEffort placement; service-default seven-day backups |
 
 Optional `database.location` defaults to `azure.location` and applies only to
 managed backends. It can differ from AKS, with cross-region latency and transfer
@@ -186,14 +186,33 @@ in `westus3` for Flexible Server and `eastus` for HorizonDB; advertised regions
 and SKUs were not all deployable. Register `Microsoft.DBforPostgreSQL` or
 `Microsoft.HorizonDB` in the target subscription before provisioning.
 
-HorizonDB uses API `2026-10-01-preview`, with separate cluster, pool and
-authentication resources. It omits creation provenance on ordinary deployments
-and reads the service-generated cluster endpoint. Its pool requires Azure's
-regional `default-postgresql-17-provisioned` parameter group. Setup and full
-`plan`/`provision` verify that group's subscription, region and PostgreSQL
-version before provisioning; capability advertisements alone do not prove it
-exists. An unavailable group is an explicit error, not a fallback to an older
-API, another region or a customer-created parameter group.
+HorizonDB deployment uses API `2026-05-01-preview`, its implicit `DefaultPool`
+and the service-generated cluster FQDN. Full `plan`/`provision` inspect live
+installation-owned cluster metadata and supply `Create` when none exists or
+`Update` for a verified existing, successfully provisioned PostgreSQL 17 cluster
+with the expected administrator. Busy, failed, foreign or unverifiable resources
+stop deployment rather than being treated as absent. This also covers clusters
+left by partial failed deployments, without requiring successful deployment
+history. Retries reuse the Key Vault password.
+
+The reusable Bicep entrypoints expose constrained `horizonCreateMode`
+(`createMode` at the leaf), defaulting to `Create`. Direct callers explicitly
+select `Update`; the modules do not discover lifecycle state themselves.
+See [standalone infrastructure deployment](infrastructure.md) for secure
+parameter-file examples requiring no installer configuration.
+Read-only subscription capabilities still use the newer discovery API; they do
+not require its regional default parameter groups or select a CPU generation.
+Existing new-API installations are not an automatic migration path.
+
+**Acceptance:** the selected legacy API passed a fresh East US installation,
+verified TLS, standalone Bicep deployment, same-config Update and durable counter
+continuity across reprovisioning. The first cold actor activation timed out;
+the exact counter sequence passed after activation readiness.
+Japan East and Korea Central tests of `2026-10-01-preview` provisioned
+infrastructure but failed strict TLS because the advertised writable hostnames
+did not match the service certificates. This return to a fixed legacy API is
+not an automatic fallback on deployment failure.
+See [operations](operations.md#live-acceptance-and-limitations).
 
 Managed modes provision the database in the installation's owned resource group,
 plus an AKS cluster identity and a static Standard egress public IP. Database

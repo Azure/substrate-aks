@@ -151,7 +151,7 @@ func ValidateDatabaseRegion(ctx context.Context, runner Runner, subscription, lo
 func (a App) CheckDatabaseRegion(ctx context.Context) error {
 	availabilityErr := ValidateDatabaseRegion(ctx, a.Runner, a.Config.Azure.SubscriptionID, a.Config.Azure.Location, a.Config.Database)
 	if availabilityErr == nil {
-		return a.checkHorizonParameterGroup(ctx)
+		return nil
 	}
 	if !errors.Is(availabilityErr, errDatabaseRegionUnavailable) {
 		return availabilityErr
@@ -165,7 +165,7 @@ func (a App) CheckDatabaseRegion(ctx context.Context) error {
 	}
 	apiVersion := "2025-08-01"
 	if a.Config.Database.Backend == DatabaseHorizon {
-		apiVersion = "2026-10-01-preview"
+		apiVersion = "2026-05-01-preview"
 	}
 	data, err := a.az(ctx, "resource", "show", "--ids", i.Database.ResourceID, "--api-version", apiVersion,
 		"--query", "{id:id,location:location,tags:tags}")
@@ -186,30 +186,6 @@ func (a App) CheckDatabaseRegion(ctx context.Context) error {
 	}
 	a.progress("Warning: Azure no longer advertises this database profile; continuing with the verified existing %s database in %s. New deployments may still be restricted",
 		a.Config.Database.Backend, a.Config.DatabaseLocation())
-	return a.checkHorizonParameterGroup(ctx)
-}
-
-func (a App) checkHorizonParameterGroup(ctx context.Context) error {
-	if a.Config.Database.Backend != DatabaseHorizon {
-		return nil
-	}
-	id := fmt.Sprintf("/subscriptions/%s/providers/Microsoft.HorizonDb/locations/%s/parameterGroups/default-postgresql-17-provisioned",
-		a.Config.Azure.SubscriptionID, a.Config.DatabaseLocation())
-	data, err := a.az(ctx, "rest", "--method", "get", "--url",
-		"https://management.azure.com"+id+"?api-version=2026-10-01-preview", "--query", "{id:id,version:properties.postgreSqlVersion}")
-	if err != nil {
-		return fmt.Errorf("HorizonDB API 2026-10-01-preview requires the service-provided PostgreSQL 17 default parameter group in %s; verify Azure service availability before provisioning: %w", a.Config.DatabaseLocation(), err)
-	}
-	var group struct {
-		ID      string `json:"id"`
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(data, &group); err != nil {
-		return fmt.Errorf("reading HorizonDB default parameter group: %w", err)
-	}
-	if !strings.EqualFold(group.ID, id) || group.Version != "17" {
-		return errors.New("HorizonDB default parameter group is missing or inconsistent with the subscription, region or PostgreSQL version; refusing to provision")
-	}
 	return nil
 }
 
@@ -278,8 +254,7 @@ func validateHorizonCapabilities(data []byte, location string) error {
 				Processors []struct {
 					databaseCapability
 					Generations []struct {
-						Generation int `json:"computeGeneration"`
-						Models     []struct {
+						Models []struct {
 							Type  string `json:"type"`
 							Sizes []struct {
 								VCores int `json:"vCores"`
@@ -314,9 +289,6 @@ func validateHorizonCapabilities(data []byte, location string) error {
 				continue
 			}
 			for _, generation := range processor.Generations {
-				if generation.Generation != 1 {
-					continue
-				}
 				for _, model := range generation.Models {
 					if model.Type != "Provisioned" {
 						continue
@@ -330,5 +302,5 @@ func validateHorizonCapabilities(data []byte, location string) error {
 			}
 		}
 	}
-	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 Intel generation-1 provisioned two-vCore profile", errDatabaseRegionUnavailable)
+	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 Intel provisioned two-vCore profile", errDatabaseRegionUnavailable)
 }

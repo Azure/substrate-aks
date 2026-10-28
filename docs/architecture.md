@@ -68,12 +68,14 @@ only it is allowed through the database firewall. The cluster's user-assigned
 identity receives Network Contributor on that IP before AKS creation, avoiding
 a dependency cycle with a system-assigned cluster identity.
 
-HorizonDB API `2026-10-01-preview` separates cluster version/network/backup,
-password and Entra authentication, and provisioned pool compute/HA settings.
-The pool references the service-provided regional PostgreSQL 17 parameter group;
-a metadata-only preflight rejects missing or inconsistent groups. The connection
-host comes from the read-only cluster-scoped endpoint, not a constructed hostname
-or a legacy cluster property.
+HorizonDB deployment uses API `2026-05-01-preview`, with compute and password
+authentication on the cluster and an implicit `DefaultPool` for its firewall.
+The host comes from the cluster's service-generated FQDN. A constrained
+`horizonCreateMode` parameter flows from `main.bicep` through `resources.bicep`
+to the leaf's `createMode`. The installer selects Create/Update using live
+owned-cluster metadata, including resources left by partial deployments.
+The Bicep modules themselves perform no installer-specific state discovery:
+[direct callers](infrastructure.md) supply the same parameters independently.
 
 Each full infrastructure deployment has a unique installation-scoped attempt
 name. Resource discovery selects the latest successful full attempt in Azure,

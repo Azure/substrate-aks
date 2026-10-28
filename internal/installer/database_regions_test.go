@@ -36,12 +36,6 @@ func databaseRegionReply(backend DatabaseBackend) reply {
 	return reply{contains: "Microsoft.HorizonDB/locations/eastus/capabilities?api-version=2026-10-01-preview", output: horizonCapabilitiesJSON}
 }
 
-func horizonParameterGroupReply(c Config) reply {
-	id := "/subscriptions/" + c.Azure.SubscriptionID + "/providers/Microsoft.HorizonDb/locations/" +
-		c.DatabaseLocation() + "/parameterGroups/default-postgresql-17-provisioned"
-	return reply{contains: id + "?api-version=2026-10-01-preview", output: `{"id":"` + id + `","version":"17"}`}
-}
-
 // workspaceHasState reports whether anything was written in the installation
 // directory, which exists before any command runs.
 func workspaceHasState(t *testing.T, c Config) bool {
@@ -54,11 +48,7 @@ func workspaceHasState(t *testing.T, c Config) bool {
 }
 
 func databasePreflightReplies(c Config) []reply {
-	replies := []reply{databaseRegionReply(c.Database.Backend)}
-	if c.Database.Backend == DatabaseHorizon {
-		replies = append(replies, horizonParameterGroupReply(c))
-	}
-	return replies
+	return []reply{databaseRegionReply(c.Database.Backend)}
 }
 
 func TestFlexibleDatabaseRegionCapabilities(t *testing.T) {
@@ -95,7 +85,7 @@ func TestHorizonDatabaseRegionCapabilities(t *testing.T) {
 		{"wrong region", strings.ReplaceAll(horizonCapabilitiesJSON, `"eastus"`, `"westus3"`), "required PostgreSQL 17"},
 		{"no PostgreSQL 17", strings.ReplaceAll(horizonCapabilitiesJSON, `"17"`, `"18"`), "required PostgreSQL 17"},
 		{"wrong processor", strings.ReplaceAll(horizonCapabilitiesJSON, `"Intel"`, `"AMD"`), "required PostgreSQL 17"},
-		{"wrong generation", strings.ReplaceAll(horizonCapabilitiesJSON, `"computeGeneration":1`, `"computeGeneration":2`), "required PostgreSQL 17"},
+		{"service-selected generation", strings.ReplaceAll(horizonCapabilitiesJSON, `"computeGeneration":1`, `"computeGeneration":2`), ""},
 		{"wrong model", strings.ReplaceAll(horizonCapabilitiesJSON, `"Provisioned"`, `"Serverless"`), "required PostgreSQL 17"},
 		{"wrong size", strings.ReplaceAll(horizonCapabilitiesJSON, `"vCores":2`, `"vCores":4`), "required PostgreSQL 17"},
 		{"missing capabilities", `{}`, "reading HorizonDB"},
@@ -165,41 +155,6 @@ func TestDatabaseRegionFailureStopsBeforeProvisioning(t *testing.T) {
 	}
 }
 
-func TestHorizonParameterGroupPreflightStopsBeforeProvisioning(t *testing.T) {
-	for _, whatIf := range []bool{false, true} {
-		for _, scenario := range []string{"unavailable", "wrong subscription", "wrong version", "null", "malformed"} {
-			t.Run(scenario+map[bool]string{false: "/provision", true: "/preview"}[whatIf], func(t *testing.T) {
-				c, _ := managedTestConfig(t, DatabaseHorizon)
-				group := horizonParameterGroupReply(c)
-				unavailable := errors.New("ParameterGroupNotFound")
-				switch scenario {
-				case "unavailable":
-					group.err = unavailable
-				case "wrong subscription":
-					group.output = strings.ReplaceAll(group.output, c.Azure.SubscriptionID, "another-subscription")
-				case "wrong version":
-					group.output = strings.ReplaceAll(group.output, `"version":"17"`, `"version":"18"`)
-				case "null":
-					group.output = "null"
-				case "malformed":
-					group.output = "{"
-				}
-				r := script(t, accountReply(c), targetReply(), databaseRegionReply(DatabaseHorizon), group)
-				err := (App{Config: c, Runner: r}).Provision(t.Context(), whatIf)
-				if err == nil || !strings.Contains(err.Error(), "parameter group") {
-					t.Fatalf("unusable default parameter group reached provisioning: %v", err)
-				}
-				if scenario == "unavailable" && !errors.Is(err, unavailable) {
-					t.Fatalf("default group access error was lost: %v", err)
-				}
-				if workspaceHasState(t, c) {
-					t.Fatal("failed parameter group preflight created installation state")
-				}
-			})
-		}
-	}
-}
-
 func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T) {
 	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
 		for _, scenario := range []string{"existing", "absent group", "unowned group", "missing outputs",
@@ -247,7 +202,7 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 							}
 							apiVersion := "2025-08-01"
 							if backend == DatabaseHorizon {
-								apiVersion = "2026-10-01-preview"
+								apiVersion = "2026-05-01-preview"
 							}
 							response := reply{contains: "resource show --ids " + db.ResourceID + " --api-version " + apiVersion, output: string(resource)}
 							if scenario == "missing resource" {
@@ -256,9 +211,6 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 								response.output = "{"
 							}
 							replies = append(replies, response)
-							if scenario == "existing" && backend == DatabaseHorizon {
-								replies = append(replies, horizonParameterGroupReply(c))
-							}
 						}
 					}
 				}
@@ -315,11 +267,11 @@ func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
 				replies := []reply{accountReply(c), targetReply(), capability, {contains: "group exists", output: "true"},
 					{contains: "group show", output: string(group)}, {contains: "deployment sub list", output: string(outputs)},
 					{contains: "resource show --ids " + db.ResourceID, output: string(resource)}}
-				if backend == DatabaseHorizon {
-					replies = append(replies, horizonParameterGroupReply(c))
-				}
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)},
 					reply{contains: "aks list", output: "[]"})
+				if backend == DatabaseHorizon {
+					replies = append(replies, horizonExistingReplies(t, c, db)...)
+				}
 				action := "create"
 				if whatIf {
 					action = "what-if"
