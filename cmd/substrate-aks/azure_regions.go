@@ -12,6 +12,8 @@ import (
 )
 
 func readAzureRegions(ctx context.Context, subscription string, runner installer.Runner) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
 	data, err := runner.Run(ctx, installer.Command{Args: []string{
 		"az", "rest", "--method", "get",
 		"--url", "https://management.azure.com/subscriptions/" + subscription + "/locations?api-version=2022-12-01",

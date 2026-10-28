@@ -23,7 +23,7 @@ providing Azure infrastructure, declarative deployment configuration, and a guid
 | Go 1.27.3+ and Git | Allow automatic toolchain download or install a current supported security release |
 | Azure CLI | Authenticated to the target subscription |
 | `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
-| Docker with buildx or Podman | Setup offers a choice when both work; `--yes` prefers Docker/buildx. Image builds also need `bash`, `curl`, `tar`, and zstd support |
+| Docker with buildx or Podman | Setup offers a choice when both work; `--yes` prefers Docker/buildx. Runtime assembly also needs `bash`, `curl`, `tar --zstd`, `zstd`, `readlink -f`, and `sha256sum`; supplied assets skip these checks |
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
 

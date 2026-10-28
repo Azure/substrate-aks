@@ -37,6 +37,9 @@ func TestCLIQuietAndVerboseDiagnostics(t *testing.T) {
 			fakeTool(t, bin, "az", "printf 'bicep-diagnostic-only\\n'\n")
 			fakeTool(t, bin, "git", "exit 0\n")
 			fakeTool(t, bin, "go", "printf 'go-diagnostic-only\\n'\n")
+			for _, tool := range []string{"bash", "curl", "tar", "zstd", "readlink", "sha256sum", "kubelogin"} {
+				fakeTool(t, bin, tool, "exit 0")
+			}
 			fakeTool(t, bin, "kubectl", `printf '{"clientVersion":{"major":"1","minor":"37"},"extra":"kubectl-diagnostic-only"}'`+"\n")
 			t.Setenv("PATH", bin)
 			args := []string{"doctor", "--config", path}

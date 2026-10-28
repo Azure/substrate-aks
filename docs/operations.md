@@ -23,7 +23,8 @@ Install the [quickstart prerequisites](../README.md#quickstart), including Bicep
 (also satisfying the pinned upstream source's Go 1.27 requirement), installed
 explicitly or through automatic toolchain selection. Default image builds require
 Docker with buildx or Podman,
-`bash`, `curl`, `tar`, and zstd support.
+`bash`, `curl`, `tar` with `--zstd`, `zstd`, `readlink -f`, and `sha256sum`.
+Supplying the four matching runtime assets skips assembly-tool checks.
 
 ```sh
 make build
@@ -67,7 +68,15 @@ bin/substrate-aks provision --registry-only
 bin/substrate-aks images
 ```
 
-`doctor` checks local tools without Azure resource calls. `plan` runs real
+`doctor` works without a configuration and checks local tools without Azure resource
+calls. Use `doctor --config deploy.json` to also check mode-specific assembly
+prerequisites or supplied asset files. Setup checks local tools before Azure
+discovery and applicable runtime prerequisites before billing confirmation.
+Account, directory, region, and local-tool probes have visible progress and
+30-second deadlines. Supplied files must be nonempty regular files; their exact
+pinned checksums are still verified during source preparation.
+
+`plan` runs real
 subscription-scope Bicep what-if; it requires Azure access but submits no resource
 deployment.
 
@@ -85,7 +94,7 @@ picker and never falls back to another engine; `--yes` also skips the picker and
 prefers working Docker/buildx, then Podman. Reusing configured images requires no
 builder check or choice. Probes are bounded, and the summary shows the selected
 engine, which stays pinned through subsequent stages.
-`doctor --container-engine=auto` runs the same local check
+`doctor --config deploy.json --container-engine=auto` runs the same local check
 without Azure resource calls. The choice is not saved in deployment configuration.
 
 On Linux, Podman can run rootless; on macOS, its machine must be running.
@@ -318,10 +327,16 @@ The CLI uses an explicit subscription/context, separate kubeconfig, and
 per-installation lock. Inherited Substrate/GCP/S3 settings that could redirect
 operations are removed.
 
-**Failures retain resources.** Ctrl-C does not roll back Azure's server-side
-deployment. Resolve the error and rerun setup with the same config; already
-recorded images are verified before reuse. Keep the config and installation ID
-unchanged.
+**Failures retain resources.** Interactive setup offers to retry the failed
+command with the same settings; declining exits. Cancellation and `--yes` never
+enter a retry loop. Failure instructions print the exact stage command and a
+separate full-reconciliation command, preserving the selected builder, demo,
+verbosity, and accessibility options and the invoked executable path.
+
+Ctrl-C does not roll back Azure's server-side deployment. A new setup process
+starts from the beginning with the same config, checking ownership and verifying
+recorded images before reuse; it is not a durable stage resume. Keep the config
+and installation ID unchanged.
 Do not discard the config while resources from a retry may still exist.
 
 The first Ctrl-C cancels work and allows bounded cleanup. A second Ctrl-C

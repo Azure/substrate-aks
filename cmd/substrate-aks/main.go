@@ -183,6 +183,23 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			containerEngine: containerEngine,
 		}, os.Stdin, out, stderr, run)
 	}
+	if command == "doctor" {
+		explicitConfig := false
+		fs.Visit(func(f *flag.Flag) { explicitConfig = explicitConfig || f.Name == "config" })
+		if !explicitConfig {
+			if containerEngine != "" {
+				return errors.New("doctor --container-engine needs --config for an installation-specific builder probe")
+			}
+			p := newProgress(stderr, io.Discard, "Local prerequisites", false)
+			defer p.stop()
+			a := installer.App{Runner: installer.ExecRunner{}, Progress: p.step}
+			if err := a.Doctor(ctx); err != nil {
+				return err
+			}
+			p.complete("Local prerequisites complete.")
+			return nil
+		}
+	}
 	c, err := installer.LoadConfig(*configPath)
 	if err != nil {
 		return fmt.Errorf("reading deployment configuration %s: %w", *configPath, err)
@@ -265,7 +282,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 				return err
 			}
 			p.pause()
-			fmt.Fprintf(out, "Cleared saved image references in %s after confirming resource-group absence. Runtime asset settings are unchanged.\nNext: substrate-aks setup --config %s\n", *configPath, shellQuote(*configPath))
+			fmt.Fprintf(out, "Cleared saved image references in %s after confirming resource-group absence. Runtime asset settings are unchanged.\nNext: %s\n", *configPath, cliCommand("setup", "--config", *configPath))
 			return nil
 		}
 		p.info("Builds and downloads can take several minutes. Failed runs may leave partial images in ACR.")
@@ -347,6 +364,6 @@ func initialize(path, subscription, publisher, reader, cidr, name, location stri
 		return err
 	}
 	printAPIAccess(out, c.AKS)
-	fmt.Fprintf(out, "Created %s. No Azure resources were created.\nKeep installation.id unchanged for retries and teardown.\nNext: substrate-aks setup --config %s\n", path, shellQuote(path))
+	fmt.Fprintf(out, "Created %s. No Azure resources were created.\nKeep installation.id unchanged for retries and teardown.\nNext: %s\n", path, cliCommand("setup", "--config", path))
 	return nil
 }

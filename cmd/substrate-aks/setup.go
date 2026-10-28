@@ -40,7 +40,25 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	}
 	var defaults azureDefaults
 	created := false
+	_, statErr := os.Stat(o.path)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if statErr == nil && o.configFlags {
+		return errors.New("setup configuration flags only create a new file; edit the existing deploy.json instead of overriding its settings")
+	}
+	local := o.local
+	if local == nil {
+		local = installer.ExecRunner{}
+	}
+	ui.section("1. Check local prerequisites")
+	preflight := installer.App{Runner: local, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
+	if err := preflight.Doctor(ctx); err != nil {
+		return fmt.Errorf("local prerequisites failed before Azure discovery or provisioning: %w", err)
+	}
 	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
+		ui.section("Discover Azure subscription and signed-in identity")
+		ui.note("Azure account and directory probes each have a 30-second timeout. Sign in with az login first.")
 		defaults, err = discoverAzureDefaults(ctx, o.subscription, o.publisher, runner)
 		if err != nil {
 			if o.yes || ctx.Err() != nil {
@@ -80,6 +98,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 				}
 			}
 		}
+		ui.note("Loading available Azure regions (up to 30 seconds).")
 		regions, err := readAzureRegions(ctx, o.subscription, runner)
 		if err != nil {
 			return err
@@ -125,6 +144,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 	}
 	if !created {
+		ui.section("Validate saved Azure region")
 		regions, err := readAzureRegions(ctx, c.Azure.SubscriptionID, runner)
 		if err != nil {
 			return err
@@ -134,6 +154,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 	}
 	if defaults.subscriptionName == "" {
+		ui.note("Looking up the saved subscription name (up to 30 seconds).")
 		account, lookupErr := readAzureAccount(ctx, c.Azure.SubscriptionID, runner)
 		if lookupErr == nil {
 			if !strings.EqualFold(account.ID, c.Azure.SubscriptionID) || account.Name == "" {
@@ -150,12 +171,12 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			ui.note("The saved subscription GUID is shown below; the deployment target has not changed.")
 		}
 	}
+	preflight.Config = c
+	if err := preflight.RuntimePrerequisites(ctx); err != nil {
+		return fmt.Errorf("runtime prerequisites failed before provisioning: %w", err)
+	}
 	engineLabel := "Not needed (reuse configured images)"
 	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		local := o.local
-		if local == nil {
-			local = installer.ExecRunner{}
-		}
 		ui.section("Image builder")
 		builder := installer.App{Config: c, Runner: local, ContainerEngine: o.containerEngine,
 			Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
@@ -204,14 +225,24 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			}
 		}
 	}
-	stopped := func(label string, err error) error {
-		return fmt.Errorf("setup stopped at %s: %w\n\nResources are retained. Retry: substrate-aks setup --config %s\nTeardown: substrate-aks destroy --config %s --confirm-delete %s",
-			label, err, shellQuote(o.path), shellQuote(o.path), c.Azure.ResourceGroup)
+	stopped := func(label string, args []string, err error) error {
+		reconcile := []string{"setup", "--config", o.path}
+		if o.containerEngine != "" {
+			reconcile = append(reconcile, "--container-engine", o.containerEngine)
+		}
+		for _, option := range []struct {
+			enabled bool
+			flag    string
+		}{{o.withDemo, "--with-demo"}, {o.verbose, "--verbose"}, {o.accessible, "--accessible"}, {o.yes, "--yes"}} {
+			if option.enabled {
+				reconcile = append(reconcile, option.flag)
+			}
+		}
+		return fmt.Errorf("setup stopped at %s: %w\n\nResources are retained.\nRetry failed stage: %s\nFull reconciliation (starts from the beginning, reusing configured images): %s\nTeardown: %s",
+			label, err, cliCommand(args...), cliCommand(reconcile...),
+			cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
 	}
 	stage := func(label, command string, flags ...string) error {
-		if err := ctx.Err(); err != nil {
-			return stopped(label, err)
-		}
 		ui.section(label)
 		args := append([]string{command, "--config", o.path}, flags...)
 		if c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
@@ -220,22 +251,33 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		if o.verbose {
 			args = append(args, "--verbose")
 		}
-		if err := execute(ctx, args, out, stderr); err != nil {
-			return stopped(label, err)
+		for {
+			if err := ctx.Err(); err != nil {
+				return stopped(label, args, err)
+			}
+			err := execute(ctx, args, out, stderr)
+			if err == nil {
+				break
+			}
+			if o.yes || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return stopped(label, args, err)
+			}
+			ui.warning(err.Error())
+			retry, promptErr := prompt.confirm(ctx, "Retry this stage with the same settings?", false)
+			if promptErr != nil || !retry {
+				return stopped(label, args, errors.Join(err, promptErr))
+			}
 		}
 		if command == "plan" && !o.yes {
 			accepted, err := prompt.confirm(ctx, "Apply these planned changes?", false)
 			if err != nil {
-				return stopped(label, err)
+				return stopped(label, args, err)
 			}
 			if !accepted {
-				return stopped(label, errors.New("no deployment was submitted for this stage"))
+				return stopped(label, args, errors.New("no deployment was submitted for this stage"))
 			}
 		}
 		return nil
-	}
-	if err := stage("1. Check local prerequisites", "doctor"); err != nil {
-		return err
 	}
 	if c.Substrate.Images == (installer.ImagesConfig{}) {
 		for _, s := range []struct {
@@ -286,12 +328,20 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		fmt.Fprintln(out, "# After recording the counters, suspend synchronously, then repeat the POST:")
 		fmt.Fprintln(out, "kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync")
 	}
-	fmt.Fprintf(out, "\n# Delete all resources and persistent data when finished:\nsubstrate-aks destroy --config %s --confirm-delete %s\n", shellQuote(o.path), c.Azure.ResourceGroup)
+	fmt.Fprintf(out, "\n# Delete all resources and persistent data when finished:\n%s\n", cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
 	return nil
 }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func cliCommand(args ...string) string {
+	parts := []string{shellQuote(os.Args[0])}
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 func printClientSetup(out io.Writer, c installer.ClientSetup) error {

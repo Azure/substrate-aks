@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 )
@@ -20,6 +21,8 @@ type azureAccount struct {
 	ID, Name, TenantID string
 	User               struct{ Name, Type string }
 }
+
+const discoveryTimeout = 30 * time.Second
 
 func discoverAzureDefaults(ctx context.Context, subscription, publisher string, runner installer.Runner) (azureDefaults, error) {
 	d := azureDefaults{subscription: subscription, publisher: publisher}
@@ -64,7 +67,9 @@ func discoverAzureDefaults(ctx context.Context, subscription, publisher string, 
 		return d, fmt.Errorf("cannot discover the Azure identity for CLI identity type %q; provide --identity-object-id with its Entra object ID", account.User.Type)
 	}
 	identityArgs = append(identityArgs, "--only-show-errors", "--output", "json")
-	data, err := runner.Run(ctx, installer.Command{Args: identityArgs})
+	probeCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
+	data, err := runner.Run(probeCtx, installer.Command{Args: identityArgs})
 	if err != nil {
 		return d, fmt.Errorf("discovering Azure identity Entra object ID (directory access may be restricted; provide --identity-object-id explicitly): %w", err)
 	}
@@ -80,6 +85,8 @@ func discoverAzureDefaults(ctx context.Context, subscription, publisher string, 
 }
 
 func readAzureAccount(ctx context.Context, subscription string, runner installer.Runner) (azureAccount, error) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
 	var account azureAccount
 	args := []string{"az", "account", "show", "--only-show-errors", "--output", "json"}
 	if subscription != "" {

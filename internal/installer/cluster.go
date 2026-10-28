@@ -6,39 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func (a App) Doctor(ctx context.Context) error {
-	a.progress("Checking Azure CLI, Git, Go and kubectl are installed")
 	var failures []error
-	for _, tool := range []string{"az", "git", "go", "kubectl"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			failures = append(failures, fmt.Errorf("install %s: %w", tool, err))
-		}
-	}
-	if len(failures) > 0 {
-		return errors.Join(failures...)
-	}
 	for _, check := range []struct {
 		name string
 		args []string
 	}{
+		{"Azure CLI", []string{"az", "version"}},
+		{"Git", []string{"git", "--version"}},
 		{"Azure Bicep", []string{"az", "bicep", "version"}},
 		{"Go toolchain", []string{"go", "version"}},
 		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}},
 	} {
 		a.progress("Checking %s", check.name)
-		data, err := a.Runner.Run(ctx, Command{Args: check.args})
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		data, err := a.Runner.Run(probeCtx, Command{Args: check.args})
+		cancel()
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", check.name, err))
 		} else if check.args[0] == "kubectl" {
 			if err := checkKubectlVersion(data); err != nil {
 				failures = append(failures, err)
 			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	if len(failures) == 0 && a.Config.Installation.ID != "" {
+		if err := a.RuntimePrerequisites(ctx); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	if len(failures) == 0 && a.ContainerEngine != "" {
@@ -47,6 +50,39 @@ func (a App) Doctor(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (a App) RuntimePrerequisites(ctx context.Context) error {
+	if dir := a.Config.Substrate.Runtime.AssetsDir; dir != "" {
+		a.progress("Checking supplied amd64 runtime asset files (pinned checksums are verified during preparation)")
+		for _, name := range []string{"cloud-hypervisor", "virtiofsd", "vmlinux", "rootfs.img"} {
+			path := filepath.Join(dir, name)
+			info, err := os.Lstat(path)
+			if err != nil {
+				return fmt.Errorf("checking supplied runtime asset %s: %w", path, err)
+			}
+			if !info.Mode().IsRegular() || info.Size() == 0 {
+				return fmt.Errorf("runtime asset %s must be a nonempty regular file, not a symlink or device", path)
+			}
+		}
+		return nil
+	}
+	if a.Config.Substrate.Images != (ImagesConfig{}) {
+		return errors.New("prebuilt images require substrate.runtime.assetsDir with the four matching amd64 runtime assets")
+	}
+	for _, args := range [][]string{
+		{"bash", "--version"}, {"curl", "--version"}, {"tar", "--version"},
+		{"zstd", "--version"}, {"readlink", "-f", "."}, {"sha256sum", "--version"},
+	} {
+		a.progress("Checking runtime asset assembly prerequisite %s", args[0])
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := a.Runner.Run(probeCtx, Command{Args: args})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("runtime asset assembly requires %s; install the tool or supply substrate.runtime.assetsDir: %w", args[0], err)
+		}
+	}
+	return nil
 }
 
 func checkKubectlVersion(data []byte) error {

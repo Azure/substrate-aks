@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,7 +45,28 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 			}
 		})
 	}
+	builder := o.local
+	o.local = defaultsRunner(func(ctx context.Context, c installer.Command) ([]byte, error) {
+		if c.Args[0] == "docker" || c.Args[0] == "podman" {
+			return builder.Run(ctx, c)
+		}
+		if c.Args[0] == "kubectl" {
+			return []byte(`{"clientVersion":{"major":"1","minor":"37"}}`), nil
+		}
+		return nil, nil
+	})
 	return setup(ctx, o, in, out, stderr, execute)
+}
+
+func testRuntimeAssets(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"cloud-hypervisor", "virtiofsd", "vmlinux", "rootfs.img"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("asset"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
@@ -78,14 +100,14 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 				if !errors.Is(err, want) || !strings.Contains(err.Error(), "Resources are retained") {
 					t.Fatalf("stage failure lost retry/cleanup guidance: %v", err)
 				}
-				if strings.Join(commands, ",") != "doctor,plan,provision,images" {
+				if strings.Join(commands, ",") != "plan,provision,images" {
 					t.Fatalf("setup continued after failure: %v", commands)
 				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if strings.Join(commands, ",") != "doctor,plan,provision,images,images,plan,provision,check,prepare,install,status,demo,client" {
+				if strings.Join(commands, ",") != "plan,provision,images,images,plan,provision,check,prepare,install,status,demo,client" {
 					t.Fatalf("setup lost a required stage or order: %v", commands)
 				}
 				if publications != 1 || imageChecks != 1 {
@@ -323,9 +345,9 @@ func TestSetupDeclinesPlannedChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name, answers, commands string
 	}{
-		{"registry preview", "yes\nno\nno\n", "doctor,plan"},
-		{"full preview", "yes\nno\nyes\nno\n", "doctor,plan,provision,images,images,plan"},
-		{"interrupted full preview", "yes\nno\nyes\n", "doctor,plan,provision,images,images,plan"},
+		{"registry preview", "yes\nno\nno\n", "plan"},
+		{"full preview", "yes\nno\nyes\nno\n", "plan,provision,images,images,plan"},
+		{"interrupted full preview", "yes\nno\nyes\n", "plan,provision,images,images,plan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := testCLIConfig(t)
@@ -401,6 +423,7 @@ func TestSetupReusesConfiguredImagesOnRetry(t *testing.T) {
 		Repository: "example.invalid/substrate", Tag: "test",
 		Plugin: "example.invalid/plugin@sha256:" + strings.Repeat("a", 64),
 	}
+	c.Substrate.Runtime.AssetsDir = testRuntimeAssets(t)
 	data, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +453,7 @@ func TestSetupReusesConfiguredImagesOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(commands, ",") != "doctor,images,plan,provision,check,prepare,install,status,client" {
+	if strings.Join(commands, ",") != "images,plan,provision,check,prepare,install,status,client" {
 		t.Fatalf("retry rebuilt images or changed the requested demo selection: %v", commands)
 	}
 	after, err := os.ReadFile(path)
@@ -449,6 +472,7 @@ func TestSetupRejectsStaleImagesBeforeProvisioning(t *testing.T) {
 		Repository: "substratetest123.azurecr.io/substrate", Tag: "deleted-build",
 		Plugin: "substratetest123.azurecr.io/plugin@sha256:" + strings.Repeat("a", 64),
 	}
+	c.Substrate.Runtime.AssetsDir = testRuntimeAssets(t)
 	data, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -470,7 +494,7 @@ func TestSetupRejectsStaleImagesBeforeProvisioning(t *testing.T) {
 	if !errors.Is(err, missing) {
 		t.Fatalf("setup trusted saved references without checking publication: commands=%v, error=%v", commands, err)
 	}
-	if strings.Join(commands, ",") != "doctor,images" {
+	if strings.Join(commands, ",") != "images" {
 		t.Fatalf("stale images reached infrastructure or installation work: %v", commands)
 	}
 	after, err := os.ReadFile(path)
