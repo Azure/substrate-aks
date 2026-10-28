@@ -4,7 +4,7 @@
 
 ## Create a configuration
 
-Run examples from the repository root:
+Run from the repository root:
 
 ```sh
 make build
@@ -12,31 +12,31 @@ az login
 bin/substrate-aks init
 ```
 
-`init` creates `deploy.json` without Azure resources and never overwrites an
-existing file. Guided [`setup`](operations.md#guided-installation) can create the
-same configuration interactively.
+`init` creates `deploy.json` without creating Azure resources or overwriting an
+existing file. You can also create it through
+[guided setup](operations.md#guided-installation).
 
-| Setting | Default or behavior |
+| Setting | Default |
 | --- | --- |
 | Subscription | Active Azure CLI subscription |
-| Upload identity | Signed-in Azure identity's Entra object ID |
-| Kubernetes operator | Signed-in identity, independently of upload overrides; managed Entra / Azure RBAC; local accounts disabled |
+| Upload identity | Signed-in identity |
+| Kubernetes operator | Signed-in identity, with managed Entra and Azure RBAC |
 | Resource group / cluster | `substrate-dev` |
 | Region | `eastus2` |
 | AKS | Kubernetes 1.37; one system node and one microVM worker |
-| Worker pool | `Standard_D4s_v3`, count 1 |
-| AKS API access | Detected public IPv4 `/32` |
-| Snapshot inspection | No operator access unless explicitly requested |
+| MicroVM worker | `Standard_D4s_v3`, count 1 |
+| AKS API access | Your detected public IPv4 address, restricted to `/32` |
+| Snapshot inspection | Disabled unless requested |
 
-The file is strict JSON: unknown fields and trailing documents are errors.
-Relative filesystem paths resolve against the configuration file's directory.
-Every lifecycle command accepts `--config PATH`.
+Every lifecycle command accepts `--config PATH`. Relative paths in the file
+resolve from its directory. Unknown JSON fields and extra JSON documents are
+rejected.
 
 ### Example structure
 
-`init` generates the installation ID and populates account/network values.
-The placeholders below illustrate the structure; this is not a ready-to-run
-configuration. Image/runtime fields are populated by `images`.
+`init` fills in the installation ID, account, and network values. `images` fills
+in the image and runtime settings. This example shows the structure; the
+placeholders are not valid deployment values.
 
 ```json
 {
@@ -82,191 +82,157 @@ configuration. Image/runtime fields are populated by `images`.
 
 ### Saved settings are authoritative
 
-Setup does not replace a saved subscription, identity, or API allowlist with
-discovered defaults or configuration flags. Changing the active Azure account
-does not retarget an existing installation. Its subscription name is looked up
-for display only; lookup failure warns and retains the saved GUID.
+Setup uses saved settings, not newly discovered defaults or configuration flags.
+Changing your active Azure account does not retarget an existing installation.
 
-Edit supported settings in the existing file, but **keep the installation ID,
-subscription, resource group, cluster name, and location unchanged for retries
-and teardown**.
-Before either provisioning mode or preview, the CLI lists groups with this
-installation's tag in the configured subscription. Another matching group
-blocks provisioning; it is not adopted, deleted, or replaced in saved outputs.
-AKS propagates this tag to its managed node resource group. That group does not
-block retries when its Azure `managedBy` ID matches the exact cluster in the
-configured subscription and resource group, and the tagged main group still
-exists. An orphaned node group still blocks reuse and image-reference reset.
-If the cluster ID differs, restore the original `aks.clusterName` and
-`azure.resourceGroup`. If only the node group remains, wait for an in-progress
-teardown to finish; if it persists, inspect incomplete teardown or changed
-ownership tags rather than creating a second installation.
-Use a new configuration for a separate installation.
+**Keep the installation ID, subscription, resource group, cluster name, and
+location unchanged for retries and teardown.** Use a new config for another
+installation.
 
-Target discovery reads the native `az group list` JSON, including top-level
-`tags` and `managedBy`, following Azure's
-[ResourceGroup schema](https://learn.microsoft.com/en-us/rest/api/resources/resource-groups/list?view=rest-resources-2021-04-01#resourcegroup).
-Regression fixtures exercise this response shape without a CLI query projection.
-They do not replace live validation of the AKS-managed group relationship or
-teardown timing.
+Provisioning stops if another resource group has the same installation tag.
+The cluster's own AKS-managed node group is allowed while the tagged main group
+exists. If only a node group remains, wait for teardown to finish or investigate
+the incomplete deletion before retrying.
 
-After complete teardown, the old config still references deleted images.
-Explicitly reset those references before reusing the same target, or create a
-fresh config. See [retry and teardown](operations.md#retry-and-teardown).
+After teardown, reset references to deleted images before reusing the config.
+See [retry and teardown](operations.md#retry-and-teardown).
 
 ## Azure identity and permissions
 
-The operator needs subscription-scope deployment access, resource-group listing
-access for target consistency checks, and permission to create resource groups,
-AKS, ACR, storage, managed identities, and role assignments.
-**Contributor alone cannot assign roles**; use an appropriately scoped RBAC
-administrator or equivalent.
+The operator needs permission to list resource groups, create subscription-scope
+deployments, provision the resources, and assign roles.
+**Contributor alone is insufficient** because it cannot assign roles.
+
+Select your subscription before creating a config:
+
+```sh
+az account set --subscription SUBSCRIPTION_UUID
+```
 
 | Override | Purpose |
 | --- | --- |
-| `--subscription UUID` | Choose the target subscription for a new config |
-| `--identity-object-id UUID` | Choose the identity that will upload images and runtime assets |
-| `--operator-object-id UUID` | Choose the identity granted cluster-scoped AKS RBAC Cluster Admin |
-| `--operator-principal-type User\|ServicePrincipal\|Group` | Type of an explicitly overridden operator; defaults to User |
-| `--snapshot-reader-object-id UUID` | Opt in a separate identity for read-only snapshot inspection |
+| `--subscription UUID` | Subscription for a new config |
+| `--identity-object-id UUID` | Identity that uploads images and runtime assets |
+| `--operator-object-id UUID` | Identity granted cluster-scoped AKS RBAC Cluster Admin |
+| `--operator-principal-type User\|ServicePrincipal\|Group` | Type of an overridden operator; defaults to User |
+| `--snapshot-reader-object-id UUID` | Separate identity for read-only snapshot inspection |
 
-Select the active subscription with `az account set --subscription UUID` before
-creating a configuration. For a subscription override in another tenant or under
-another identity, select it first or explicitly supply its identity object ID.
-Discovery never changes the active Azure CLI account.
+Use Entra **object IDs**, not application/client IDs. Setup discovers the current
+user or service principal; if directory lookup is unavailable, supply the
+overrides. `init` and `setup --yes` require explicit overrides when discovery
+fails. For another tenant, select the subscription and sign in to that tenant
+first.
 
-User sign-ins resolve the signed-in user's Entra object ID. Service principal
-sign-ins resolve the **service principal object ID**, not its application/client
-ID. If directory lookup fails, interactive setup asks for the missing ID;
-`init` and `setup --yes` fail with explicit override instructions.
-
-Supplying subscription, upload identity, and operator object ID overrides skips account/directory
-discovery in `init`, but region validation still makes a read-only Azure call.
-Azure CLI manages authentication separately from the deployment file.
-The identity actually running `images` and uploading assets must match the
-configured upload identity.
+The identity running image and asset uploads must match the configured upload
+identity. The older `--asset-publisher-object-id` flag and
+`azure.assetPublisherObjectId` field remain supported.
 
 ### Kubernetes operator authentication
 
-New `init` and `setup` configurations include `aks.operator`. Bicep enables managed
-Entra and Azure RBAC, disables local AKS accounts, and grants that principal
-**Azure Kubernetes Service RBAC Cluster Admin** on this cluster only. This built-in
-role also permits fetching cluster-user credentials; no local/admin certificate
-credentials or subscription-wide Kubernetes grants are used. Cluster-wide access
-is needed to install CRDs, RBAC, and Substrate system resources.
+New configs enable managed Entra and Azure RBAC, disable local AKS accounts,
+and grant the operator **Azure Kubernetes Service RBAC Cluster Admin** on the
+cluster. Installation needs cluster-wide access to create CRDs and RBAC.
 
-The default is the current Azure CLI principal, **not an overridden publisher**.
-Service-principal discovery saves its object ID and principal type. For directory
-restrictions, supply both object IDs and the operator type explicitly.
-`kubelogin --login azurecli` reuses your existing `az login`; an operator override
-grants access but does not sign you in as that principal.
+The operator defaults to the current Azure CLI identity, even when a different
+upload identity is supplied. `kubelogin --login azurecli` reuses your Azure login.
+Overriding the operator grants access; it does not sign you in as that identity.
 
-Configs created before this change omit `aks.operator` and retain their legacy
-authentication behavior for management and teardown. Setup labels these configs
-as legacy and does not migrate them silently. Use a new installation for the new
-defaults; automatic migration of a running cluster is not implemented.
-
-The older `--asset-publisher-object-id` flag and JSON field
-`azure.assetPublisherObjectId` remain supported for compatibility.
+Older configs without `aks.operator` retain their legacy authentication behavior.
+Setup labels them as legacy and does not migrate running clusters automatically.
+Use a new installation for the new defaults.
 
 ### Snapshot inspection
 
-Set `azure.snapshotReaderObjectId` or use the reader flag above. Guided setup can
-opt in the configured upload identity instead.
+Set `azure.snapshotReaderObjectId` or use `--snapshot-reader-object-id`.
+Guided setup can grant access to the upload identity instead.
 
 > [!WARNING]
-> Snapshots may contain actor memory, files, and secrets. Operator access grants
-> **Storage Blob Data Reader on the snapshots container only**, not writes,
-> asset-container access, or subscription-wide permissions.
+> Snapshots may contain actor memory, files, and secrets. Inspection grants
+> read-only access to the snapshots container, not the assets container.
 
-Runtime sidecars have separate container-scoped identities and do not depend on
-this optional operator grant. Azure provisioning is incremental: clearing or
-changing the reader field **does not revoke an old role assignment**. Remove it
-explicitly in Azure IAM, or tear down the installation.
+Removing or changing the field does not revoke an existing grant. Remove the
+old assignment in Azure IAM, or tear down the installation. Runtime storage
+access uses separate identities and does not depend on this optional grant.
 
 ## Region and API access
 
-`init` and `setup` validate names against the selected subscription's physical
-region catalog before saving a new config or requesting deployment approval.
-Invalid saved names are also rejected: correct `azure.location` before retrying.
-This checks names, **not AKS version availability, VM compatibility, or quota**.
+New and saved region names are checked against the subscription's physical
+region catalog. This does **not** check AKS versions, VM compatibility, quota,
+or capacity.
 
-New configurations detect public IPv4 through an unauthenticated HTTPS request
-to `api.ipify.org` with a ten-second timeout; no Azure credentials are sent.
-The result becomes an AKS API `/32` allowlist entry.
+By default, setup gets your public IPv4 address from `api.ipify.org` over HTTPS
+and restricts API access to that address. No Azure credentials are sent.
 
 | Option | Behavior |
 | --- | --- |
-| `--api-cidr YOUR_PUBLIC_IPV4/32` | Explicit IPv4 CIDR; avoids public-IP lookup |
-| Lookup failure | Interactive setup asks for a CIDR; noninteractive commands fail with override instructions |
-| `--allow-unrestricted-api` | Explicitly disable the allowlist; warns about internet-wide API access |
+| `--api-cidr YOUR_PUBLIC_IPV4/32` | Set an IPv4 CIDR without public-IP lookup |
+| Lookup failure | Interactive setup asks for a CIDR; noninteractive commands require an override |
+| `--allow-unrestricted-api` | Allow internet-wide API access; Kubernetes authentication still applies |
 
-Unrestricted access still requires Kubernetes authentication. It cannot be
-combined with `--api-cidr`. In JSON, it requires `aks.allowUnrestrictedApi: true`
-and `aks.apiAuthorizedCidrs: []`; an empty allowlist alone is rejected.
+Unrestricted access cannot be combined with `--api-cidr`. In JSON, set both
+`aks.allowUnrestrictedApi: true` and `aks.apiAuthorizedCidrs: []`; an empty
+allowlist alone is rejected.
 
-The saved allowlist is not redetected on retries. If your public IP changes,
-edit `aks.apiAuthorizedCidrs`, then run `plan` and `provision`.
+Your saved IP is not refreshed on retries. If it changes, edit
+`aks.apiAuthorizedCidrs`, then run `plan` and `provision`.
 
 ### Network and authorization boundaries
 
-| Surface | Current behavior |
+| Surface | Access |
 | --- | --- |
-| AKS API | Public endpoint, IP-restricted by default; new configs use managed Entra / Azure RBAC with local accounts disabled |
+| AKS API | Public, IP-restricted by default, with managed Entra and Azure RBAC for new configs |
 | Substrate services | No public ingress or load balancer |
-| ACR | Publicly reachable authenticated endpoint; admin/anonymous access disabled; registry RBAC, not ABAC repository roles |
-| Blob | Publicly reachable authenticated endpoints; public Blob access and shared-key authentication disabled |
-| Runtime storage | OIDC/workload federation; separate node/control identities and container-scoped grants |
-| Actor authorization | Trusted single tenant; no per-actor Blob or per-tenant repository isolation |
+| ACR | Public endpoint; authentication required; admin and anonymous access disabled |
+| Blob | Public endpoints; authentication required; public Blob access and shared keys disabled |
+| Runtime storage | Separate node/control identities with container-scoped grants |
+| Actor authorization | Trusted single tenant; no per-actor Blob or per-tenant image isolation |
 
-This is not a production security posture or personal Entra-backed actor
-authorization. See [client authentication](operations.md#client-and-counter-demo).
+These are not private-endpoint or multi-tenant deployments. Cluster Entra access
+also does not provide personal actor authorization; see
+[client authentication](operations.md#client-and-counter-demo).
 
 ## Source and image settings
 
-The temporary default is
+The temporary default source is
 [`aramase/substrate`](https://github.com/aramase/substrate) at
-`c3b44aa46312e073a6384f68723a7b14dffd5518`, from upstream
-[PR #2595](https://github.com/agent-substrate/substrate/pull/2595).
-At implementation time that PR was open and conflicted with upstream.
-Repository, commit, and image settings are configurable; a different upstream
-deployment contract can also require changes to the
-[compatibility bridge](architecture.md#current-deployment-flow).
+`c3b44aa46312e073a6384f68723a7b14dffd5518`, for the Azure integration in
+[agent-substrate/substrate#2595](https://github.com/agent-substrate/substrate/pull/2595).
 
-**There is no guessed default prebuilt image set.** `images` builds the selected
-revision into the owned ACR and records compatible references. To supply an
-existing image set, configure the following before `prepare` or `install`:
+Setup builds matching images into the installation's ACR. There is no default
+prebuilt image set. Do not mix the pinned manifests with arbitrary upstream
+release images.
 
-| Field | Required value |
+To supply compatible artifacts yourself, configure these before `prepare` or
+`install`:
+
+| Field | Value |
 | --- | --- |
 | `substrate.source.repository` | HTTPS Git URL |
 | `substrate.source.commit` | Exact 40-character commit SHA |
-| `substrate.images.repository` | Compatible Substrate release-image repository |
-| `substrate.images.tag` | Matching immutable-by-policy release tag |
+| `substrate.images.repository` | Compatible Substrate image repository |
+| `substrate.images.tag` | Matching release tag that will not be overwritten |
 | `substrate.images.plugin` | Azure plugin reference with `@sha256:...` |
-| `substrate.runtime.assetsDir` | Directory with `cloud-hypervisor`, `virtiofsd`, `vmlinux`, and `rootfs.img` |
+| `substrate.runtime.assetsDir` | Directory containing `cloud-hypervisor`, `virtiofsd`, `vmlinux`, and `rootfs.img` |
 
-Do not combine the pinned manifests with arbitrary upstream release images.
-Runtime assets are checked against the selected revision's sandbox template;
-only amd64 assets are configured. Image bootstrap is not an upgrade mechanism.
+Only amd64 runtime assets are configured. Their checksums must match the selected
+source revision. A source change may also require
+[adapter changes](architecture.md#current-deployment-flow); it is not an upgrade
+mechanism.
 
-Saved image fields do not guarantee that registry content still exists.
-`setup` and `install` verify availability before installation work; use
-`images --check` to check independently. Teardown retains these fields even
-when it deletes the registry. See [retry and teardown](operations.md#retry-and-teardown)
-for the explicit `images --reset-config` recovery path.
+`setup` and `install` check that saved images are still available. You can check
+separately with `images --check`. After teardown, use
+[`images --reset-config`](operations.md#retry-and-teardown) to clear references
+to the deleted registry.
 
 ## Local workspace
 
-`.substrate-aks/` holds per-installation source checkouts, runtime assets,
-kubeconfig, logs, deployment records, isolated Docker credentials, and generated
-infrastructure files. Its location is `installation.stateDir/installation.id`.
-Keep it private; it can contain credentials.
+State lives under `installation.stateDir/installation.id`, normally within
+`.substrate-aks/`. It includes source caches, runtime assets, kubeconfig, registry
+credentials, logs, deployment records, and generated infrastructure files.
 
-Deleting the directory does not delete Azure resources. Teardown retains local
-configuration and diagnostics, and leaves the shared Go-installed client.
-Do not delete an active workspace or treat it all as rebuildable cache.
+**Keep it private and retain it while the installation exists.** It is not all
+rebuildable cache. Deleting it does not delete Azure resources; teardown leaves
+the local files and shared Go-installed client in place.
 
-The installer does not migrate/adopt installations from the earlier
-`substrate-azure` prototype. Its state paths, tags, labels, and installation
-records use `substrate-aks`; use a fresh configuration.
+Installations from the earlier `substrate-azure` prototype cannot be adopted.
+Start with a fresh configuration.

@@ -40,21 +40,38 @@ func AdaptBase(source []byte) ([]byte, error) {
 
 // Values supplies runtime configuration, not Kubernetes object structure.
 type Values struct {
-	Component              string
-	Name, Kind, Mode       string
-	PluginImage, ClientID  string
-	TenantID, AccountURL   string
-	Snapshots, Assets      string
+	// Component selects storage, postgres, telemetry, or demo.
+	Component string
+	// Storage targets are ("atelet", "DaemonSet", "node") or
+	// ("ate-api-server", "Deployment", "control").
+	Name, Kind, Mode string
+	PluginImage      string
+	// ClientID belongs to the Blob sidecar's federated identity, not the
+	// node identity used by the ACR credential provider.
+	ClientID             string
+	TenantID, AccountURL string
+	Snapshots, Assets    string
+	// CredentialConfigExists reports whether node input already contains
+	// the substrate-aks-acr-credentials ConfigMap.
 	CredentialConfigExists bool
-	NodeSelectorExists     bool
+	// NodeSelectorExists reports whether demo input already has a nodeSelector.
+	NodeSelectorExists bool
 }
 
-// Render applies one embedded component to one upstream materialization surface.
+// Render applies one embedded component to upstream Kubernetes YAML.
+// Storage inputs are atelet.yaml or ate-api-server.yaml; postgres and telemetry
+// use postgres/postgres.yaml and ate-otel-config.yaml. Demo uses the WorkerPool
+// from counter-microvm.yaml.tmpl. Only storage needs the identity/storage values.
+// Callers supply the reviewed upstream input and runtime values; Render does not
+// validate source pins or Azure identifiers. Non-Kubernetes ActorTemplates must
+// be adapted separately. Upstream manifest checks and ActorTemplate adaptation
+// live in internal/installer/manifests.go.
 func Render(source []byte, v Values) ([]byte, error) {
 	fsys := filesys.MakeFsInMemory()
 	if err := fsys.WriteFile("/render/upstream.yaml", source); err != nil {
 		return nil, err
 	}
+	// JSON quoting keeps runtime strings as YAML scalars, not YAML structure.
 	quote := func(s string) string {
 		b, _ := json.Marshal(s)
 		return string(b)
