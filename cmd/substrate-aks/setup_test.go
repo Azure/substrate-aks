@@ -433,6 +433,39 @@ func TestSetupDeclinesPlannedChanges(t *testing.T) {
 	}
 }
 
+func TestCLICommandQuotesOnlyWhenNeeded(t *testing.T) {
+	for _, tc := range []struct {
+		name, executable string
+		args             []string
+		want             string
+	}{
+		{
+			name: "ordinary destroy command", executable: "bin/substrate-aks",
+			args: []string{"destroy", "--config", "deploy-substrate-20261028-201041.json", "--confirm-delete", "substrate-20261028-201041"},
+			want: "bin/substrate-aks destroy --config deploy-substrate-20261028-201041.json --confirm-delete substrate-20261028-201041",
+		},
+		{
+			name: "executable and config paths with spaces", executable: "/tmp/substrate cli",
+			args: []string{"setup", "--config", "operator's config.json", "--container-engine=podman"},
+			want: `'/tmp/substrate cli' setup --config 'operator'"'"'s config.json' --container-engine=podman`,
+		},
+		{
+			name: "shell syntax and empty arguments", executable: "bin/substrate-aks",
+			args: []string{"setup", "--config", "$(printf unsafe);*.json", "--name", ""},
+			want: "bin/substrate-aks setup --config '$(printf unsafe);*.json' --name ''",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := os.Args
+			os.Args = []string{tc.executable}
+			t.Cleanup(func() { os.Args = original })
+			if got := cliCommand(tc.args...); got != tc.want {
+				t.Fatalf("command = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClientHandoffQuotesPathsForTheShell(t *testing.T) {
 	t.Setenv("PATH", "")
 	var out bytes.Buffer

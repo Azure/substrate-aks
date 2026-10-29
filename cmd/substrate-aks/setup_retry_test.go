@@ -56,7 +56,7 @@ func TestSetupFailureGuidancePreservesOptionsAndCancellationNeverRetries(t *test
 			if !errors.Is(err, failure) || calls != 1 || strings.Contains(output.String(), "Retry this stage") {
 				t.Fatalf("automation or cancellation retried: calls=%d, error=%v", calls, err)
 			}
-			for _, want := range []string{"Retry failed stage:", "Full reconciliation", "'--container-engine' 'podman'", "'--with-demo'", "'--verbose'", "'--accessible'", "'--skip-context-handoff'"} {
+			for _, want := range []string{"Retry failed stage:", "Full reconciliation", "--container-engine podman", "--with-demo", "--verbose", "--accessible", "--skip-context-handoff"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("recovery guidance lost %q: %v", want, err)
 				}

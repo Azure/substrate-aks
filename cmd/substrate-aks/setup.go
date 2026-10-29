@@ -384,9 +384,14 @@ func shellQuote(s string) string {
 }
 
 func cliCommand(args ...string) string {
-	parts := []string{shellQuote(os.Args[0])}
-	for _, arg := range args {
-		parts = append(parts, shellQuote(arg))
+	parts := append([]string{os.Args[0]}, args...)
+	for i, arg := range parts {
+		if arg == "" || strings.IndexFunc(arg, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+				r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+		}) >= 0 {
+			parts[i] = shellQuote(arg)
+		}
 	}
 	return strings.Join(parts, " ")
 }
