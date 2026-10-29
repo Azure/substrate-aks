@@ -81,7 +81,7 @@ func TestSetupRejectsInvalidRegionBeforeSaveOrBilling(t *testing.T) {
 			if saved {
 				var out bytes.Buffer
 				if err := initialize(path, defaultSubscription, defaultPublisher, "", "203.0.113.8/32",
-					"substrate-test", "southcen", false, nil, &out); err != nil {
+					"substrate-test", "southcen", false, nil, "", "", &out); err != nil {
 					t.Fatal(err)
 				}
 				var err error

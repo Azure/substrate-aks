@@ -48,7 +48,8 @@ placeholders are not valid deployment values.
     "subscriptionId": "YOUR_SUBSCRIPTION_UUID",
     "location": "eastus2",
     "resourceGroup": "substrate-dev",
-    "assetPublisherObjectId": "YOUR_ENTRA_OBJECT_UUID"
+    "assetPublisherObjectId": "YOUR_ENTRA_OBJECT_UUID",
+    "assetPublisherPrincipalType": "User"
   },
   "aks": {
     "clusterName": "substrate-dev",
@@ -113,9 +114,11 @@ az account set --subscription SUBSCRIPTION_UUID
 | --- | --- |
 | `--subscription UUID` | Subscription for a new config |
 | `--identity-object-id UUID` | Identity that uploads images and runtime assets |
+| `--identity-principal-type User\|ServicePrincipal\|Group` | Type of an overridden upload identity |
 | `--operator-object-id UUID` | Identity granted cluster-scoped AKS RBAC Cluster Admin |
 | `--operator-principal-type User\|ServicePrincipal\|Group` | Type of an overridden operator; defaults to User |
 | `--snapshot-reader-object-id UUID` | Separate identity for read-only snapshot inspection |
+| `--snapshot-reader-principal-type User\|ServicePrincipal\|Group` | Type of a separate snapshot reader |
 
 Use Entra **object IDs**, not application/client IDs. Setup discovers the current
 user or service principal; if directory lookup is unavailable, supply the
@@ -123,9 +126,16 @@ overrides. `init` and `setup --yes` require explicit overrides when discovery
 fails. For another tenant, select the subscription and sign in to that tenant
 first.
 
-The identity running image and asset uploads must match the configured upload
-identity. The older `--asset-publisher-object-id` flag and
+The identity running image and asset uploads needs the configured publisher
+grant, directly or through group membership. The older `--asset-publisher-object-id` flag and
 `azure.assetPublisherObjectId` field remain supported.
+
+The corresponding JSON type fields are `azure.assetPublisherPrincipalType` and
+`azure.snapshotReaderPrincipalType`. Discovered upload identities save their
+type. If omitted, a matching operator's type is reused; a reader matching the
+publisher reuses its type. Otherwise older configs retain Azure's directory
+inference rather than guessing `User`. Specify types explicitly for unrelated
+identities and directory-restricted automation.
 
 ### Kubernetes operator authentication
 
@@ -136,10 +146,17 @@ cluster. Installation needs cluster-wide access to create CRDs and RBAC.
 The operator defaults to the current Azure CLI identity, even when a different
 upload identity is supplied. `kubelogin --login azurecli` reuses your Azure login.
 Overriding the operator grants access; it does not sign you in as that identity.
+Before billing, setup warns if the signed-in identity differs, or if directory
+restrictions prevent verification. Group operators get a membership reminder,
+not an object-ID mismatch warning. Another valid cluster grant can also suffice.
 
 Older configs without `aks.operator` retain their legacy authentication behavior.
 Setup labels them as legacy and does not migrate running clusters automatically.
 Use a new installation for the new defaults.
+Provisioning and previews compare an existing cluster's authentication mode and
+original deployment parameters. Adding, removing, or changing `aks.operator`
+is refused; restore its original values for retries. Authentication migrations
+are not implemented.
 
 ### Snapshot inspection
 
@@ -157,8 +174,16 @@ access uses separate identities and does not depend on this optional grant.
 ## Region and API access
 
 New and saved region names are checked against the subscription's physical
-region catalog. This does **not** check AKS versions, VM compatibility, quota,
-or capacity.
+region catalog. Setup additionally checks AKS version availability, system/worker
+SKU availability, regional and VM-family CPU quota, and discoverable deployment
+and role-assignment permissions before provisioning the registry. Retries check
+additional CPU requirements rather than counting existing matching pools twice.
+Run `doctor --azure --config deploy.json` for the same read-only cloud checks.
+
+These are snapshots, not reservations or a complete Azure authorization proof.
+Zone-only restrictions do not disqualify an unzoned pool. Capacity, conditional
+roles, deny policies, provider validation, and microVM/KVM compatibility can still
+block later steps. Default `doctor` remains local and needs no config.
 
 By default, setup gets your public IPv4 address from `api.ipify.org` over HTTPS
 and restricts API access to that address. No Azure credentials are sent.
@@ -201,6 +226,17 @@ The temporary default source is
 Setup builds matching images into the installation's ACR. There is no default
 prebuilt image set. Do not mix the pinned manifests with arbitrary upstream
 release images.
+
+We are intentionally keeping this fork pin while a separate Azure storage-plugin
+repository is being created. After that extraction and compatibility validation,
+the planned path is to move to a supported upstream revision or release. An exact
+SHA verifies content, not permanent availability after a fork branch is deleted
+or rewritten; that retention risk remains with the temporary pin.
+
+The source repository and exact commit are already configurable in JSON.
+Convenient upstream commit/tag selection through the installer is a follow-up,
+not part of this PR. Tags are not currently accepted by `substrate.source.commit`;
+the installer requires an exact SHA and compatible images, assets, and client.
 
 To supply compatible artifacts yourself, configure these before `prepare` or
 `install`:

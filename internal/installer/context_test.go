@@ -66,6 +66,9 @@ func TestContextImportPreservesUnrelatedConfigAndPrivateCredentials(t *testing.T
 		if err := a.SelectContext(t.Context(), selection); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("context import retained its lock: %v", err)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -130,8 +133,12 @@ func TestContextImportRefusesCollisionsAndChangedDestination(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := a.SelectContext(t.Context(), selection); err == nil {
+			err = a.SelectContext(t.Context(), selection)
+			if err == nil {
 				t.Fatal("unsafe context import succeeded")
+			}
+			if strings.HasPrefix(mode, "conflicting") && (!strings.Contains(err.Error(), "--context-file") || !strings.Contains(err.Error(), path)) {
+				t.Fatalf("collision lacks destination and recovery guidance: %v", err)
 			}
 			data, err := os.ReadFile(path)
 			if err != nil || !bytes.Equal(before, data) {
@@ -140,6 +147,9 @@ func TestContextImportRefusesCollisionsAndChangedDestination(t *testing.T) {
 			files, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".substrate-context-*"))
 			if err != nil || len(files) != 0 {
 				t.Fatalf("temporary credentials retained: %v, %v", files, err)
+			}
+			if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed context import retained its lock: %v", err)
 			}
 		})
 	}
@@ -150,6 +160,7 @@ func TestContextPlanningRefusesUnsafeFilesAndAmbiguousEnvironment(t *testing.T) 
 	path := filepath.Join(dir, "config")
 	for _, data := range []string{
 		"token: [malformed", "null", "apiVersion: v1\nkind: Config\n---\nkind: Secret\n",
+		"apiVersion: v2\nkind: Config\n", "apiVersion: v1\nkind: Secret\n", "apiVersion: null\nkind: Config\n",
 		"apiVersion: v1\nkind: Config\ncontexts: [{name: repeated}, {name: repeated}]\n",
 	} {
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
@@ -179,6 +190,55 @@ func TestContextPlanningRefusesUnsafeFilesAndAmbiguousEnvironment(t *testing.T) 
 	}
 	if _, err := os.Stat(selection.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("planning created a destination before consent: %v", err)
+	}
+}
+
+func TestContextImportDefaultsMissingTypeMetadata(t *testing.T) {
+	for _, missing := range []string{"apiVersion: v1\n", "kind: Config\n", "apiVersion: v1\nkind: Config\n"} {
+		t.Run(strings.TrimSpace(missing), func(t *testing.T) {
+			a := contextApp(t)
+			path := filepath.Join(t.TempDir(), "config")
+			before := strings.Replace(string(kubeconfigFixture("previous")), missing, "", 1)
+			if err := os.WriteFile(path, []byte(before), 0600); err != nil {
+				t.Fatal(err)
+			}
+			selection, err := PlanContextSwitch(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.SelectContext(t.Context(), selection); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateKubeconfig(data, a.Config.AKS.ClusterName); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestContextImportHonorsKubectlWriterLock(t *testing.T) {
+	a := contextApp(t)
+	path := filepath.Join(t.TempDir(), "config")
+	selection, err := PlanContextSwitch(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".lock", []byte("other writer"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SelectContext(t.Context(), selection); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("import ignored the competing kubeconfig lock: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("locked destination was replaced: %v", err)
+	}
+	data, err := os.ReadFile(path + ".lock")
+	if err != nil || string(data) != "other writer" {
+		t.Fatalf("import removed a competing writer lock: %s, %v", data, err)
 	}
 }
 

@@ -78,6 +78,14 @@ func decodeContextFile(data []byte) (object, error) {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return nil, errors.New("kubeconfig must contain exactly one document; destination unchanged")
 	}
+	if config == nil {
+		return nil, errors.New("context destination must contain a Kubernetes Config object")
+	}
+	for field, value := range map[string]string{"apiVersion": "v1", "kind": "Config"} {
+		if _, present := config[field]; !present {
+			config[field] = value
+		}
+	}
 	if config["apiVersion"] != "v1" || config["kind"] != "Config" {
 		return nil, errors.New("context destination is not a v1 Kubernetes Config")
 	}
@@ -104,7 +112,7 @@ func decodeContextFile(data []byte) (object, error) {
 	return config, nil
 }
 
-func (a App) SelectContext(ctx context.Context, selection ContextSwitch) error {
+func (a App) SelectContext(ctx context.Context, selection ContextSwitch) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -171,7 +179,7 @@ func (a App) SelectContext(ctx context.Context, selection ContextSwitch) error {
 		existing := contextEntry(target, field, name)
 		if existing != nil {
 			if !reflect.DeepEqual(entry, existing) {
-				return fmt.Errorf("kubeconfig %s entry %q already exists with different settings; destination unchanged", field, name)
+				return fmt.Errorf("kubeconfig %s entry %q in %q already exists with different settings; destination unchanged. Choose an unused --context-file PATH or deliberately rename/remove only the conflicting entries before retrying", field, name, selection.Path)
 			}
 			continue
 		}
@@ -193,6 +201,15 @@ func (a App) SelectContext(ctx context.Context, selection ContextSwitch) error {
 	defer os.Remove(file.Name())
 	_, writeErr := file.Write(data)
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	lockPath := selection.Path + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("locking kubeconfig %q; another writer may be active, retry after it finishes: %w", selection.Path, err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, os.Remove(lockPath)) }()
+	if err := lock.Close(); err != nil {
 		return err
 	}
 	current, exists, err := readContextFile(selection.Path)

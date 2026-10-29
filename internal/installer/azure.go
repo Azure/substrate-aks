@@ -71,43 +71,48 @@ func (a App) account(ctx context.Context) error {
 }
 
 func (a App) ownedGroup(ctx context.Context, required bool) error {
+	_, err := a.inspectOwnedGroup(ctx, required)
+	return err
+}
+
+func (a App) inspectOwnedGroup(ctx context.Context, required bool) (bool, error) {
 	a.progress("Checking resource group ownership")
 	data, err := a.az(ctx, "group", "exists", "--name", a.Config.Azure.ResourceGroup)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var exists *bool
 	if err := json.Unmarshal(data, &exists); err != nil {
-		return fmt.Errorf("reading resource-group existence: %w", err)
+		return false, fmt.Errorf("reading resource-group existence: %w", err)
 	}
 	if exists == nil {
-		return errors.New("resource-group existence check did not return a boolean")
+		return false, errors.New("resource-group existence check did not return a boolean")
 	}
 	if !*exists {
 		if required {
-			return errGroupAbsent
+			return false, errGroupAbsent
 		}
 		a.progress("Resource group %s is available for this installation", a.Config.Azure.ResourceGroup)
-		return nil
+		return false, nil
 	}
 	data, err = a.az(ctx, "group", "show", "--name", a.Config.Azure.ResourceGroup)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var group struct {
 		Tags     map[string]string `json:"tags"`
 		Location string            `json:"location"`
 	}
 	if err := json.Unmarshal(data, &group); err != nil {
-		return err
+		return false, err
 	}
 	if group.Tags[ownershipTag] != a.Config.Installation.ID {
-		return fmt.Errorf("resource group %q already exists in %s and does not belong to this installation; choose an unused azure.resourceGroup in your configuration. It has not been modified", a.Config.Azure.ResourceGroup, group.Location)
+		return false, fmt.Errorf("resource group %q already exists in %s and does not belong to this installation; choose an unused azure.resourceGroup in your configuration. It has not been modified", a.Config.Azure.ResourceGroup, group.Location)
 	}
 	if group.Location != a.Config.Azure.Location {
-		return fmt.Errorf("resource group %q is in %s, but azure.location is %s; restore its existing location for retries or teardown. A different target requires a new installation configuration", a.Config.Azure.ResourceGroup, group.Location, a.Config.Azure.Location)
+		return false, fmt.Errorf("resource group %q is in %s, but azure.location is %s; restore its existing location for retries or teardown. A different target requires a new installation configuration", a.Config.Azure.ResourceGroup, group.Location, a.Config.Azure.Location)
 	}
-	return nil
+	return true, nil
 }
 
 func (a App) Provision(ctx context.Context, whatIf bool) error {
@@ -174,8 +179,14 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := a.guardTarget(ctx); err != nil {
 		return err
 	}
-	if err := a.ownedGroup(ctx, false); err != nil {
+	exists, err := a.inspectOwnedGroup(ctx, false)
+	if err != nil {
 		return err
+	}
+	if exists {
+		if _, err := a.guardOperator(ctx); err != nil {
+			return err
+		}
 	}
 	a.progress("Preparing Azure infrastructure templates")
 	if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
@@ -201,9 +212,11 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"installationId": c.Installation.ID, "clusterName": c.AKS.ClusterName,
 		"kubernetesVersion": c.AKS.KubernetesVersion, "workerVmSize": c.AKS.WorkerPool.VMSize,
 		"workerCount": c.AKS.WorkerPool.Count, "apiAuthorizedCidrs": append([]string{}, c.AKS.APIAuthorizedCIDRs...),
-		"assetPublisherObjectId": c.Azure.AssetPublisherObjectID,
-		"snapshotReaderObjectId": c.Azure.SnapshotReaderObjectID,
-		"registryOnly":           registryOnly,
+		"assetPublisherObjectId":      c.Azure.AssetPublisherObjectID,
+		"assetPublisherPrincipalType": c.publisherPrincipalType(),
+		"snapshotReaderObjectId":      c.Azure.SnapshotReaderObjectID,
+		"snapshotReaderPrincipalType": c.readerPrincipalType(),
+		"registryOnly":                registryOnly,
 	} {
 		params[key] = map[string]any{"value": value}
 	}

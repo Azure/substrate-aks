@@ -31,11 +31,13 @@ type InstallationConfig struct {
 }
 
 type AzureConfig struct {
-	SubscriptionID         string `json:"subscriptionId"`
-	Location               string `json:"location"`
-	ResourceGroup          string `json:"resourceGroup"`
-	AssetPublisherObjectID string `json:"assetPublisherObjectId"`
-	SnapshotReaderObjectID string `json:"snapshotReaderObjectId,omitempty"`
+	SubscriptionID              string `json:"subscriptionId"`
+	Location                    string `json:"location"`
+	ResourceGroup               string `json:"resourceGroup"`
+	AssetPublisherObjectID      string `json:"assetPublisherObjectId"`
+	AssetPublisherPrincipalType string `json:"assetPublisherPrincipalType,omitempty"`
+	SnapshotReaderObjectID      string `json:"snapshotReaderObjectId,omitempty"`
+	SnapshotReaderPrincipalType string `json:"snapshotReaderPrincipalType,omitempty"`
 }
 
 type AKSConfig struct {
@@ -93,7 +95,7 @@ func DefaultConfig() Config {
 
 var (
 	uuidPattern   = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
-	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{2,39}$`)
+	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
 	shaPattern    = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}$`)
 	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
@@ -142,7 +144,7 @@ func (c Config) Validate() error {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
 	if !namePattern.MatchString(c.Azure.ResourceGroup) || !namePattern.MatchString(c.AKS.ClusterName) {
-		return errors.New("azure.resourceGroup and aks.clusterName must be 3-40 lowercase letters, digits or hyphens, starting with a letter")
+		return errors.New("azure.resourceGroup and aks.clusterName must be 3-40 lowercase letters, digits or hyphens, starting with a letter and ending with a letter or digit")
 	}
 	if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.Azure.Location) {
 		return errors.New("azure.location must be an Azure region name such as eastus2")
@@ -169,10 +171,21 @@ func (c Config) Validate() error {
 		return errors.New("installation.stateDir must not be empty")
 	}
 	if !uuidPattern.MatchString(c.Azure.AssetPublisherObjectID) {
-		return errors.New("azure.assetPublisherObjectId must be the Entra object ID of the operator or service principal uploading runtime assets")
+		return errors.New("azure.assetPublisherObjectId must be an Entra object UUID for the runtime asset publisher")
 	}
 	if c.Azure.SnapshotReaderObjectID != "" && !uuidPattern.MatchString(c.Azure.SnapshotReaderObjectID) {
 		return errors.New("azure.snapshotReaderObjectId must be an Entra object UUID or omitted")
+	}
+	for field, value := range map[string]string{
+		"azure.assetPublisherPrincipalType": c.Azure.AssetPublisherPrincipalType,
+		"azure.snapshotReaderPrincipalType": c.Azure.SnapshotReaderPrincipalType,
+	} {
+		if value != "" && value != "User" && value != "ServicePrincipal" && value != "Group" {
+			return fmt.Errorf("%s must be User, ServicePrincipal, or Group", field)
+		}
+	}
+	if c.Azure.SnapshotReaderPrincipalType != "" && c.Azure.SnapshotReaderObjectID == "" {
+		return errors.New("azure.snapshotReaderPrincipalType requires azure.snapshotReaderObjectId")
 	}
 	if operator := c.AKS.Operator; operator != nil {
 		if !uuidPattern.MatchString(operator.ObjectID) {
@@ -192,6 +205,29 @@ func (c Config) Validate() error {
 		return errors.New("substrate.source.commit must be an exact lowercase 40-character commit SHA, not a branch")
 	}
 	return nil
+}
+
+func (c Config) publisherPrincipalType() string {
+	if c.Azure.AssetPublisherPrincipalType != "" {
+		return c.Azure.AssetPublisherPrincipalType
+	}
+	if operator := c.AKS.Operator; operator != nil && strings.EqualFold(operator.ObjectID, c.Azure.AssetPublisherObjectID) {
+		return operator.PrincipalType
+	}
+	return ""
+}
+
+func (c Config) readerPrincipalType() string {
+	if c.Azure.SnapshotReaderPrincipalType != "" {
+		return c.Azure.SnapshotReaderPrincipalType
+	}
+	if strings.EqualFold(c.Azure.SnapshotReaderObjectID, c.Azure.AssetPublisherObjectID) {
+		return c.publisherPrincipalType()
+	}
+	if operator := c.AKS.Operator; operator != nil && strings.EqualFold(operator.ObjectID, c.Azure.SnapshotReaderObjectID) {
+		return operator.PrincipalType
+	}
+	return ""
 }
 
 func (c Config) ValidateInstall() error {

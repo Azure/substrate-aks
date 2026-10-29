@@ -16,6 +16,10 @@ func TestPinnedPodmanPublisherContract(t *testing.T) {
 	if output, err := exec.Command("git", "clone", "--quiet", "--shared", root, dest).CombinedOutput(); err != nil {
 		t.Fatalf("copying pinned source: %v\n%s", err, output)
 	}
+	dest, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := prepareImagePublisher(dest); err != nil {
 		t.Fatal(err)
 	}

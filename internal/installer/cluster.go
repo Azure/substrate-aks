@@ -1,6 +1,8 @@
 package installer
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,13 +19,14 @@ func (a App) Doctor(ctx context.Context) error {
 	for _, check := range []struct {
 		name string
 		args []string
+		fix  string
 	}{
-		{"Azure CLI", []string{"az", "version"}},
-		{"Git", []string{"git", "--version"}},
-		{"AKS kubelogin (Azure CLI authentication)", []string{"kubelogin", "--version"}},
-		{"Azure Bicep", []string{"az", "bicep", "version"}},
-		{"Go toolchain", []string{"go", "version"}},
-		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}},
+		{"Azure CLI", []string{"az", "version"}, "Install Azure CLI: https://aka.ms/azure-cli"},
+		{"Git", []string{"git", "--version"}, "Install Git: https://git-scm.com/downloads"},
+		{"AKS kubelogin (Azure CLI authentication)", []string{"kubelogin", "--version"}, "Run az aks install-cli, then make sure kubelogin is on PATH."},
+		{"Azure Bicep", []string{"az", "bicep", "version"}, "Run az bicep install."},
+		{"Go toolchain", []string{"go", "version"}, "Install the Go version required by go.mod: https://go.dev/dl/"},
+		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}, "Install kubectl 1.36-1.38 and make sure it is on PATH."},
 	} {
 		if check.args[0] == "kubelogin" && a.Config.Installation.ID != "" && a.Config.AKS.Operator == nil {
 			continue
@@ -32,12 +35,11 @@ func (a App) Doctor(ctx context.Context) error {
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		data, err := a.Runner.Run(probeCtx, Command{Args: check.args})
 		cancel()
+		if err == nil && check.args[0] == "kubectl" {
+			err = checkKubectlVersion(data)
+		}
 		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", check.name, err))
-		} else if check.args[0] == "kubectl" {
-			if err := checkKubectlVersion(data); err != nil {
-				failures = append(failures, err)
-			}
+			failures = append(failures, fmt.Errorf("%s: %w\nFix: %s", check.name, err, check.fix))
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -71,7 +73,7 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 	}
 	for _, args := range [][]string{
 		{"bash", "--version"}, {"curl", "--version"}, {"tar", "--version"},
-		{"zstd", "--version"}, {"readlink", "-f", "."}, {"sha256sum", "--version"},
+		{"zstd", "--version"}, {"readlink", "-f", "."}, {"sha256sum"},
 	} {
 		a.progress("Checking runtime asset assembly prerequisite %s", args[0])
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -80,6 +82,24 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("runtime asset assembly requires %s; install the tool or supply substrate.runtime.assetsDir: %w", args[0], err)
 		}
+	}
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.WriteHeader(&tar.Header{Name: "substrate-capability-probe", Mode: 0600}); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	a.progress("Checking tar can read zstd-compressed archives (GNU or BSD tar)")
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	compressed, err := a.Runner.Run(probeCtx, Command{Args: []string{"zstd", "--compress", "--stdout"}, Input: archive.Bytes()})
+	if err != nil {
+		return fmt.Errorf("checking zstd archive support: %w", err)
+	}
+	if _, err := a.Runner.Run(probeCtx, Command{Args: []string{"tar", "--zstd", "-tf", "-"}, Input: compressed}); err != nil {
+		return fmt.Errorf("tar must support --zstd archive reading; install a compatible tar or supply substrate.runtime.assetsDir: %w", err)
 	}
 	return nil
 }
@@ -120,23 +140,37 @@ func (a App) waitOperatorAccess(ctx context.Context) error {
 	a.progress("Waiting up to 5 minutes for the signed-in operator's cluster access; Azure RBAC grants can take time to propagate")
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	review := []byte(`{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"group":"apiextensions.k8s.io","resource":"customresourcedefinitions","verb":"create"}}}`)
 	for {
 		probeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
-		data, err := a.kubectl(probeCtx, nil, "--request-timeout=15s", "auth", "can-i", "create", "customresourcedefinitions.apiextensions.k8s.io")
+		data, err := a.kubectl(probeCtx, review, "--request-timeout=15s", "create", "-f", "-", "--output=json")
 		stop()
-		if err == nil && strings.TrimSpace(string(data)) == "yes" {
-			return nil
-		}
-		if strings.TrimSpace(string(data)) != "no" {
-			if err == nil {
-				err = fmt.Errorf("unexpected authorization response %q", strings.TrimSpace(string(data)))
-			}
+		if err != nil {
 			return fmt.Errorf("checking Entra operator access; verify az login, the configured operator, tenant and API allowlist: %w", err)
 		}
-		a.progress("Operator access is not ready; retaining the denial and waiting for Azure RBAC propagation")
+		var result struct {
+			Status struct {
+				Allowed         *bool  `json:"allowed"`
+				Reason          string `json:"reason"`
+				EvaluationError string `json:"evaluationError"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("reading operator authorization review: %w", err)
+		}
+		if result.Status.Allowed == nil {
+			return errors.New("operator authorization review did not return status.allowed")
+		}
+		if *result.Status.Allowed {
+			return nil
+		}
+		if result.Status.EvaluationError != "" {
+			return fmt.Errorf("operator authorization evaluation failed: %s", result.Status.EvaluationError)
+		}
+		a.progress("Operator access is not ready (%s); waiting for Azure RBAC propagation", result.Status.Reason)
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("operator access was denied; verify az login matches aks.operator and its cluster-scoped RBAC grant: %w", ctx.Err())
+			return fmt.Errorf("operator access was denied (%s); verify az login matches aks.operator or belongs to its group and check the cluster-scoped RBAC grant: %w", result.Status.Reason, ctx.Err())
 		case <-time.After(5 * time.Second):
 		}
 	}

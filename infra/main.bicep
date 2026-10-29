@@ -11,7 +11,11 @@ param workerCount int = 1
 @description('Allowed AKS API IPv4 CIDRs. An empty array disables the allowlist; the CLI requires explicit unrestricted-access opt-in.')
 param apiAuthorizedCidrs array
 param assetPublisherObjectId string
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param assetPublisherPrincipalType string = ''
 param snapshotReaderObjectId string = ''
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param snapshotReaderPrincipalType string = ''
 param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
@@ -32,6 +36,7 @@ module registry 'registry.bicep' = {
     location: location
     installationId: installationId
     publisherObjectId: assetPublisherObjectId
+    publisherPrincipalType: assetPublisherPrincipalType
   }
 }
 
@@ -47,7 +52,9 @@ module resources 'resources.bicep' = if (!registryOnly) {
     workerCount: workerCount
     apiAuthorizedCidrs: apiAuthorizedCidrs
     assetPublisherObjectId: assetPublisherObjectId
+    assetPublisherPrincipalType: assetPublisherPrincipalType
     snapshotReaderObjectId: snapshotReaderObjectId
+    snapshotReaderPrincipalType: snapshotReaderPrincipalType
     operatorObjectId: operatorObjectId
     operatorPrincipalType: operatorPrincipalType
     registryName: registry.outputs.registryName

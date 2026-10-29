@@ -58,9 +58,17 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 		{"contradictory API access", func(c *Config) { c.AKS.AllowUnrestrictedAPI = true }},
 		{"wrong version", func(c *Config) { c.AKS.KubernetesVersion = "1.36" }},
 		{"path in resource name", func(c *Config) { c.Azure.ResourceGroup = "../other" }},
+		{"trailing hyphen in resource group", func(c *Config) { c.Azure.ResourceGroup = "substrate-" }},
+		{"trailing hyphen in cluster name", func(c *Config) { c.AKS.ClusterName = "substrate-" }},
 		{"credentials in source URL", func(c *Config) { c.Substrate.Source.Repository = "https://user:password@example.invalid/repo" }},
 		{"missing publisher", func(c *Config) { c.Azure.AssetPublisherObjectID = "" }},
 		{"invalid snapshot reader", func(c *Config) { c.Azure.SnapshotReaderObjectID = "not-an-object-id" }},
+		{"invalid publisher type", func(c *Config) { c.Azure.AssetPublisherPrincipalType = "Client" }},
+		{"invalid reader type", func(c *Config) {
+			c.Azure.SnapshotReaderObjectID = c.Azure.AssetPublisherObjectID
+			c.Azure.SnapshotReaderPrincipalType = "Client"
+		}},
+		{"reader type without identity", func(c *Config) { c.Azure.SnapshotReaderPrincipalType = "User" }},
 		{"missing operator object ID", func(c *Config) { c.AKS.Operator = &OperatorConfig{PrincipalType: "User"} }},
 		{"unsupported operator type", func(c *Config) {
 			c.AKS.Operator = &OperatorConfig{ObjectID: c.Azure.AssetPublisherObjectID, PrincipalType: "clientID"}
@@ -81,6 +89,24 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 	c.Substrate.Images.Plugin = "example.invalid/plugin:latest"
 	if err := c.ValidateInstall(); err == nil {
 		t.Fatal("accepted mutable plugin image")
+	}
+}
+
+func TestConfigNameBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"ab", false}, {"abc", true}, {"a-1", true},
+		{strings.Repeat("a", 40), true}, {strings.Repeat("a", 41), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.ClusterName, c.Azure.ResourceGroup = tc.name, tc.name
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("name validation: %v", err)
+			}
+		})
 	}
 }
 

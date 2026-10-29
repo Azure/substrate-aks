@@ -235,6 +235,7 @@ func TestProvisionRetryWithAKSManagedNodeGroup(t *testing.T) {
 				r := script(t, accountReply(c),
 					reply{contains: "group list --tag " + ownershipTag + "=" + c.Installation.ID, output: groups},
 					reply{contains: "group exists", output: "true"}, ownerReply(c),
+					clusterReply(c), operatorRecordReply(c),
 					reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
 				if err := (App{Config: c, Runner: r}).provision(t.Context(), whatIf, registryOnly); err != nil {
 					t.Fatal(err)

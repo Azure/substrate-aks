@@ -1,6 +1,8 @@
 param location string
 param installationId string
 param publisherObjectId string
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param publisherPrincipalType string = ''
 
 var acrPush = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')
 
@@ -26,6 +28,7 @@ resource publisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: registry
   properties: {
     principalId: publisherObjectId
+    ...(publisherPrincipalType != '' ? { principalType: publisherPrincipalType } : {})
     roleDefinitionId: acrPush
   }
 }

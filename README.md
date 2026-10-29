@@ -31,7 +31,7 @@ builds the images, and installs Substrate.
 
 Building runtime assets also needs `bash`, `curl`, `tar --zstd`, `zstd`,
 `readlink -f`, and `sha256sum`. Follow the
-[macOS setup notes](docs/operations.md#macos-host-setup) for the GNU tools.
+[macOS setup notes](docs/operations.md#macos-host-setup) for compatible tools.
 
 ```sh
 git clone https://github.com/Azure/substrate-aks.git

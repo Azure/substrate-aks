@@ -74,6 +74,7 @@ func (a App) imageBuildEngines(ctx context.Context, all bool) ([]imageBuilder, e
 	var failures []error
 	var available []imageBuilder
 	for _, engine := range engines {
+		a.progress("Checking %s image builder", engine)
 		env := []string{"DOCKER_CONFIG=" + dir, "REGISTRY_AUTH_FILE=" + filepath.Join(dir, "config.json"), "NO_DEV_ENV=1"}
 		probe := func() error {
 			probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

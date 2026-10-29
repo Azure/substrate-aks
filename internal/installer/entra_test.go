@@ -105,14 +105,57 @@ func TestProvisionOperatorParametersAndLegacyCompatibility(t *testing.T) {
 func TestOperatorAccessDoesNotMaskNetworkOrAuthenticationFailure(t *testing.T) {
 	c := testConfig(t)
 	failure := errors.New("API connection refused")
-	r := script(t, reply{contains: "auth can-i create customresourcedefinitions", err: failure})
+	r := script(t, reply{contains: "create -f - --output=json", err: failure})
 	if err := (App{Config: c, Runner: r}).waitOperatorAccess(t.Context()); !errors.Is(err, failure) {
 		t.Fatalf("network failure was hidden as RBAC propagation: %v", err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	r = script(t, reply{contains: "auth can-i", output: "no\n", err: errors.New("exit status 1"),
-		effect: func(Command) { cancel() }})
-	if err := (App{Config: c, Runner: r}).waitOperatorAccess(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("RBAC propagation wait ignored cancellation: %v", err)
+	for _, reason := range []string{"", "Azure does not have an opinion for this user"} {
+		t.Run("denied/"+reason, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			output, err := json.Marshal(map[string]any{"status": map[string]any{"allowed": false, "reason": reason}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := script(t, reply{contains: "create -f - --output=json", output: string(output),
+				effect: func(Command) { cancel() }})
+			if err := (App{Config: c, Runner: r}).waitOperatorAccess(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("RBAC denial was not retried or ignored cancellation: %v", err)
+			}
+		})
+	}
+}
+
+func TestOperatorAccessUsesStructuredAuthorizationReview(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		ok           bool
+	}{
+		{"allowed", `{"status":{"allowed":true}}`, true},
+		{"missing status", `{}`, false},
+		{"invalid JSON", `no - denied`, false},
+		{"evaluation failure", `{"status":{"allowed":false,"evaluationError":"webhook unavailable"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := script(t, reply{contains: "create -f - --output=json", output: tc.output, effect: func(cmd Command) {
+				var review struct {
+					Kind string
+					Spec struct {
+						ResourceAttributes struct{ Group, Resource, Verb string }
+					}
+				}
+				if err := json.Unmarshal(cmd.Input, &review); err != nil {
+					t.Fatal(err)
+				}
+				attributes := review.Spec.ResourceAttributes
+				if review.Kind != "SelfSubjectAccessReview" || attributes.Group != "apiextensions.k8s.io" ||
+					attributes.Resource != "customresourcedefinitions" || attributes.Verb != "create" {
+					t.Fatalf("authorization check tests the wrong permission: %s", cmd.Input)
+				}
+			}})
+			if err := (App{Config: testConfig(t), Runner: r}).waitOperatorAccess(t.Context()); (err == nil) != tc.ok {
+				t.Fatalf("authorization outcome: %v", err)
+			}
+		})
 	}
 }

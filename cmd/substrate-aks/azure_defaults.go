@@ -16,6 +16,7 @@ type azureDefaults struct {
 	subscription, subscriptionName string
 	publisher, publisherName       string
 	principalType                  string
+	signedInObjectID, signedInType string
 	operator                       installer.OperatorConfig
 }
 
@@ -85,7 +86,35 @@ func discoverAzureDefaults(ctx context.Context, subscription, publisher string, 
 		return d, errors.New("Azure CLI did not return the identity's Entra object ID; provide --identity-object-id explicitly, not the application/client ID")
 	}
 	d.publisher, d.publisherName = identity.ID, identity.DisplayName
+	d.signedInObjectID, d.signedInType = identity.ID, d.principalType
 	return d, nil
+}
+
+func warnOperatorIdentity(ctx context.Context, c installer.Config, defaults azureDefaults, runner installer.Runner, ui *setupUI) error {
+	if c.AKS.Operator == nil {
+		return nil
+	}
+	if c.AKS.Operator.PrincipalType == "Group" {
+		ui.note("AKS access is granted to a group. Ensure the signed-in Azure CLI identity belongs to that group; its individual object ID is expected to differ.")
+		return nil
+	}
+	if defaults.signedInObjectID == "" {
+		var err error
+		defaults, err = discoverAzureDefaults(ctx, c.Azure.SubscriptionID, "", runner)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			ui.warning("Could not verify the signed-in identity against aks.operator: " + err.Error())
+			ui.note("Explicit operator IDs remain supported without directory access. Ensure az login uses the configured operator or another identity with cluster access before continuing.")
+			return nil
+		}
+	}
+	if !strings.EqualFold(defaults.signedInObjectID, c.AKS.Operator.ObjectID) || defaults.signedInType != c.AKS.Operator.PrincipalType {
+		ui.warning("The signed-in Azure CLI identity differs from aks.operator. kubelogin uses the signed-in identity, not the configured operator ID.")
+		ui.note("Sign in as the configured operator or ensure the current identity has another valid cluster grant; otherwise cluster checks will fail after provisioning.")
+	}
+	return nil
 }
 
 func discoverInstallationDefaults(ctx context.Context, subscription, publisher, operatorID, operatorType string, runner installer.Runner) (azureDefaults, error) {

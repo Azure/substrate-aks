@@ -6,7 +6,11 @@ param workerVmSize string
 param workerCount int
 param apiAuthorizedCidrs array
 param assetPublisherObjectId string
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param assetPublisherPrincipalType string = ''
 param snapshotReaderObjectId string = ''
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param snapshotReaderPrincipalType string = ''
 param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
@@ -54,7 +58,7 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
     }
     autoUpgradeProfile: {
       upgradeChannel: 'none'
-      nodeOSUpgradeChannel: 'None'
+      nodeOSUpgradeChannel: 'NodeImage'
     }
     apiServerAccessProfile: {
       authorizedIPRanges: apiAuthorizedCidrs
@@ -233,6 +237,7 @@ resource assetPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: assets
   properties: {
     principalId: assetPublisherObjectId
+    ...(assetPublisherPrincipalType != '' ? { principalType: assetPublisherPrincipalType } : {})
     roleDefinitionId: blobContributor
   }
 
@@ -243,6 +248,7 @@ resource operatorSnapshots 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   scope: snapshots
   properties: {
     principalId: snapshotReaderObjectId
+    ...(snapshotReaderPrincipalType != '' ? { principalType: snapshotReaderPrincipalType } : {})
     roleDefinitionId: blobReader
   }
 }

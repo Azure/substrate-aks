@@ -49,13 +49,14 @@ func TestSetupFailureGuidancePreservesOptionsAndCancellationNeverRetries(t *test
 			}
 			err := setupForTest(t.Context(), setupOptions{
 				path: testCLIConfig(t), yes: !cancelled, containerEngine: "podman",
-				withDemo: true, verbose: true, accessible: true, discovery: subscriptionDisplayRunner(t),
+				withDemo: true, verbose: true, accessible: true, skipContextHandoff: true,
+				discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader("yes\n"), &output, &output,
 				func(context.Context, []string, io.Writer, io.Writer) error { calls++; return failure })
 			if !errors.Is(err, failure) || calls != 1 || strings.Contains(output.String(), "Retry this stage") {
 				t.Fatalf("automation or cancellation retried: calls=%d, error=%v", calls, err)
 			}
-			for _, want := range []string{"Retry failed stage:", "Full reconciliation", "'--container-engine' 'podman'", "'--with-demo'", "'--verbose'", "'--accessible'"} {
+			for _, want := range []string{"Retry failed stage:", "Full reconciliation", "'--container-engine' 'podman'", "'--with-demo'", "'--verbose'", "'--accessible'", "'--skip-context-handoff'"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("recovery guidance lost %q: %v", want, err)
 				}

@@ -29,12 +29,16 @@ bin/substrate-aks setup
 Setup asks for a name and region, explains snapshot access, and previews changes
 before requesting approval. It then builds images, creates the infrastructure,
 checks the cluster, installs Substrate, and sets up the client.
+Before any provisioning, read-only Azure checks verify discoverable deployment
+permissions, AKS version/SKU availability, and CPU quota. These checks do not
+reserve capacity or replace later Azure validation.
 
 | Option | Use |
 | --- | --- |
 | `--accessible` | Line-oriented prompts; also used for redirected output and `TERM=dumb` |
 | `NO_COLOR=1` | Plain output |
 | `--yes` | Accept billing and select the new kube-context without prompts |
+| `--skip-context-handoff` | Leave the user kubeconfig untouched and print private kubeconfig exports |
 | `--with-demo` | Include the counter demo in noninteractive setup |
 | `--container-engine=auto\|docker\|podman` | Choose an image builder; auto mode offers a choice when both work |
 
@@ -51,21 +55,30 @@ bin/substrate-aks setup --config deploy.json --yes --with-demo
 **Run the final shell exports printed by setup.** The installer cannot change
 your shell's PATH or `KUBECONFIG`, and does not edit shell profiles. Interactive
 setup asks before selecting the new kube-context; `--yes` selects it automatically.
+CI runs that only need the installation's private kubeconfig can opt out:
+
+```sh
+bin/substrate-aks setup --config deploy.json --yes --skip-context-handoff
+```
 
 ### macOS host setup
 
 Native builds and race tests need Apple's developer tools. If they are not
 already installed, run `xcode-select --install`.
 
-Runtime asset assembly also needs GNU-compatible utilities:
+Runtime asset assembly needs `zstd`, a `tar` that reads `--zstd` archives,
+`readlink -f`, and `sha256sum`. GNU implementations are not required when the
+installed tools support these operations. Install missing tools as needed, for
+example:
 
 ```sh
-brew install coreutils gnu-tar zstd
-export PATH="$(brew --prefix coreutils)/libexec/gnubin:$(brew --prefix gnu-tar)/libexec/gnubin:$PATH"
+brew install zstd
 ```
 
-The PATH setting exposes the unprefixed GNU commands in the current shell.
-Supplying matching runtime assets skips assembly-tool checks.
+If the host lacks `sha256sum` or a compatible `readlink`/`tar`, Homebrew
+`coreutils`/`gnu-tar` are alternatives; expose their unprefixed commands on PATH.
+Preflight checks the required capabilities before provisioning. Supplying
+matching runtime assets skips assembly-tool checks.
 
 Docker Desktop or Podman's machine must be running. Apple Silicon also needs
 working Linux/amd64 builds, including execution of the pinned Rust build.
@@ -106,6 +119,7 @@ bin/substrate-aks images
 
 `doctor` checks local tools without Azure resource calls. Add `--config deploy.json`
 to check the configured runtime assets or assembly prerequisites too.
+Add `--azure --config deploy.json` for read-only cloud deployment checks.
 `plan` runs Azure Bicep what-if without deploying resources.
 
 > [!WARNING]
@@ -139,8 +153,8 @@ are reported separately from missing images; the check never rebuilds images
 or changes your config.
 
 Failed builds can leave images in ACR without updating config. Fix the error
-and retry. New role grants can take time to propagate; the uploader must be
-signed in as the configured upload identity.
+and retry. New role grants can take time to propagate; the uploader must use
+the configured upload identity or belong to the configured publisher group.
 
 Deployment commands refresh credentials for the owned ACR, so token expiry does
 not require rebuilding images. Other registries use your existing credentials.
@@ -169,8 +183,21 @@ bin/substrate-aks client
 | `client` | Install the matching `kubectl ate` and print shell exports |
 
 The cluster uses Azure CNI Overlay and Cilium network policy, with a separate
-tainted microVM node pool. Kubernetes and node OS auto-upgrade channels are
-disabled. See [configuration](configuration.md) for identity and access settings.
+tainted microVM node pool. Automatic Kubernetes version upgrades are disabled to
+preserve the supported 1.37 target. Node OS updates use AKS's `NodeImage` channel
+with AKS-managed timing: patched images include security and bug fixes without
+changing the Kubernetes version. See [configuration](configuration.md) for
+identity and access settings.
+
+Node image updates can drain/reimage nodes and interrupt workloads, especially
+with the default single microVM worker. Automatic replacement and actor recovery
+through this maintenance have not been validated; enabling updates is not a
+zero-downtime or cross-node memory-restoration guarantee. Configure an AKS
+maintenance window if you need controlled timing, and recheck KVM/runtime
+readiness and actor restoration after maintenance. See
+[AKS node OS update channels](https://learn.microsoft.com/azure/aks/auto-upgrade-node-os-image).
+The template change takes effect only when infrastructure is provisioned again;
+it does not update an existing cluster merely by downloading a new installer.
 
 Installation runs a temporary privileged probe that opens `/dev/kvm`, creates
 a test VM, and checks the native ACR credential provider. This needs cluster
@@ -217,19 +244,31 @@ Run `bin/substrate-aks client` and apply its printed exports before using
 
 Keep Azure CLI and Azure's `kubelogin` on PATH and sign in to the cluster's tenant.
 Credential refresh preserves the old kubeconfig if fetching or conversion fails.
-`check` waits up to five minutes for new RBAC grants to propagate; other
-authentication and network failures are reported directly.
+`check` uses a structured Kubernetes SelfSubjectAccessReview for permission to
+create CRDs, waiting up to five minutes for denied access to become allowed after
+a new grant. This is authorization readiness, not proof that CRDs or workloads
+are healthy. Authentication, network, malformed-response, and authorization
+evaluation failures are reported directly.
 
 ### Optional kube-context handoff
 
 Setup offers to import and select the installation in a single `KUBECONFIG`
 file, or `~/.kube/config`. The interactive default is **No**; `--yes` accepts.
 Use `--context-file PATH` to choose another file. Multi-file `KUBECONFIG` needs
-an explicit destination.
+an explicit destination unless handoff is skipped.
+
+Use `--skip-context-handoff` to skip importing/selecting a context, even with
+`--yes`. Setup still prepares the matching client and prints exports for the
+private installation kubeconfig, without inspecting the user kubeconfig or
+prompting for handoff. This option cannot be combined with `--context-file`.
 
 Unrelated entries are preserved. Conflicting names, malformed files, symlinks,
 and relative credential paths are refused. YAML comments and formatting are
 not preserved. The private installation kubeconfig stays unchanged.
+Imports use kubectl's exclusive `<destination>.lock` convention and recheck the
+destination after consent. An existing writer lock is never removed. On a name
+collision, choose an unused `--context-file` or deliberately resolve the named
+conflict; retrying the same conflicting destination will not overwrite it.
 
 To do this later:
 
@@ -239,8 +278,9 @@ bin/substrate-aks client --config deploy.json --use-context
 bin/substrate-aks client --config deploy.json --use-context --context-file ~/.kube/substrate
 ```
 
-Apply the **final** printed exports after accepting. If handoff fails, the
-cluster is retained; rerun `client` with a suitable destination.
+Setup prints one set of shell exports after the context choice. Apply those
+exports to connect. If handoff fails, the cluster is retained; rerun `client`
+with a suitable destination.
 
 ### Try the counter
 
@@ -390,8 +430,9 @@ engine commands. They do not prove live ACR access or real image builds.
 | Cold Blob restore | Memory restored on a new node with a compatible CPU model |
 | Component operations | Image checks, cluster checks/status, a single-component reinstall, and demo redeployment |
 | Managed Entra | Later `eastus2` installation; managed Entra, Azure RBAC, and disabled local accounts independently inspected |
-| Current installer | Author completed fresh cloud actor acceptance on `acae87e` |
-| Podman | Author completed a real Podman-only build |
+| Actor-acceptance baseline | Author completed fresh cloud actor acceptance on `acae87e` |
+| Podman | Author confirmed a real Podman-only build, publication, and installation |
+| Later review fixes | Race-enabled tests, pinned contracts, Bicep compilation, and live read-only Azure preflight passed; no new full-install acceptance of these fixes |
 | Teardown | Audit and inspected Entra installations deleted; main and managed node groups independently confirmed absent |
 
 **The same VM size can have different CPU models.** A cold restore onto an
@@ -403,7 +444,7 @@ later fixed and regression-tested; clean live reconciliation of that update
 remains unproven.
 
 Remaining gaps include long-duration credential renewal, multi-operator use,
-native macOS installation, Podman push/ACR authentication, broader interrupted
+native macOS installation, automatic node-image replacement/recovery, broader interrupted
 installation recovery, and other regions, SKUs, Kubernetes versions, and runtime
 architectures.
 

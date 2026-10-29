@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -76,7 +75,8 @@ func TestSetupYesReportsHandoffFailuresWithoutChangingCredentials(t *testing.T) 
 			if err == nil || !strings.Contains(err.Error(), "Substrate is installed, but context handoff") {
 				t.Fatalf("unattended handoff failure was not surfaced: %v\n%s", err, &output)
 			}
-			if strings.Contains(output.String(), "Setup complete.") || strings.Contains(output.String(), "# Try the counter demo:") {
+			if strings.Contains(output.String(), "Setup complete.") || strings.Contains(output.String(), "# Try the counter demo:") ||
+				strings.Contains(output.String(), "export KUBECONFIG=") {
 				t.Fatalf("failed handoff printed successful completion:\n%s", &output)
 			}
 			after, err := os.ReadFile(destination)
@@ -116,22 +116,21 @@ func TestYesContextHandoffUsesDefaultDestinationWithoutPrompting(t *testing.T) {
 			var output bytes.Buffer
 			ui := newSetupUI(&output)
 			selected, err := offerContextSwitch(t.Context(), setupOptions{yes: true}, c,
-				newSetupPrompt(strings.NewReader(""), ui, true), ui, &output)
+				newSetupPrompt(strings.NewReader(""), ui, true), ui)
 			if mode == "multiple files" {
-				if err == nil || selected || !strings.Contains(err.Error(), "--context-file") {
-					t.Fatalf("ambiguous destination was not reported: selected=%v err=%v", selected, err)
+				if err == nil || selected != "" || !strings.Contains(err.Error(), "--context-file") {
+					t.Fatalf("ambiguous destination was not reported: selected=%q err=%v", selected, err)
 				}
 				if _, err := os.Stat(destination); !os.IsNotExist(err) {
 					t.Fatalf("ambiguous handoff created a destination: %v", err)
 				}
 				return
 			}
-			if err != nil || !selected || strings.Contains(output.String(), "Import and select this kube-context?") {
-				t.Fatalf("--yes did not select the default destination without prompting: selected=%v err=%v\n%s", selected, err, &output)
+			if err != nil || selected != destination || strings.Contains(output.String(), "Import and select this kube-context?") {
+				t.Fatalf("--yes did not select the default destination without prompting: selected=%q err=%v\n%s", selected, err, &output)
 			}
 			selection, err := installer.PlanContextSwitch(destination)
-			if err != nil || selection.Previous != c.AKS.ClusterName ||
-				!strings.Contains(output.String(), "export KUBECONFIG="+shellQuote(destination)) {
+			if err != nil || selection.Previous != c.AKS.ClusterName {
 				t.Fatalf("handoff selected the wrong destination or context: %+v, %v\n%s", selection, err, &output)
 			}
 		})
@@ -139,13 +138,20 @@ func TestYesContextHandoffUsesDefaultDestinationWithoutPrompting(t *testing.T) {
 }
 
 func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
-	for _, mode := range []string{"accept", "decline", "EOF", "automation"} {
+	for _, mode := range []string{"accept", "decline", "EOF", "automation", "skip interactive", "skip automation"} {
 		t.Run(mode, func(t *testing.T) {
+			skip := strings.HasPrefix(mode, "skip ")
+			automation := mode == "automation" || mode == "skip automation"
 			path := testCLIConfig(t)
 			destination := filepath.Join(t.TempDir(), "config")
 			before := []byte("apiVersion: v1\nkind: Config\ncurrent-context: previous\n")
 			if err := os.WriteFile(destination, before, 0600); err != nil {
 				t.Fatal(err)
+			}
+			contextFile := destination
+			if skip {
+				contextFile = ""
+				t.Setenv("KUBECONFIG", destination+string(os.PathListSeparator)+filepath.Join(t.TempDir(), "other-config"))
 			}
 			answers := "yes\nyes\nyes\n"
 			switch mode {
@@ -153,23 +159,21 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 				answers += "yes\n"
 			case "decline":
 				answers += "no\n"
-			case "automation":
+			}
+			if automation {
 				answers = ""
 			}
 			var output bytes.Buffer
 			last := ""
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, yes: mode == "automation", withDemo: true,
-				contextFile: destination, discovery: subscriptionDisplayRunner(t),
+				path: path, yes: automation, withDemo: true, skipContextHandoff: skip,
+				contextFile: contextFile, discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader(answers), &output, &output,
-				func(_ context.Context, args []string, out, _ io.Writer) error {
+				func(_ context.Context, args []string, _, _ io.Writer) error {
 					last = args[0]
 					current, err := os.ReadFile(destination)
 					if err != nil || !bytes.Equal(current, before) {
 						t.Fatal("setup changed ambient context before client setup finished")
-					}
-					if last == "client" {
-						fmt.Fprintln(out, "matching-client-exports")
 					}
 					return nil
 				})
@@ -187,24 +191,37 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 				}
 			} else if !bytes.Equal(before, after) {
 				t.Fatal("setup changed kubeconfig without consent")
+			} else {
+				c, err := installer.LoadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				privatePath := filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")
+				if !strings.Contains(text, "export KUBECONFIG="+shellQuote(privatePath)) {
+					t.Fatal("declined handoff did not print the private kubeconfig export")
+				}
 			}
-			if mode == "automation" {
+			if strings.Count(text, "export KUBECONFIG=") != 1 || strings.Count(text, "export PATH=") > 1 {
+				t.Fatalf("setup printed conflicting shell configuration:\n%s", text)
+			}
+			complete := strings.Index(text, "Setup complete.")
+			exports := strings.Index(text, "export KUBECONFIG=")
+			demo := strings.Index(text, "# Try the counter demo:")
+			if complete < 0 || exports < complete || demo < exports {
+				t.Fatalf("final handoff did not follow successful completion and precede the demo:\n%s", text)
+			}
+			if skip {
+				if strings.Contains(text, "Kubernetes context handoff") || strings.Contains(text, "Import and select this kube-context?") ||
+					!strings.Contains(text, "Kube-context handoff skipped") {
+					t.Fatalf("explicit opt-out attempted a context handoff:\n%s", text)
+				}
+			} else if mode == "automation" {
 				if strings.Contains(text, "Import and select this kube-context?") {
 					t.Fatal("--yes prompted for a context change")
 				}
-				client := strings.Index(text, "matching-client-exports")
-				selected := strings.Index(text, "# Selected context")
-				complete := strings.Index(text, "Setup complete.")
-				demo := strings.Index(text, "# Try the counter demo:")
-				if selected < client || complete < selected || demo < complete || !strings.Contains(text, "previous") {
-					t.Fatalf("automatic handoff did not precede completion and demo instructions:\n%s", text)
-				}
 			} else {
-				client := strings.Index(text, "matching-client-exports")
 				prompt := strings.Index(text, "Import and select this kube-context?")
-				complete := strings.Index(text, "Setup complete.")
-				demo := strings.Index(text, "# Try the counter demo:")
-				if prompt < client || complete < prompt || demo < complete || !strings.Contains(text, "previous") {
+				if prompt < 0 || complete < prompt || !strings.Contains(text, "previous") {
 					t.Fatalf("handoff did not precede completion and demo instructions:\n%s", text)
 				}
 			}

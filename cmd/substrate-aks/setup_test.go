@@ -22,6 +22,12 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 		if isRegionList(c) {
 			return []byte(testRegionsJSON), nil
 		}
+		switch strings.Join(c.Args, " ") {
+		case "az account show --only-show-errors --output json":
+			return []byte(accountJSON("user")), nil
+		case "az ad signed-in-user show --only-show-errors --output json":
+			return []byte(fmt.Sprintf(`{"id":%q}`, defaultPublisher)), nil
+		}
 		want := "az account show --only-show-errors --output json --subscription " + defaultSubscription
 		if strings.Join(c.Args, " ") != want {
 			t.Fatalf("subscription display consulted the wrong context: %v", c.Args)
@@ -31,7 +37,12 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 }
 
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
-	if o.contextFile == "" {
+	client := installer.ClientSetup{}
+	if o.azure == nil {
+		o.azure = successfulCloudRunner(o.path)
+	}
+	o.client = &client
+	if o.contextFile == "" && !o.skipContextHandoff {
 		o.contextFile = filepath.Join(filepath.Dir(o.path), "operator-kubeconfig")
 	}
 	if o.subscription != "" && o.publisher != "" && o.operatorID == "" {
@@ -71,6 +82,14 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 		}
 		c, err := installer.LoadConfig(o.path)
 		if err != nil {
+			return err
+		}
+		client = installer.ClientSetup{
+			Kubeconfig: filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig"),
+			Context:    c.AKS.ClusterName,
+			BinDir:     filepath.Dir(o.path),
+		}
+		if err := os.WriteFile(filepath.Join(client.BinDir, "kubectl-ate"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 			return err
 		}
 		if _, err := os.Stat(filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {

@@ -23,8 +23,12 @@ type setupOptions struct {
 	ipClient                                                    *http.Client
 	containerEngine                                             string
 	local                                                       installer.Runner
+	azure                                                       installer.Runner
 	operatorID, operatorType                                    string
+	publisherType, readerType                                   string
 	contextFile                                                 string
+	skipContextHandoff                                          bool
+	client                                                      *installer.ClientSetup
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -137,7 +141,10 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			}
 		}
 		operator := installer.OperatorConfig{ObjectID: o.operatorID, PrincipalType: o.operatorType}
-		if err := initialize(o.path, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, io.Discard); err != nil {
+		if o.publisherType == "" && strings.EqualFold(o.publisher, defaults.signedInObjectID) {
+			o.publisherType = defaults.signedInType
+		}
+		if err := initialize(o.path, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, io.Discard); err != nil {
 			return err
 		}
 		created = true
@@ -186,6 +193,18 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	preflight.Config = c
 	if err := preflight.RuntimePrerequisites(ctx); err != nil {
 		return fmt.Errorf("runtime prerequisites failed before provisioning: %w", err)
+	}
+	cloudRunner := o.azure
+	if cloudRunner == nil {
+		cloudRunner = runner
+	}
+	ui.section("Check Azure deployment prerequisites")
+	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
+	if err := cloud.CloudPreflight(ctx); err != nil {
+		return fmt.Errorf("Azure prerequisites failed before provisioning: %w", err)
+	}
+	if err := warnOperatorIdentity(ctx, c, defaults, runner, ui); err != nil {
+		return err
 	}
 	engineLabel := "Not needed (reuse configured images)"
 	if c.Substrate.Images == (installer.ImagesConfig{}) {
@@ -248,7 +267,7 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		for _, option := range []struct {
 			enabled bool
 			flag    string
-		}{{o.withDemo, "--with-demo"}, {o.verbose, "--verbose"}, {o.accessible, "--accessible"}, {o.yes, "--yes"}} {
+		}{{o.withDemo, "--with-demo"}, {o.verbose, "--verbose"}, {o.accessible, "--accessible"}, {o.yes, "--yes"}, {o.skipContextHandoff, "--skip-context-handoff"}} {
 			if option.enabled {
 				reconcile = append(reconcile, option.flag)
 			}
@@ -332,17 +351,26 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	if err := stage("12. Set up kubectl and the matching kubectl-ate", "client"); err != nil {
 		return err
 	}
-	switched, err := offerContextSwitch(ctx, o, c, prompt, ui, out)
+	if o.client == nil || o.client.Kubeconfig == "" || o.client.BinDir == "" || o.client.Context != c.AKS.ClusterName {
+		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", "--config", o.path))
+	}
+	selected, err := offerContextSwitch(ctx, o, c, prompt, ui)
 	if err != nil {
 		return err
 	}
 	ui.complete(c.AKS.ClusterName, o.withDemo)
-	if switched {
+	client := *o.client
+	if selected != "" {
+		client.Kubeconfig = selected
 		ui.note("The selected kubeconfig now uses this installation's context. Apply the final printed exports in your current shell; PATH and shell profiles are unchanged.")
 	} else {
 		ui.note("Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
 	}
 	steps := newSetupUI(out)
+	steps.section("# Connect from this shell:")
+	if err := printClientSetup(out, client); err != nil {
+		return err
+	}
 	if o.withDemo {
 		steps.demo()
 	}

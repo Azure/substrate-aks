@@ -9,16 +9,20 @@ import (
 	"github.com/Azure/substrate-aks/internal/installer"
 )
 
-func offerContextSwitch(ctx context.Context, o setupOptions, c installer.Config, prompt *setupPrompt, ui *setupUI, out io.Writer) (bool, error) {
+func offerContextSwitch(ctx context.Context, o setupOptions, c installer.Config, prompt *setupPrompt, ui *setupUI) (string, error) {
+	if o.skipContextHandoff {
+		ui.note("Kube-context handoff skipped (--skip-context-handoff). The final instructions use this installation's private kubeconfig.")
+		return "", nil
+	}
 	selection, err := installer.PlanContextSwitch(o.contextFile)
 	if err != nil {
 		if o.yes {
-			return false, fmt.Errorf("Substrate is installed, but context handoff is unavailable: %w\nChoose a valid --context-file PATH and retry: %s", err,
+			return "", fmt.Errorf("Substrate is installed, but context handoff is unavailable: %w\nChoose a valid --context-file PATH and retry: %s", err,
 				cliCommand("client", "--config", o.path, "--use-context"))
 		}
 		ui.warning("Kube-context handoff unavailable: " + err.Error())
-		ui.note("Your kubeconfig has not been changed. Use the printed private KUBECONFIG export.")
-		return false, nil
+		ui.note("Your kubeconfig has not been changed. The final instructions will use this installation's private kubeconfig.")
+		return "", nil
 	}
 	ui.section("Kubernetes context handoff")
 	previous := selection.Previous
@@ -32,22 +36,16 @@ func offerContextSwitch(ctx context.Context, o setupOptions, c installer.Config,
 	if !o.yes {
 		accepted, err := prompt.confirm(ctx, "Import and select this kube-context?", false)
 		if errors.Is(err, io.EOF) {
-			ui.note("No handoff consent received; kubeconfig unchanged. Use the printed private KUBECONFIG export.")
-			return false, nil
+			ui.note("No handoff consent received; kubeconfig unchanged. The final instructions will use this installation's private kubeconfig.")
+			return "", nil
 		}
 		if err != nil || !accepted {
-			return false, err
+			return "", err
 		}
 	}
 	if err := (installer.App{Config: c}).SelectContext(ctx, selection); err != nil {
-		return false, fmt.Errorf("Substrate is installed, but context handoff failed: %w\nPrivate kubeconfig is unchanged. Retry client handoff: %s", err,
-			cliCommand("client", "--config", o.path, "--use-context", "--context-file", selection.Path))
+		return "", fmt.Errorf("Substrate is installed, but context handoff failed: %w\nPrivate kubeconfig is unchanged. To use it without merging: %s\nTo retry importing, choose an unused --context-file PATH or resolve the reported destination problem first", err,
+			cliCommand("client", "--config", o.path))
 	}
-	return true, printSelectedContext(out, selection.Path, c.AKS.ClusterName)
-}
-
-func printSelectedContext(out io.Writer, path, context string) error {
-	_, err := fmt.Fprintf(out, "\n# Selected context %s in %s.\n# Use this export instead of the earlier private-file export:\nexport KUBECONFIG=%s\nkubectl --context %s get pods --all-namespaces\n",
-		shellQuote(context), shellQuote(path), shellQuote(path), shellQuote(context))
-	return err
+	return selection.Path, nil
 }

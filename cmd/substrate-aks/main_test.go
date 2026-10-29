@@ -112,6 +112,7 @@ func TestCLIRejectsUnknownCommandsAndUnexpectedFlags(t *testing.T) {
 		{"status", "unexpected"}, {"images", "--registry-only"}, {"install", "--registry-only"},
 		{"actor", "--", "get", "actors"},
 		{"images", "--check", "--reset-config"}, {"install", "--reset-config"},
+		{"client", "--skip-context-handoff"},
 	} {
 		var out bytes.Buffer
 		if err := run(t.Context(), args, &out, &out); err == nil {
@@ -121,6 +122,15 @@ func TestCLIRejectsUnknownCommandsAndUnexpectedFlags(t *testing.T) {
 	var out bytes.Buffer
 	if err := run(t.Context(), []string{"--help"}, &out, &out); err != nil || !strings.Contains(out.String(), "destroy") {
 		t.Fatalf("help failed without configuration or Azure access: %v", err)
+	}
+}
+
+func TestSetupRejectsConflictingContextHandoffFlags(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var out bytes.Buffer
+	err := run(t.Context(), []string{"setup", "--yes", "--skip-context-handoff", "--context-file", "config"}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "--skip-context-handoff and --context-file are mutually exclusive") {
+		t.Fatalf("conflicting handoff flags were not rejected before tool checks: %v", err)
 	}
 }
 

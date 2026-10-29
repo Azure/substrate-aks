@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
@@ -22,7 +23,7 @@ Azure infrastructure, declarative deployment configuration, and a guided install
 Commands:
   setup      Guide provisioning, installation, and client setup
   init       Write a new configuration; creates no Azure resources
-  doctor     Check local tools; makes no Azure resource calls
+  doctor     Check local tools; --azure adds read-only cloud deployment checks
   plan       Run Bicep subscription what-if; requires Azure access
   provision  Create/reconcile billable resources owned by this installation
   images     Build/push images to owned ACR and assemble microVM assets
@@ -43,15 +44,18 @@ Common flags:
   --check                                (images only; verify saved publication)
   --reset-config                         (images only; clear images after teardown)
   --container-engine auto|docker|podman   (setup/images; setup offers a choice if both work)
+  --azure                                (doctor only; read-only cloud checks, requires --config)
 
 init flags:
   --subscription UUID                    Default: active Azure CLI subscription
   --identity-object-id UUID               Default: signed-in Azure CLI identity
+  --identity-principal-type TYPE          Explicit publisher type: User, ServicePrincipal, or Group
   --operator-object-id UUID               Default: signed-in identity, independent of upload identity
   --operator-principal-type TYPE          User (explicit ID default), ServicePrincipal, or Group
   --api-cidr YOUR_IP/32                   Default: detected public IPv4 /32
   --allow-unrestricted-api               Opt out of the AKS API IP allowlist
   --snapshot-reader-object-id UUID        Optional read-only snapshot inspection
+  --snapshot-reader-principal-type TYPE   Explicit reader type: User, ServicePrincipal, or Group
   --name substrate-dev --location eastus2
 
 setup flags:
@@ -60,6 +64,7 @@ setup flags:
   --with-demo                            Also deploy the counter microVM demo
   --accessible                           Use screen-reader-friendly prompts
   --context-file PATH                    Destination for the final context handoff
+  --skip-context-handoff                 Skip importing/selecting a context; print private kubeconfig exports
 
 client flags:
   --use-context                          Explicitly import/select this installation in your kubeconfig
@@ -80,7 +85,11 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr error) {
+func run(ctx context.Context, args []string, out, stderr io.Writer) error {
+	return runCommand(ctx, args, out, stderr, nil)
+}
+
+func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clientResult *installer.ClientSetup) (resultErr error) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, err := io.WriteString(out, usage)
 		return err
@@ -97,14 +106,19 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	verbose := fs.Bool("verbose", false, "show subprocess commands and diagnostics")
 	var confirmation, component string
 	var subscription, publisher, reader, cidr, name, location string
+	var publisherType, readerType string
 	var operatorID, operatorType string
 	var contextFile string
 	var useContext bool
-	var yes, withDemo, unrestrictedAPI, accessible bool
+	var yes, withDemo, unrestrictedAPI, accessible, skipContextHandoff bool
 	var registryOnly, checkImages, resetImages bool
+	var azureChecks bool
 	var containerEngine string
 	if command == "setup" || command == "images" || command == "doctor" {
 		fs.StringVar(&containerEngine, "container-engine", "", "image builder: auto (Docker/buildx then Podman), docker or podman")
+	}
+	if command == "doctor" {
+		fs.BoolVar(&azureChecks, "azure", false, "check Azure deployment permissions, AKS versions, SKU availability and CPU quota (requires --config)")
 	}
 	if command == "plan" || command == "provision" {
 		fs.BoolVar(&registryOnly, "registry-only", false, "bootstrap only the owned resource group and private ACR")
@@ -129,9 +143,11 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		fs.StringVar(&subscription, "subscription", "", "Azure subscription UUID (default: active Azure CLI subscription)")
 		fs.StringVar(&publisher, "identity-object-id", "", "Azure identity Entra object UUID used for image/asset uploads (default: signed-in identity)")
 		fs.StringVar(&publisher, "asset-publisher-object-id", "", "compatibility alias for --identity-object-id")
+		fs.StringVar(&publisherType, "identity-principal-type", "", "publisher type: User, ServicePrincipal, or Group (otherwise discovered or inferred)")
 		fs.StringVar(&operatorID, "operator-object-id", "", "Entra object UUID granted cluster-scoped AKS RBAC Cluster Admin (default: signed-in identity)")
 		fs.StringVar(&operatorType, "operator-principal-type", "", "User, ServicePrincipal, or Group (explicit object ID defaults to User)")
 		fs.StringVar(&reader, "snapshot-reader-object-id", "", "optional Entra object UUID granted read-only snapshot access")
+		fs.StringVar(&readerType, "snapshot-reader-principal-type", "", "reader type: User, ServicePrincipal, or Group (otherwise inferred from a matching identity)")
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
 		fs.StringVar(&name, "name", "substrate-dev", "dedicated resource group and cluster name")
@@ -141,6 +157,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		fs.BoolVar(&yes, "yes", false, "accept billable deployment and select the kube-context without prompts")
 		fs.BoolVar(&withDemo, "with-demo", false, "also deploy the counter microVM demo")
 		fs.BoolVar(&accessible, "accessible", false, "use screen-reader-friendly prompts instead of interactive forms")
+		fs.BoolVar(&skipContextHandoff, "skip-context-handoff", false, "skip importing/selecting a context and print private kubeconfig exports")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -160,8 +177,17 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	if operatorType != "" && operatorID == "" {
 		return errors.New("--operator-principal-type requires --operator-object-id")
 	}
+	if publisherType != "" && publisher == "" {
+		return errors.New("--identity-principal-type requires --identity-object-id")
+	}
+	if readerType != "" && reader == "" {
+		return errors.New("--snapshot-reader-principal-type requires --snapshot-reader-object-id")
+	}
 	if command == "client" && contextFile != "" && !useContext {
 		return errors.New("client --context-file requires --use-context; without it client only prints private shell configuration")
+	}
+	if skipContextHandoff && contextFile != "" {
+		return errors.New("--skip-context-handoff and --context-file are mutually exclusive")
 	}
 	if checkImages && resetImages {
 		return errors.New("--check and --reset-config are mutually exclusive")
@@ -191,13 +217,17 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		}
 		printAzureDefaults(out, defaults)
 		subscription, publisher = defaults.subscription, defaults.publisher
-		return initialize(*configPath, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, out)
+		if publisherType == "" && strings.EqualFold(publisher, defaults.signedInObjectID) {
+			publisherType = defaults.signedInType
+		}
+		return initialize(*configPath, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType, out)
 	}
 	if command == "setup" {
+		var client installer.ClientSetup
 		var configFlags bool
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "subscription", "identity-object-id", "asset-publisher-object-id", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "api-cidr", "allow-unrestricted-api", "name", "location":
+			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "name", "location":
 				configFlags = true
 			}
 		})
@@ -207,13 +237,20 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			verbose: *verbose, configFlags: configFlags, unrestrictedAPI: unrestrictedAPI, accessible: accessible,
 			containerEngine: containerEngine,
 			operatorID:      operatorID, operatorType: operatorType,
-			contextFile: contextFile,
-		}, os.Stdin, out, stderr, run)
+			publisherType: publisherType, readerType: readerType,
+			contextFile: contextFile, skipContextHandoff: skipContextHandoff,
+			client: &client,
+		}, os.Stdin, out, stderr, func(ctx context.Context, args []string, out, stderr io.Writer) error {
+			return runCommand(ctx, args, out, stderr, &client)
+		})
 	}
 	if command == "doctor" {
 		explicitConfig := false
 		fs.Visit(func(f *flag.Flag) { explicitConfig = explicitConfig || f.Name == "config" })
 		if !explicitConfig {
+			if azureChecks {
+				return errors.New("doctor --azure requires --config")
+			}
 			if containerEngine != "" {
 				return errors.New("doctor --container-engine needs --config for an installation-specific builder probe")
 			}
@@ -249,6 +286,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		"client": "Client setup", "status": "Installation status", "destroy": "Installation teardown",
 	}
 	title := titles[command]
+	if command == "doctor" && azureChecks {
+		title = "Azure deployment prerequisites"
+	}
 	if checkImages {
 		title = "Saved image verification"
 	} else if resetImages {
@@ -291,7 +331,13 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 		if err := a.Doctor(ctx); err != nil {
 			return err
 		}
-		return a.RuntimePrerequisites(ctx)
+		if err := a.RuntimePrerequisites(ctx); err != nil {
+			return err
+		}
+		if azureChecks {
+			return a.CloudPreflight(ctx)
+		}
+		return nil
 	case "plan":
 		if registryOnly {
 			return a.ProvisionRegistry(ctx, true)
@@ -346,8 +392,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			return err
 		}
 		p.pause()
-		if err := printClientSetup(out, client); err != nil {
-			return err
+		if clientResult != nil {
+			*clientResult = client
+			return nil
 		}
 		if useContext {
 			selection, err := installer.PlanContextSwitch(contextFile)
@@ -357,9 +404,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 			if err := a.SelectContext(ctx, selection); err != nil {
 				return err
 			}
-			return printSelectedContext(out, selection.Path, client.Context)
+			client.Kubeconfig = selection.Path
 		}
-		return nil
+		return printClientSetup(out, client)
 	case "status":
 		return a.Status(ctx)
 	case "destroy":
@@ -368,7 +415,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) (resultErr e
 	return nil
 }
 
-func initialize(path, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, out io.Writer) error {
+func initialize(path, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, out io.Writer) error {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return err
@@ -379,8 +426,9 @@ func initialize(path, subscription, publisher, reader, cidr, name, location stri
 	c.Installation.ID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	c.Azure = installer.AzureConfig{
 		SubscriptionID: subscription, AssetPublisherObjectID: publisher,
-		SnapshotReaderObjectID: reader,
-		Location:               location, ResourceGroup: name,
+		SnapshotReaderObjectID:      reader,
+		AssetPublisherPrincipalType: publisherType, SnapshotReaderPrincipalType: readerType,
+		Location: location, ResourceGroup: name,
 	}
 	c.AKS.ClusterName = name
 	c.AKS.Operator = operator
