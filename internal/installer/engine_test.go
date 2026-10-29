@@ -9,17 +9,25 @@ import (
 	"testing"
 )
 
+const readyBuildx = "Name: test\nDriver: docker\nNodes:\nName: test0\nStatus: running\n"
+
 func TestImageBuildEngineSelection(t *testing.T) {
 	unavailable := errors.New("builder unavailable")
 	for _, tc := range []struct {
 		name, requested, selected string
 		replies                   []reply
 	}{
-		{"prefer Docker", "", "docker", []reply{{contains: "docker info"}, {contains: "docker buildx version"}}},
+		{"prefer Docker", "", "docker", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", output: readyBuildx}}},
 		{"fallback from stopped Docker", "auto", "podman", []reply{{contains: "docker info", err: unavailable}, {contains: "podman info"}}},
 		{"fallback from missing buildx", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version", err: unavailable}, {contains: "podman info"}}},
+		{"fallback from unreachable builder", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", err: unavailable}, {contains: "podman info"}}},
+		{"fallback from builder timeout", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", err: context.DeadlineExceeded}, {contains: "podman info"}}},
+		{"fallback from reported node error", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", output: readyBuildx + "Error: connection refused\n"}, {contains: "podman info"}}},
+		{"fallback from inactive builder", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", output: "Status: inactive\n"}, {contains: "podman info"}}},
+		{"fallback from missing builder status", "auto", "podman", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap"}, {contains: "podman info"}}},
 		{"explicit Podman", "podman", "podman", []reply{{contains: "podman info"}}},
 		{"explicit Docker does not fallback", "docker", "", []reply{{contains: "docker info", err: unavailable}}},
+		{"explicit Docker builder failure does not fallback", "docker", "", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", err: unavailable}}},
 		{"neither available", "", "", []reply{{contains: "docker info", err: unavailable}, {contains: "podman info", err: unavailable}}},
 		{"invalid selection before commands", "other", "", nil},
 	} {
@@ -32,6 +40,9 @@ func TestImageBuildEngineSelection(t *testing.T) {
 			if tc.selected == "" {
 				if err == nil || engine != "" || env != nil {
 					t.Fatalf("unexpected usable builder: %q, %v, %v", engine, env, err)
+				}
+				if tc.requested == "docker" && !errors.Is(err, unavailable) {
+					t.Fatalf("lost builder failure: %v", err)
 				}
 				return
 			}
@@ -70,6 +81,18 @@ func TestImageBuildEngineCancellationDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestImageBuildEngineBootstrapCancellationDoesNotFallback(t *testing.T) {
+	c := testConfig(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	r := script(t, reply{contains: "docker info"}, reply{contains: "docker buildx version"},
+		reply{contains: "docker buildx inspect --bootstrap", err: context.Canceled, effect: func(Command) { cancel() }})
+	_, _, err := (App{Config: c, Runner: r}).imageBuildEngine(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost bootstrap cancellation: %v", err)
+	}
+}
+
 func TestAvailableContainerEnginesProbesBothAndRequiresUsableBuildx(t *testing.T) {
 	unavailable := errors.New("builder unavailable")
 	for _, tc := range []struct {
@@ -77,9 +100,10 @@ func TestAvailableContainerEnginesProbesBothAndRequiresUsableBuildx(t *testing.T
 		replies []reply
 		want    string
 	}{
-		{"both", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "podman info"}}, "docker,podman"},
-		{"Docker only", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "podman info", err: unavailable}}, "docker"},
+		{"both", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", output: readyBuildx}, {contains: "podman info"}}, "docker,podman"},
+		{"Docker only", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", output: readyBuildx}, {contains: "podman info", err: unavailable}}, "docker"},
 		{"Podman only without buildx", []reply{{contains: "docker info"}, {contains: "docker buildx version", err: unavailable}, {contains: "podman info"}}, "podman"},
+		{"Podman only with unreachable Docker builder", []reply{{contains: "docker info"}, {contains: "docker buildx version"}, {contains: "docker buildx inspect --bootstrap", err: unavailable}, {contains: "podman info"}}, "podman"},
 		{"neither", []reply{{contains: "docker info", err: unavailable}, {contains: "podman info", err: unavailable}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

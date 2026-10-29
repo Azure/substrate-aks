@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -92,6 +93,27 @@ func (a App) imageBuildEngines(ctx context.Context, all bool) ([]imageBuilder, e
 					if _, err := a.Runner.Run(probeCtx, Command{Args: args, Env: env}); err != nil {
 						return err
 					}
+				}
+				a.progress("Starting and checking the selected Docker buildx builder (up to 2 minutes; may download or start BuildKit)")
+				bootstrapCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				defer cancel()
+				output, err := a.Runner.Run(bootstrapCtx, Command{Args: []string{"docker", "buildx", "inspect", "--bootstrap"}, Env: env})
+				if err != nil {
+					return err
+				}
+				// Buildx inspect can report node errors while exiting successfully.
+				ready := false
+				for _, line := range strings.Split(string(output), "\n") {
+					key, value, _ := strings.Cut(strings.TrimSpace(line), ":")
+					if key == "Error" {
+						return fmt.Errorf("selected Docker buildx builder is not ready: %s", strings.TrimSpace(value))
+					}
+					if key == "Status" && strings.TrimSpace(value) == "running" {
+						ready = true
+					}
+				}
+				if !ready {
+					return errors.New("selected Docker buildx builder did not report a running node")
 				}
 				return nil
 			}

@@ -221,7 +221,8 @@ func TestImageBuildPinsSourceTargetAndCredentials(t *testing.T) {
 			registry := "substratetest123.azurecr.io"
 			replies := []reply{
 				accountReply(c), {contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
-				{contains: "docker info"}, {contains: "docker buildx version"}, acrLoginReply(),
+				{contains: "docker info"}, {contains: "docker buildx version"},
+				{contains: "docker buildx inspect --bootstrap", output: readyBuildx}, acrLoginReply(),
 				{contains: "git init"}, {contains: "git fetch"}, {contains: "git checkout"},
 				{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
 				{contains: "publish release-images"},

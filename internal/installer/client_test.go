@@ -44,6 +44,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 		{contains: "deployment sub show", output: string(outputs)},
 		{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
 		{contains: "git diff --name-only HEAD"},
+		{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"},
 		{contains: "aks get-credentials"},
 		{contains: "get namespace", output: "{}"},
 		{contains: "get configmap", output: `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"` + fp + `","phase":"deployed"}}`},

@@ -131,6 +131,10 @@ Setup offers a builder choice when both Docker/buildx and Podman work.
 `--yes` prefers Docker/buildx, then Podman. An explicit `--container-engine`
 never falls back to another engine. Reusing configured images needs no builder.
 Builds target Linux/amd64; Podman can run rootless on Linux.
+Before registry provisioning, Docker checks include bootstrapping the selected
+buildx builder, with a separate two-minute startup limit. This may download or
+start a BuildKit container. An unreachable or unhealthy builder triggers Podman
+fallback in automatic mode, or an error when Docker was selected explicitly.
 
 `images` builds the pinned source and publishes the Substrate, demo, and Azure
 storage-plugin images. It assembles runtime assets unless `assetsDir` is set,

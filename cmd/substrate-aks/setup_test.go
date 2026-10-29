@@ -53,6 +53,8 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 			switch strings.Join(c.Args, " ") {
 			case "docker info --format {{json .ServerVersion}}", "docker buildx version":
 				return nil, nil
+			case "docker buildx inspect --bootstrap":
+				return []byte("Status: running\n"), nil
 			case "podman info --format json":
 				if o.containerEngine == "podman" {
 					return nil, nil
@@ -208,7 +210,7 @@ func TestSetupShowsEngineBeforeBillingConfirmation(t *testing.T) {
 					if c.Args[0] != tc.available {
 						return nil, errors.New("builder unavailable in this fixture")
 					}
-					return nil, nil
+					return []byte("Status: running\n"), nil
 				}),
 			}, strings.NewReader("no\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 				t.Fatal("declined setup executed an installation stage")
@@ -243,7 +245,7 @@ func TestSetupOffersBothEnginesAndPinsInteractiveChoice(t *testing.T) {
 				path: path, discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					probes = append(probes, strings.Join(c.Args, " "))
-					return nil, nil
+					return []byte("Status: running\n"), nil
 				}),
 			}, strings.NewReader(selection+"\nyes\nno\nyes\nyes\n"), &output, &output,
 				func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -260,7 +262,7 @@ func TestSetupOffersBothEnginesAndPinsInteractiveChoice(t *testing.T) {
 			picker := strings.Index(text, "Image builder: docker or podman [docker]")
 			confirmation := strings.Index(text, "Continue with this billable installation?")
 			if picker < 0 || confirmation < picker || !strings.Contains(text, engine+" (selected)") ||
-				strings.Join(probes, ",") != "docker info --format {{json .ServerVersion}},docker buildx version,podman info --format json" {
+				strings.Join(probes, ",") != "docker info --format {{json .ServerVersion}},docker buildx version,docker buildx inspect --bootstrap,podman info --format json" {
 				t.Fatalf("conditional picker, summary, or engine discovery incorrect: %v\n%s", probes, text)
 			}
 		})
@@ -281,7 +283,7 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 				path: path, yes: yes, containerEngine: requested, discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					probes = append(probes, c.Args[0])
-					return nil, nil
+					return []byte("Status: running\n"), nil
 				}),
 			}, strings.NewReader(answers), &output, &output,
 				func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -311,7 +313,9 @@ func TestSetupEnginePickerEOFStopsBeforeConfirmationAndStages(t *testing.T) {
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
 		path: path, discovery: subscriptionDisplayRunner(t),
-		local: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) { return nil, nil }),
+		local: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
+			return []byte("Status: running\n"), nil
+		}),
 	}, strings.NewReader(""), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 		t.Fatal("missing engine selection reached installation stages")
 		return nil
@@ -348,20 +352,31 @@ func TestSetupPinsAutoDetectedEngineAcrossStages(t *testing.T) {
 }
 
 func TestSetupBuilderFailureStopsBeforeBillingConfirmation(t *testing.T) {
-	path := testCLIConfig(t)
-	var output bytes.Buffer
-	err := setupForTest(t.Context(), setupOptions{
-		path: path, discovery: subscriptionDisplayRunner(t),
-		local: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
-			return nil, errors.New("builder unavailable")
-		}),
-	}, strings.NewReader("yes\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
-		t.Fatal("unavailable image builder reached installation stages")
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "no usable image builder") ||
-		strings.Contains(output.String(), "Continue with this billable installation?") {
-		t.Fatalf("unavailable builder was not rejected before billing confirmation: %v\n%s", err, &output)
+	for _, phase := range []string{"daemon", "selected builder"} {
+		t.Run(phase, func(t *testing.T) {
+			path := testCLIConfig(t)
+			var output bytes.Buffer
+			unavailable := errors.New("builder unavailable")
+			err := setupForTest(t.Context(), setupOptions{
+				path: path, discovery: subscriptionDisplayRunner(t),
+				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
+					if phase == "selected builder" {
+						switch strings.Join(c.Args, " ") {
+						case "docker info --format {{json .ServerVersion}}", "docker buildx version":
+							return nil, nil
+						}
+					}
+					return nil, unavailable
+				}),
+			}, strings.NewReader("yes\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
+				t.Fatal("unavailable image builder reached installation stages")
+				return nil
+			})
+			if !errors.Is(err, unavailable) || !strings.Contains(err.Error(), "no usable image builder") ||
+				strings.Contains(output.String(), "Continue with this billable installation?") {
+				t.Fatalf("unavailable builder was not rejected before billing confirmation: %v\n%s", err, &output)
+			}
+		})
 	}
 }
 

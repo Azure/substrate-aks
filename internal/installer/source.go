@@ -92,6 +92,16 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 				}
 			}
 		}
+		// Include ignored files: Git ignore rules do not exclude Go build inputs.
+		untracked, err := a.Runner.Run(ctx, Command{Dir: dest, Args: []string{"git", "ls-files", "--others", "-z", "--"}})
+		if err != nil {
+			return "", err
+		}
+		for _, path := range strings.Split(string(untracked), "\x00") {
+			if path != "" && path != ".substrate-aks-prepared.json" {
+				return "", fmt.Errorf("unexpected untracked source file at %q; use a fresh installation.stateDir", path)
+			}
+		}
 		return dest, nil
 	} else if !os.IsNotExist(err) {
 		return "", err

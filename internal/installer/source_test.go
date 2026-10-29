@@ -46,6 +46,15 @@ func TestPreparedSourceRejectsModifiedFiles(t *testing.T) {
 			t.Fatalf("accepted modified source: %v", err)
 		}
 	})
+	t.Run("untracked enumeration failure", func(t *testing.T) {
+		want := errors.New("cannot enumerate source files")
+		r := script(t, reply{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
+			reply{contains: "git diff --name-only HEAD"},
+			reply{contains: "git ls-files --others -z --", err: want})
+		if _, err := (App{Config: c, Runner: r}).prepare(t.Context(), i); !errors.Is(err, want) {
+			t.Fatalf("lost source verification failure: %v", err)
+		}
+	})
 	t.Run("modified adapter output", func(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "atelet.yaml"), []byte("reverted to GCS"), 0600); err != nil {
 			t.Fatal(err)
@@ -55,6 +64,73 @@ func TestPreparedSourceRejectsModifiedFiles(t *testing.T) {
 			t.Fatalf("accepted modified adapter output: %v", err)
 		}
 	})
+}
+
+func TestPreparedSourceChecksUntrackedFiles(t *testing.T) {
+	c, i := testConfig(t), testInfrastructure()
+	root, _ := clientFixture(t, c)
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("ignored.go\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner := ExecRunner{}
+	git := func(args ...string) []byte {
+		t.Helper()
+		data, err := runner.Run(t.Context(), Command{Dir: root, Args: append([]string{"git"}, args...)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	git("init", "--quiet")
+	git("add", "--", ".", ":!.substrate-aks-prepared.json")
+	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+		"-c", "commit.gpgsign=false", "-c", "core.hooksPath="+t.TempDir(),
+		"commit", "--quiet", "-m", "Prepared-source test fixture")
+	c.Substrate.Source.Commit = strings.TrimSpace(string(git("rev-parse", "HEAD")))
+	marker, err := os.ReadFile(filepath.Join(root, ".substrate-aks-prepared.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p prepared
+	if err := json.Unmarshal(marker, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Fingerprint = fingerprint(c, i)
+	dest := filepath.Join(c.workspace(), "source-"+p.Fingerprint+"-v2")
+	if err := os.Rename(root, dest); err != nil {
+		t.Fatal(err)
+	}
+	marker, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".substrate-aks-prepared.json"), marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := App{Config: c, Runner: runner}
+	if got, err := a.prepare(t.Context(), i); err != nil || got != dest {
+		t.Fatalf("rejected the installer's untracked completion marker: %q, %v", got, err)
+	}
+	for _, path := range []string{"cmd/ate-setup/extra.go", "cmd/kubectl-ate/extra.go", "ignored.go", ".substrate-aks-prepared.json.go"} {
+		t.Run(path, func(t *testing.T) {
+			file := filepath.Join(dest, path)
+			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte("package main\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Remove(file); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := a.prepare(t.Context(), i); err == nil ||
+				!strings.Contains(err.Error(), "unexpected untracked source file") || !strings.Contains(err.Error(), path) {
+				t.Fatalf("accepted added Go source %s: %v", path, err)
+			}
+		})
+	}
 }
 
 func TestUpstreamCommandsPinTargetAndImages(t *testing.T) {
