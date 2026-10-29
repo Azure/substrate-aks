@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -191,14 +192,22 @@ func TestLoadConfigStrictAndRelativePaths(t *testing.T) {
 }
 
 func TestCleanEnvironment(t *testing.T) {
-	input := []string{
+	preserved := []string{
 		"PATH=/bin", "HOME=/home/test", "AZURE_CONFIG_DIR=/azure", "GOTOOLCHAIN=auto",
+		"AZURE_CLIENT_ID=test-client", "DOCKER_CONFIG=/docker", "DOCKER_HOST=tcp://builder.invalid:2376",
+		"DOCKER_CONTEXT=remote", "BUILDX_CONFIG=/buildx", "REGISTRY_AUTH_FILE=/registry/auth.json",
+	}
+	input := append(slices.Clone(preserved),
 		"ATE_CONFIG=other.yaml", "ATE_INSTALL_KIND=true", "VERSION=old",
 		"PROJECT_ID=other", "KUBECTL_CONTEXT=other", "AWS_ACCESS_KEY_ID=secret",
 		"ARCH=arm64", "OUT=/other-assets", "KATA_VER=other", "CH_VER=other",
-	}
+		"ACTOR_JWT_ALGORITHM=RS256", "ACTOR_JWT_ISSUER=https://caller.invalid",
+		"EXPECTED_JWT_ISSUER=https://caller.invalid", "DOCKER_BUILD_FLAGS=--no-cache",
+		"E2E_ATE_ENVOY_CONCURRENCY=4", "KIND_CLUSTER_NAME=other",
+		"BENCHMARK_ACTOR_MEMORY=1Gi", "ANTHROPIC_API_KEY=synthetic-test-value",
+	)
 	got := cleanEnvironment(input)
-	if strings.Join(got, "|") != "PATH=/bin|HOME=/home/test|AZURE_CONFIG_DIR=/azure|GOTOOLCHAIN=auto" {
+	if !slices.Equal(got, preserved) {
 		t.Fatalf("inherited conflicting settings: %v", got)
 	}
 }

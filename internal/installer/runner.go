@@ -133,7 +133,9 @@ func cleanEnvironment(env []string) []string {
 			drop = drop || strings.HasPrefix(key, prefix)
 		}
 		switch key {
-		case "PROJECT_ID", "PROJECT_NUMBER", "BUCKET_NAME", "KUBECTL_CONTEXT", "NO_DEV_ENV", "VERSION", "ARCH", "OUT", "KATA_VER", "CH_VER":
+		case "PROJECT_ID", "PROJECT_NUMBER", "BUCKET_NAME", "KUBECTL_CONTEXT", "NO_DEV_ENV", "VERSION", "ARCH", "OUT", "KATA_VER", "CH_VER",
+			"ACTOR_JWT_ALGORITHM", "ACTOR_JWT_ISSUER", "EXPECTED_JWT_ISSUER", "DOCKER_BUILD_FLAGS",
+			"E2E_ATE_ENVOY_CONCURRENCY", "KIND_CLUSTER_NAME", "BENCHMARK_ACTOR_MEMORY", "ANTHROPIC_API_KEY":
 			drop = true
 		}
 		if !drop {

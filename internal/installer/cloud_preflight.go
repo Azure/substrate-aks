@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -155,9 +156,8 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		}
 		a.progress("Checking availability and CPU requirements for %s", pool.size)
 		if skuCatalog == nil {
-			a.progress("Loading the regional VM SKU catalog once; Azure CLI can take a few minutes")
-			query := fmt.Sprintf("[?name=='Standard_D4s_v3' || name=='%s']", a.Config.AKS.WorkerPool.VMSize)
-			skuCatalog, err = a.az(ctx, "vm", "list-skus", "--location", a.Config.Azure.Location, "--resource-type", "virtualMachines", "--query", query)
+			a.progress("Loading the VM SKU catalog for %s", a.Config.Azure.Location)
+			skuCatalog, err = a.regionalSKUCatalog(ctx)
 			if err != nil {
 				return err
 			}
@@ -208,6 +208,51 @@ func (a App) CloudPreflight(ctx context.Context) error {
 	}
 	a.progress("Azure preflight passed. Permissions, quota and capacity can change; conditional/deny policies and later provider checks may still block deployment")
 	return nil
+}
+
+func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
+	// Azure CLI's list-skus can filter --location locally, downloading every region.
+	endpoint := "https://management.azure.com/subscriptions/" + a.Config.Azure.SubscriptionID + "/providers/Microsoft.Compute/skus"
+	params := url.Values{
+		"api-version": {"2021-07-01"},
+		"$filter":     {"location eq '" + strings.ReplaceAll(a.Config.Azure.Location, "'", "''") + "'"},
+	}
+	next := endpoint + "?" + params.Encode()
+	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='Standard_D4s_v3' || name=='%s')],nextLink:nextLink}", a.Config.AKS.WorkerPool.VMSize)
+	var skus []json.RawMessage
+	seen := map[string]bool{}
+	for next != "" {
+		pageURL, err := url.Parse(next)
+		if err != nil || pageURL.Scheme != "https" || pageURL.Host != "management.azure.com" ||
+			pageURL.User != nil || pageURL.Fragment != "" ||
+			"https://"+pageURL.Host+pageURL.EscapedPath() != endpoint {
+			return nil, fmt.Errorf("Azure returned an invalid VM SKU pagination URL")
+		}
+		if seen[next] {
+			return nil, fmt.Errorf("Azure repeated a VM SKU catalog page; availability is unverified")
+		}
+		seen[next] = true
+		data, err := a.az(ctx, "rest", "--method", "get", "--url", next, "--query", query)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Value    []json.RawMessage
+			NextLink string
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("reading regional VM SKU catalog: %w", err)
+		}
+		if page.Value == nil {
+			return nil, fmt.Errorf("Azure returned an incomplete VM SKU catalog; availability is unverified")
+		}
+		skus = append(skus, page.Value...)
+		next = page.NextLink
+		if next != "" {
+			a.progress("Loading VM SKU catalog page %d for %s", len(seen)+1, a.Config.Azure.Location)
+		}
+	}
+	return json.Marshal(skus)
 }
 
 func (a App) cloudSKU(data []byte, size string) (string, int64, error) {

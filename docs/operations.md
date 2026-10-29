@@ -120,6 +120,8 @@ bin/substrate-aks images
 `doctor` checks local tools without Azure resource calls. Add `--config deploy.json`
 to check the configured runtime assets or assembly prerequisites too.
 Add `--azure --config deploy.json` for read-only cloud deployment checks.
+VM SKU checks request only the configured region and follow all result pages;
+permissions and quota are checked live rather than reused from a cache.
 `plan` runs Azure Bicep what-if without deploying resources.
 
 > [!WARNING]
@@ -355,9 +357,10 @@ A new setup process checks the installation from the beginning; it does not
 resume an arbitrary interrupted stage. Keep the installation ID and target
 settings unchanged. Never discard the config while its resources still exist.
 
-Ctrl-C does not undo Azure's server-side deployment. The first interrupt allows
-cleanup; a second exits immediately and may leave temporary probes to remove
-manually.
+Ctrl-C, SIGTERM, and terminal hangups (SIGHUP) cancel local command process
+groups and allow cleanup. A second termination signal exits immediately and may
+leave temporary probes to remove manually. Interruption does not undo Azure's
+server-side deployment; already-submitted deployments may continue.
 
 To delete the installation:
 
