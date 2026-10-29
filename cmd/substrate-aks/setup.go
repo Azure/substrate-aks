@@ -34,10 +34,18 @@ type setupOptions struct {
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
 
 func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
+	if useSetupWorkspace(o, in, stderr) {
+		return runSetupWorkspace(ctx, o, in, out, stderr, execute)
+	}
+	return setupFlow(ctx, o, in, out, stderr, execute)
+}
+
+func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
 	if file, ok := in.(*os.File); !o.yes && ok && !term.IsTerminal(file.Fd()) {
 		return errors.New("setup needs an interactive terminal; use --yes with a complete configuration for automation")
 	}
 	ui := newSetupUI(stderr)
+	ui.session = setupSessionFrom(ctx)
 	prompt := newSetupPrompt(in, ui, o.accessible)
 	ui.welcome(!prompt.accessible)
 	runner := o.discovery
@@ -57,7 +65,6 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	if local == nil {
 		local = installer.ExecRunner{}
 	}
-	ui.section("1. Check local prerequisites")
 	var prior installer.Config
 	if statErr == nil {
 		var err error
@@ -65,14 +72,24 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		if err != nil {
 			return err
 		}
+		if ui.session != nil {
+			ui.session.send(setupTargetMsg{prior, o.withDemo})
+		}
 	}
-	preflight := installer.App{Config: prior, Runner: local, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
-	if err := preflight.Doctor(ctx); err != nil {
+	environment := []string{"Local tools"}
+	if errors.Is(statErr, os.ErrNotExist) {
+		environment = append(environment, "Azure account / identities", "API access address")
+	}
+	ui.checklist("Check your environment", environment...)
+	preflight := installer.App{Config: prior, Runner: local, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+	if err := ui.check("Local tools", func() error { return preflight.Doctor(ctx) }); err != nil {
 		return fmt.Errorf("local prerequisites failed before Azure discovery or provisioning: %w", err)
 	}
 	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
-		ui.section("Discover Azure subscription and signed-in identity")
-		defaults, err = discoverInstallationDefaults(ctx, o.subscription, o.publisher, o.operatorID, o.operatorType, runner)
+		err = ui.check("Azure account / identities", func() error {
+			defaults, err = discoverInstallationDefaults(ctx, o.subscription, o.publisher, o.operatorID, o.operatorType, runner)
+			return err
+		})
 		if err != nil {
 			if o.yes || ctx.Err() != nil {
 				return err
@@ -82,7 +99,10 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 		o.subscription, o.publisher = defaults.subscription, defaults.publisher
 		o.operatorID, o.operatorType = defaults.operator.ObjectID, defaults.operator.PrincipalType
-		o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
+		err = ui.check("API access address", func() error {
+			o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
+			return err
+		})
 		if err != nil {
 			if o.yes || ctx.Err() != nil || o.unrestrictedAPI {
 				return err
@@ -157,31 +177,52 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	if err != nil {
 		return err
 	}
+	if ui.session != nil {
+		ui.session.send(setupTargetMsg{c, o.withDemo})
+	}
 	if c.Substrate.Images != (installer.ImagesConfig{}) {
 		if err := c.ValidateInstall(); err != nil {
 			return err
 		}
 	}
+	validation := []string{}
 	if !created {
-		ui.section("Validate saved Azure region")
-		regions, err := readAzureRegions(ctx, c.Azure.SubscriptionID, runner)
-		if err != nil {
+		validation = append(validation, "Saved Azure region")
+	}
+	if defaults.subscriptionName == "" {
+		validation = append(validation, "Azure subscription")
+	}
+	validation = append(validation, "Runtime tools", "Azure deployment readiness", "Operator identity review")
+	if c.Substrate.Images == (installer.ImagesConfig{}) {
+		validation = append(validation, "Image builder")
+	}
+	ui.checklist("Validate your deployment", validation...)
+	if !created {
+		if err := ui.check("Saved Azure region", func() error {
+			regions, err := readAzureRegions(ctx, c.Azure.SubscriptionID, runner)
+			if err != nil {
+				return err
+			}
+			if _, err := validateAzureRegion(c.Azure.Location, regions); err != nil {
+				return fmt.Errorf("%w; edit azure.location in %s before retrying", err, o.path)
+			}
+			return nil
+		}); err != nil {
 			return err
-		}
-		if _, err := validateAzureRegion(c.Azure.Location, regions); err != nil {
-			return fmt.Errorf("%w; edit azure.location in %s before retrying", err, o.path)
 		}
 	}
 	if defaults.subscriptionName == "" {
-		ui.note("Looking up the saved subscription name.")
-		account, lookupErr := readAzureAccount(ctx, c.Azure.SubscriptionID, runner)
-		if lookupErr == nil {
-			if !strings.EqualFold(account.ID, c.Azure.SubscriptionID) || account.Name == "" {
-				lookupErr = errors.New("Azure CLI returned a missing name or a different subscription ID")
-			} else {
-				defaults.subscriptionName = account.Name
+		lookupErr := ui.check("Azure subscription", func() error {
+			account, err := readAzureAccount(ctx, c.Azure.SubscriptionID, runner)
+			if err != nil {
+				return err
 			}
-		}
+			if !strings.EqualFold(account.ID, c.Azure.SubscriptionID) || account.Name == "" {
+				return errors.New("Azure CLI returned a missing name or a different subscription ID")
+			}
+			defaults.subscriptionName = account.Name
+			return nil
+		})
 		if lookupErr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -191,54 +232,57 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 	}
 	preflight.Config = c
-	if err := preflight.RuntimePrerequisites(ctx); err != nil {
+	if err := ui.check("Runtime tools", func() error { return preflight.RuntimePrerequisites(ctx) }); err != nil {
 		return fmt.Errorf("runtime prerequisites failed before provisioning: %w", err)
 	}
 	cloudRunner := o.azure
 	if cloudRunner == nil {
 		cloudRunner = runner
 	}
-	ui.section("Check Azure deployment prerequisites")
-	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
-	if err := cloud.CloudPreflight(ctx); err != nil {
+	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+	if err := ui.check("Azure deployment readiness", func() error { return cloud.CloudPreflight(ctx) }); err != nil {
 		return fmt.Errorf("Azure prerequisites failed before provisioning: %w", err)
 	}
-	if err := warnOperatorIdentity(ctx, c, defaults, runner, ui); err != nil {
+	if err := ui.check("Operator identity review", func() error { return warnOperatorIdentity(ctx, c, defaults, runner, ui) }); err != nil {
 		return err
 	}
 	engineLabel := "Not needed (reuse configured images)"
 	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		ui.section("Image builder")
-		builder := installer.App{Config: c, Runner: local, ContainerEngine: o.containerEngine,
-			Progress: func(format string, args ...any) { ui.note(fmt.Sprintf(format, args...)) }}
-		automatic := o.containerEngine == "" || o.containerEngine == "auto"
-		var engine string
-		mode := "explicit selection"
-		if automatic && !o.yes {
-			engines, err := builder.AvailableContainerEngines(ctx)
-			if err != nil {
-				return fmt.Errorf("checking the local image builders before provisioning: %w", err)
-			}
-			engine, mode = engines[0], "auto-detected"
-			if len(engines) > 1 {
-				engine, err = prompt.containerEngine(ctx)
+		if err := ui.check("Image builder", func() error {
+			builder := installer.App{Config: c, Runner: local, ContainerEngine: o.containerEngine,
+				Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+			automatic := o.containerEngine == "" || o.containerEngine == "auto"
+			var engine string
+			mode := "explicit selection"
+			if automatic && !o.yes {
+				engines, err := builder.AvailableContainerEngines(ctx)
 				if err != nil {
-					return err
+					return fmt.Errorf("checking the local image builders before provisioning: %w", err)
 				}
-				mode = "selected"
+				engine, mode = engines[0], "auto-detected"
+				if len(engines) > 1 {
+					engine, err = prompt.containerEngine(ctx)
+					if err != nil {
+						return err
+					}
+					mode = "selected"
+				}
+			} else {
+				engine, err = builder.DetectContainerEngine(ctx)
+				if err != nil {
+					return fmt.Errorf("checking the local image builder before provisioning: %w", err)
+				}
+				if automatic {
+					mode = "auto-detected"
+					ui.note("Auto-detection prefers working Docker/buildx, then Podman.")
+				}
 			}
-		} else {
-			engine, err = builder.DetectContainerEngine(ctx)
-			if err != nil {
-				return fmt.Errorf("checking the local image builder before provisioning: %w", err)
-			}
-			if automatic {
-				mode = "auto-detected"
-				ui.note("Auto-detection prefers working Docker/buildx, then Podman.")
-			}
+			engineLabel = engine + " (" + mode + ")"
+			o.containerEngine = engine
+			return nil
+		}); err != nil {
+			return err
 		}
-		engineLabel = engine + " (" + mode + ")"
-		o.containerEngine = engine
 	}
 	ui.summary(c, defaults, o.path, created, engineLabel)
 	if !o.yes {
@@ -256,6 +300,32 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			}
 		}
 	}
+	if ui.session != nil {
+		ui.session.send(setupTargetMsg{c, o.withDemo})
+	}
+	type setupStage struct {
+		label, command string
+		flags          []string
+	}
+	var stages []setupStage
+	if c.Substrate.Images == (installer.ImagesConfig{}) {
+		stages = append(stages,
+			setupStage{"Preview registry bootstrap", "plan", []string{"--registry-only"}},
+			setupStage{"Provision the private registry", "provision", []string{"--registry-only"}},
+			setupStage{"Publish images and prepare runtime assets", "images", nil})
+	}
+	stages = append(stages,
+		setupStage{"Verify configured images before provisioning AKS", "images", []string{"--check"}},
+		setupStage{"Preview full infrastructure", "plan", nil},
+		setupStage{"Provision AKS, storage, and identities", "provision", nil},
+		setupStage{"Check cluster compatibility", "check", nil},
+		setupStage{"Prepare Azure deployment manifests", "prepare", nil},
+		setupStage{"Install Substrate and runtime assets", "install", nil},
+		setupStage{"Inspect workload status", "status", nil})
+	if o.withDemo {
+		stages = append(stages, setupStage{"Deploy and warm the counter microVM demo", "demo", nil})
+	}
+	stages = append(stages, setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil})
 	stopped := func(label string, args []string, err error) error {
 		reconcile := []string{"setup", "--config", o.path}
 		if o.containerEngine != "" {
@@ -276,8 +346,24 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			label, err, cliCommand(args...), cliCommand(reconcile...),
 			cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
 	}
+	activePhase := ""
 	stage := func(label, command string, flags ...string) error {
-		ui.section(label)
+		if ui.session != nil {
+			phase := setupPhase(command, flags)
+			if phase != activePhase {
+				activePhase = phase
+				ui.session.send(setupPhaseMsg(phase))
+				var items []string
+				for _, planned := range stages {
+					if setupPhase(planned.command, planned.flags) == phase {
+						items = append(items, planned.label)
+					}
+				}
+				ui.checklist(setupPhaseTitle(phase), items...)
+			}
+		} else {
+			ui.section(label)
+		}
 		args := append([]string{command, "--config", o.path}, flags...)
 		if c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
 			args = append(args, "--container-engine", o.containerEngine)
@@ -289,14 +375,26 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 			if err := ctx.Err(); err != nil {
 				return stopped(label, args, err)
 			}
-			err := execute(ctx, args, out, stderr)
+			stageOut, stageErr := out, stderr
+			if ui.session != nil {
+				stageOut, stageErr = io.Discard, io.Discard
+			}
+			work := func() error { return execute(ctx, args, stageOut, stageErr) }
+			var err error
+			if ui.session != nil {
+				err = ui.check(label, work)
+			} else {
+				err = work()
+			}
 			if err == nil {
 				break
 			}
 			if o.yes || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return stopped(label, args, err)
 			}
-			ui.warning(err.Error())
+			if ui.session == nil {
+				ui.warning(err.Error())
+			}
 			retry, promptErr := prompt.confirm(ctx, "Retry this stage with the same settings?", false)
 			if promptErr != nil || !retry {
 				return stopped(label, args, errors.Join(err, promptErr))
@@ -313,52 +411,29 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 		}
 		return nil
 	}
-	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		for _, s := range []struct {
-			label, command string
-			flags          []string
-		}{
-			{"2. Preview registry bootstrap", "plan", []string{"--registry-only"}},
-			{"3. Provision the private registry", "provision", []string{"--registry-only"}},
-			{"4. Publish images and prepare runtime assets", "images", nil},
-		} {
-			if err := stage(s.label, s.command, s.flags...); err != nil {
-				return err
-			}
-		}
-	}
-	if err := stage("Verify configured images before provisioning AKS", "images", "--check"); err != nil {
-		return err
-	}
-	fmt.Fprintln(stderr, "\nConfigured images are available; image builds will not be repeated.")
-	for _, s := range []struct{ label, command string }{
-		{"5. Preview full infrastructure", "plan"},
-		{"6. Provision AKS, storage, and identities", "provision"},
-		{"7. Check cluster compatibility", "check"},
-		{"8. Prepare Azure deployment manifests", "prepare"},
-		{"9. Install Substrate and runtime assets", "install"},
-		{"10. Inspect workload status", "status"},
-	} {
-		if err := stage(s.label, s.command); err != nil {
+	for _, s := range stages {
+		if err := stage(s.label, s.command, s.flags...); err != nil {
 			return err
 		}
-	}
-	if o.withDemo {
-		if err := stage("11. Deploy and warm the counter microVM demo", "demo"); err != nil {
-			return err
+		if s.command == "images" && len(s.flags) > 0 && s.flags[0] == "--check" {
+			ui.note("Configured images are available; image builds will not be repeated.")
 		}
-	}
-	if err := stage("12. Set up kubectl and the matching kubectl-ate", "client"); err != nil {
-		return err
 	}
 	if o.client == nil || o.client.Kubeconfig == "" || o.client.BinDir == "" || o.client.Context != c.AKS.ClusterName {
 		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", "--config", o.path))
 	}
 	selected, err := offerContextSwitch(ctx, o, c, prompt, ui)
 	if err != nil {
-		return err
+		handoff := []string{"client", "--config", o.path, "--use-context"}
+		if o.contextFile != "" {
+			handoff = append(handoff, "--context-file", o.contextFile)
+		}
+		return stopped("Kubernetes context handoff", handoff, err)
 	}
 	ui.complete(c.AKS.ClusterName, o.withDemo)
+	if ui.session != nil {
+		newSetupUI(out).complete(c.AKS.ClusterName, o.withDemo)
+	}
 	client := *o.client
 	if selected != "" {
 		client.Kubeconfig = selected

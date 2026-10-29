@@ -75,14 +75,21 @@ func main() {
 	ctx, cancel := interruptContext(context.Background())
 	defer cancel()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		console := newConsole(os.Stderr)
-		if errors.Is(err, context.Canceled) {
-			console.logger.Warn(err)
-		} else {
-			console.logger.Error(err)
-		}
+		reportCommandError(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func reportCommandError(out io.Writer, err error) {
+	console := newConsole(out)
+	if errors.Is(err, context.Canceled) {
+		console.logger.Print("Stopped by user.")
+		if err.Error() != context.Canceled.Error() {
+			console.logger.Print(err)
+		}
+		return
+	}
+	console.logger.Error(err)
 }
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
@@ -294,7 +301,12 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	} else if resetImages {
 		title = "Saved image reset"
 	}
-	p := newProgress(stderr, log, title, !*verbose && command != "status")
+	p := commandProgress(ctx, stderr, log, title, !*verbose && command != "status")
+	session := setupSessionFrom(ctx)
+	if session != nil {
+		session.send(setupLogMsg(log.Name()))
+		out = log
+	}
 	fmt.Fprintf(log, "[command] %s\n[config] %s\n[target] %s / %s\n", command, *configPath, c.Azure.ResourceGroup, c.Azure.Location)
 	p.heading(title)
 	if command != "doctor" {
@@ -318,12 +330,20 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fmt.Fprintf(log, "\n[complete] %s\n", title)
 	}()
 	runner := installer.ExecRunner{Log: log, Stdout: out, Stderr: p}
+	if session != nil {
+		runner.Stdout, runner.Stderr = nil, nil
+	}
 	if *verbose {
-		runner.Verbose = p
+		if session == nil {
+			runner.Verbose = p
+		}
 		p.info("Diagnostic log: %s", log.Name())
 	}
 	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, Preview: func(changes []installer.ResourceChange) error {
 		p.pause()
+		if session != nil {
+			return session.preview(c.Azure.SubscriptionID, changes)
+		}
 		return writePlan(out, c.Azure.SubscriptionID, changes)
 	}}
 	switch command {

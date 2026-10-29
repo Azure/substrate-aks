@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,36 @@ import (
 
 	"github.com/Azure/substrate-aks/internal/installer"
 )
+
+func TestReportCommandErrorDistinguishesIntentionalCancellation(t *testing.T) {
+	recovery := fmt.Errorf("setup stopped at infrastructure preview: %w\n\nResources are retained.\nRetry failed stage: substrate-aks plan --config deploy.json\nTeardown: substrate-aks destroy --config deploy.json --confirm-delete test-cluster", context.Canceled)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want []string
+		omit []string
+	}{
+		{"cancelled", context.Canceled, []string{"Stopped by user.\n"}, []string{"WARN", "ERROR", "context canceled"}},
+		{"cancelled with recovery", recovery, []string{"Stopped by user.", recovery.Error()}, []string{"WARN", "ERROR"}},
+		{"failed", errors.New("deployment failed"), []string{"ERROR", "deployment failed"}, []string{"Stopped by user."}},
+		{"timed out", context.DeadlineExceeded, []string{"ERROR", "context deadline exceeded"}, []string{"Stopped by user."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			reportCommandError(&out, tc.err)
+			for _, text := range tc.want {
+				if !strings.Contains(out.String(), text) {
+					t.Fatalf("missing %q in command error:\n%s", text, &out)
+				}
+			}
+			for _, text := range tc.omit {
+				if strings.Contains(out.String(), text) {
+					t.Fatalf("unexpected %q in command error:\n%s", text, &out)
+				}
+			}
+		})
+	}
+}
 
 func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	dir := t.TempDir()

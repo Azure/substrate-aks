@@ -61,6 +61,33 @@ func TestSetupFailureGuidancePreservesOptionsAndCancellationNeverRetries(t *test
 					t.Fatalf("recovery guidance lost %q: %v", want, err)
 				}
 			}
+
 		})
+	}
+}
+
+func TestSetupFinalHandoffCancellationRetainsRecoveryGuidance(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var output bytes.Buffer
+	err := setupForTest(ctx, setupOptions{
+		path: testCLIConfig(t), withDemo: true, discovery: subscriptionDisplayRunner(t),
+	}, strings.NewReader("yes\nyes\nyes\n"), &output, &output,
+		func(_ context.Context, args []string, _, _ io.Writer) error {
+			if args[0] == "client" {
+				cancel()
+			}
+			return nil
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("final handoff cancellation was lost: %v", err)
+	}
+	for _, want := range []string{"Resources are retained", "Retry failed stage:", " client --config ", "--use-context", "Full reconciliation", "Teardown:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("handoff cancellation lost %q: %v", want, err)
+		}
+	}
+	if strings.Contains(output.String(), "Setup complete") || strings.Contains(output.String(), "export KUBECONFIG=") {
+		t.Fatal("cancelled handoff printed success or premature exports")
 	}
 }

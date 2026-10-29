@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"strings"
@@ -20,6 +21,21 @@ type setupPrompt struct {
 	reader     *bufio.Reader
 	ui         *setupUI
 	accessible bool
+}
+
+func setupFormTheme(isDark bool) *huh.Styles {
+	theme := huh.ThemeCharm(isDark)
+	// Huh uses Lip Gloss v2; v1 colors resolve through a different renderer.
+	accent := color.RGBA{R: 0xb4, G: 0x8c, B: 0xf2, A: 0xff}
+	theme.Focused.Title = theme.Focused.Title.Foreground(accent)
+	theme.Focused.NoteTitle = theme.Focused.NoteTitle.Foreground(accent)
+	theme.Focused.SelectSelector = theme.Focused.SelectSelector.Foreground(accent)
+	theme.Focused.TextInput.Prompt = theme.Focused.TextInput.Prompt.Foreground(accent)
+	theme.Focused.FocusedButton = theme.Focused.FocusedButton.
+		Background(accent).Foreground(color.RGBA{R: 0x18, G: 0x19, B: 0x26, A: 0xff})
+	theme.Focused.Next = theme.Focused.FocusedButton
+	theme.Group.Title = theme.Focused.Title
+	return theme
 }
 
 func newSetupPrompt(in io.Reader, ui *setupUI, accessible bool) *setupPrompt {
@@ -78,6 +94,9 @@ func (p *setupPrompt) run(ctx context.Context, field huh.Field) error {
 		return err
 	}
 	form := huh.NewForm(huh.NewGroup(field))
+	if p.ui.session != nil {
+		return p.ui.session.prompt(ctx, form)
+	}
 	if colorProfile(p.ui.out) == termenv.Ascii {
 		form.WithTheme(huh.ThemeFunc(huh.ThemeBase)).
 			WithProgramOptions(tea.WithColorProfile(colorprofile.NoTTY))
@@ -170,9 +189,13 @@ func (p *setupPrompt) containerEngine(ctx context.Context) (string, error) {
 		}
 		return value, nil
 	}
-	err := p.run(ctx, huh.NewSelect[string]().Title("Image builder").
+	field := huh.NewSelect[string]().Title("Image builder").
 		Description("Both engines are available. Go images use ko with either choice.").
 		Options(huh.NewOption("Docker (buildx)", "docker"), huh.NewOption("Podman", "podman")).
-		Value(&value))
+		Value(&value)
+	if p.ui.session != nil {
+		field.Title("Choose an engine").Description("Go images use ko with either engine.")
+	}
+	err := p.run(ctx, field)
 	return value, err
 }

@@ -32,11 +32,58 @@ checks the cluster, installs Substrate, and sets up the client.
 Before any provisioning, read-only Azure checks verify discoverable deployment
 permissions, AKS version/SKU availability, and CPU quota. These checks do not
 reserve capacity or replace later Azure validation.
+VM SKU discovery uses a server-filtered regional Resource SKUs request and
+follows all result pages; it does not download the subscription-wide catalog.
+
+Interactive terminals use an alternate-screen installation workspace. The
+target stays visible during questions and approvals; completed phases collapse
+while the active phase reports named operations and elapsed time. Environment
+discovery and deployment validation show their applicable checks up front.
+The same preset checklist pattern covers registry bootstrap, image publication
+and verification, AKS provisioning, Substrate installation, the optional demo,
+and client setup. Rows represent the applicable setup operations, not individual
+Azure log messages. Substeps update one detail line beneath the active row;
+they never append a growing list. Approval cards temporarily replace the checklist,
+which returns with its completed rows preserved after consent.
+Successful checks receive green checkmarks; the active check shows a spinner,
+elapsed time, and one short status line beneath its row. Full progress remains
+available in activity (`F3`); progress messages alone never mark a check
+successful. Image-builder selection keeps completed validation checks visible,
+with the choice immediately below the active row. Wide terminals place
+"Agent Substrate on AKS" on the left and stack cluster, region, and subscription
+on the right. The header has no global status or elapsed timer.
+
+Quick start is available; Advanced configuration is explicitly marked **Planned**
+and cannot start an installation. The branded opening screen has two selectable
+cards; use the arrow keys to choose, then Enter to begin Quick start. Saved
+configuration files remain supported; "Advanced" refers to a future guided editor.
+
+| Key | Action |
+| --- | --- |
+| `F2` | Inspect the installation review or full resource-change IDs |
+| `F3` | Inspect recent operation activity and the private diagnostic log path |
+| `PgUp` / `PgDn` | Scroll a review or activity |
+| `Esc` | Close details/activity; never skips an approval |
+| `F1` | Show help |
+| `Ctrl-C` | Stop owned subprocess work, retaining Azure resources |
+
+Registry and full-infrastructure approvals remain separate. Compact previews
+use a change-summary card with nonzero counts and readable resource categories;
+full provider types and resource IDs remain available in details (`F2`).
+Completion chatter stays in activity rather than the approval. Deletion IDs and
+unknown change types are shown explicitly; read their summary through to the bottom and press `F4`
+to acknowledge it before answering the approval. Oversized previews are refused,
+not silently truncated. Use standalone `plan` for its full table.
+
+Narrow windows use one column. Below 40 columns or 14 rows, setup shows compact
+status and pauses input until resized; work and cancellation remain active.
+After restoring the terminal, setup prints persistent connection instructions
+with exactly one final set of exports. Failures print recovery commands instead.
 
 | Option | Use |
 | --- | --- |
 | `--accessible` | Line-oriented prompts; also used for redirected output and `TERM=dumb` |
-| `NO_COLOR=1` | Plain output |
+| `NO_COLOR=1` | Disable color; use `--accessible` for append-only output |
 | `--yes` | Accept billing and select the new kube-context without prompts |
 | `--skip-context-handoff` | Leave the user kubeconfig untouched and print private kubeconfig exports |
 | `--with-demo` | Include the counter demo in noninteractive setup |
@@ -330,9 +377,15 @@ Long-duration credential refresh remains a validation gap.
 | Output | Location |
 | --- | --- |
 | Progress and completion | stderr; plain updates when redirected |
-| Results, previews, and next-step commands | stdout |
+| Standalone results/previews and final setup commands | stdout |
 | Detailed command logs | Private files under the installation's `logs/` directory |
-| `--verbose` | Underlying commands, build output, and diagnostics |
+| `--verbose` | Underlying commands, build output, and diagnostics in append-only/standalone flows |
+
+The interactive workspace owns the terminal: subprocess output never writes
+over a form or approval. Activity is a bounded list of reported operations, not
+an unfiltered subprocess transcript. Raw diagnostics stay in private command
+logs, including with `--verbose`. For an append-only verbose transcript, use
+`setup --accessible --verbose`.
 
 Failures show a short error and a log path. The success banner appears only after
 client setup and any accepted context handoff succeed. Color is terminal-only;
@@ -358,9 +411,11 @@ resume an arbitrary interrupted stage. Keep the installation ID and target
 settings unchanged. Never discard the config while its resources still exist.
 
 Ctrl-C, SIGTERM, and terminal hangups (SIGHUP) cancel local command process
-groups and allow cleanup. A second termination signal exits immediately and may
-leave temporary probes to remove manually. Interruption does not undo Azure's
-server-side deployment; already-submitted deployments may continue.
+groups and allow cleanup. The interactive workspace restores the terminal after
+its owned subprocesses exit. A second termination signal exits immediately and
+may leave temporary probes to remove manually. Interruption does not undo Azure's
+server-side deployment; already-submitted deployments may continue, and resources
+remain for retry or teardown.
 
 To delete the installation:
 
@@ -427,6 +482,35 @@ go test -race -tags=integration ./internal/installer \
 The image-check tests use local registries, and publisher tests use controlled
 engine commands. They do not prove live ACR access or real image builds.
 
+### Extending guided setup
+
+Feature work should extend the operation flow, not the terminal renderer:
+
+- Add configuration questions in `setupFlow` (`setup.go`) through
+  `setupPrompt.run` or its typed helpers. They automatically use embedded forms
+  in the workspace and existing line-oriented prompts in accessible mode.
+  Do not call another top-level form/program or write directly to the terminal.
+- Add review rows/warnings in `setupUI.summary`. The same summary feeds both
+  presenters, so new database/monitoring settings do not need root-model fields.
+  Keep saved configuration authoritative; never rebuild it from visible fields.
+- Report slow work through `installer.App.Progress` or `setupUI.step`.
+  The existing command runner keeps locking, private logs, and retry semantics.
+  Structured previews use `App.Preview`; do not parse terminal tables.
+- For preparation checklists, declare applicable rows with `setupUI.checklist`
+  and run each operation through `setupUI.check`. Results come from the returned
+  error, not progress text. Questions and approvals remain separate from checks.
+- New lifecycle operations should be assigned to an existing conceptual phase
+  in `setupPhase` when possible. Keep phase IDs separate from display titles.
+  Business policy belongs in installer operations, not `setupWorkspace.Update`.
+- Preserve the setup context when invoking a command: it carries the internal
+  presentation session. Standalone commands have no session and retain their
+  normal output. Keep raw/sensitive subprocess output out of progress messages.
+
+The Linux `TestWorkspacePTY*` tests use real pseudo-terminals with fake operations,
+including input/filtering, resize, retries, subprocess cancellation, restoration,
+and post-exit shell handoff. They do not contact Azure. Model tests also cover
+planned choices, compact/destructive previews, bounded activity, and tiny windows.
+
 ## Live acceptance and limitations
 
 | Area | Completed validation |
@@ -441,6 +525,12 @@ engine commands. They do not prove live ACR access or real image builds.
 | Podman | Author confirmed a real Podman-only build, publication, and installation |
 | Later review fixes | Race-enabled tests, pinned contracts, Bicep compilation, and live read-only Azure preflight passed; no new full-install acceptance of these fixes |
 | Teardown | Audit and inspected Entra installations deleted; main and managed node groups independently confirmed absent |
+| Guided workspace | Real interactive `eastus2` installation: image publication, two approved infrastructure previews, Substrate, demo, matching client, and isolated context import succeeded; private and imported contexts reached Ready nodes; one final export block appeared after alternate-screen exit |
+| Workspace teardown | Ownership-checked teardown succeeded; installation and managed node resource groups independently confirmed absent, with no related groups remaining |
+
+The workspace acceptance used the first-pass binary. Subsequent form-navigation,
+resize, compact-layout, and cancellation hardening passed race-enabled tests and
+real Linux pseudo-terminal checks; it was not followed by another cloud install.
 
 **The same VM size can have different CPU models.** A cold restore onto an
 incompatible CPU reset memory while durable file/disk state survived. The

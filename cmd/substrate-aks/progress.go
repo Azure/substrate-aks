@@ -22,6 +22,7 @@ type progress struct {
 	spinnerVisible bool
 	frame          int
 	animation      spinner.Spinner
+	session        *setupSession
 }
 
 func newProgress(out, log io.Writer, stage string, allowAnimation bool) *progress {
@@ -55,6 +56,9 @@ func newProgress(out, log io.Writer, stage string, allowAnimation bool) *progres
 func (p *progress) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.session != nil {
+		return p.log.Write(data)
+	}
 	p.clearSpinnerLocked()
 	return p.out.Write(data)
 }
@@ -65,6 +69,11 @@ func (p *progress) step(format string, args ...any) {
 	p.clearSpinnerLocked()
 	p.stage = fmt.Sprintf(format, args...)
 	p.active = true
+	if p.session != nil {
+		p.session.send(setupStepMsg(p.stage))
+		fmt.Fprintf(p.log, "\n[step] %s\n", p.stage)
+		return
+	}
 	p.console.logger.Infof("%s...", p.stage)
 	fmt.Fprintf(p.log, "\n[step] %s\n", p.stage)
 }
@@ -108,6 +117,9 @@ func (p *progress) heading(title string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clearSpinnerLocked()
+	if p.session != nil {
+		return
+	}
 	p.console.heading.Print(title)
 }
 
@@ -115,6 +127,10 @@ func (p *progress) info(format string, args ...any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clearSpinnerLocked()
+	if p.session != nil {
+		p.session.send(setupNoteMsg{text: fmt.Sprintf(format, args...)})
+		return
+	}
 	p.console.logger.Debugf(format, args...)
 }
 
@@ -122,6 +138,10 @@ func (p *progress) warn(message string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clearSpinnerLocked()
+	if p.session != nil {
+		p.session.send(setupNoteMsg{text: message, warning: true})
+		return
+	}
 	p.console.logger.Warn(message)
 }
 
@@ -130,6 +150,10 @@ func (p *progress) complete(format string, args ...any) {
 	defer p.mu.Unlock()
 	p.active = false
 	p.clearSpinnerLocked()
+	if p.session != nil {
+		p.session.send(setupNoteMsg{text: fmt.Sprintf(format, args...)})
+		return
+	}
 	p.console.success.Infof(format, args...)
 }
 

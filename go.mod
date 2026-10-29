@@ -9,9 +9,11 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/log v1.0.0
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/muesli/termenv v0.16.0
 	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/sys v0.49.0
 	sigs.k8s.io/kustomize/api v0.21.3
 	sigs.k8s.io/kustomize/kyaml v0.21.3
 )
@@ -23,7 +25,6 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/catppuccin/go v0.2.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
-	github.com/charmbracelet/x/ansi v0.11.9 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
@@ -49,7 +50,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20261001230523-97fa35140926 // indirect
