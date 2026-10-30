@@ -8,7 +8,7 @@ them, fills in values from your deployment, and passes the result to upstream
 | --- | --- |
 | `actor-images` | Pull private actor images from ACR with the node's identity |
 | `postgres` | Run PostgreSQL on a 32 GiB Azure Disk |
-| `telemetry` | Disable the GKE-specific monitoring configuration |
+| `telemetry` | Replace GKE configuration; exporters are disabled unless `MonitoringEnabled` enables OTLP metrics |
 | `demo` | Place microVM workers on the dedicated node pool |
 
 The object-store sidecars are configured by the
@@ -21,6 +21,12 @@ identities, account and containers, and renders before these.
 deployment values. Use the [installer](../README.md#quickstart), not
 `kubectl kustomize deploy`. [#25](https://github.com/Azure/substrate-aks/issues/25) tracks a standalone Component,
 kustomization, and Helm chart.
+
+`monitoring.yaml` defines the metrics-only OTLP collector and Azure managed
+PodMonitors for its application/self metrics and upstream Envoy. `Monitoring()`
+renders ordinary YAML with a configuration checksum to restart the collector on
+change. Apply only after Azure's managed Prometheus CRD is established. OTLP logs
+and traces stay disabled.
 
 Managed PostgreSQL uses a separate non-root, bounded psql Job in
 `database-bootstrap.yaml`. The installer supplies a temporary Secret and the

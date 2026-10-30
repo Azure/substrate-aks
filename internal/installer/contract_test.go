@@ -173,6 +173,7 @@ func TestPinnedUpstreamContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !reflect.DeepEqual(paths, []string{
 		"manifests/ate-install/atelet.yaml",
 		"manifests/ate-install/ate-api-server.yaml",

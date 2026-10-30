@@ -32,6 +32,8 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryOnly bool = false
+param monitoringEnabled bool = false
+param monitoringLocation string = location
 @allowed(['bundled', 'flexible-server'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
@@ -51,6 +53,8 @@ resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
     'substrate-aks-database': databaseBackend
     'substrate-aks-database-location': databaseBackend == 'bundled' ? '' : databaseLocation
     'substrate-aks-database-sku': databaseBackend == 'bundled' ? '' : databaseSkuName
+    'substrate-aks-monitoring': string(monitoringEnabled)
+    'substrate-aks-monitoring-location': monitoringEnabled ? monitoringLocation : ''
   }
 }
 
@@ -97,6 +101,8 @@ module resources 'resources.bicep' = if (!registryOnly) {
     snapshotReaderPrincipalType: snapshotReaderPrincipalType
     operatorObjectId: operatorObjectId
     operatorPrincipalType: operatorPrincipalType
+    monitoringEnabled: monitoringEnabled
+    monitoringLocation: monitoringLocation
     registryName: registry.outputs.registryName
     databaseBackend: databaseBackend
     databaseLocation: databaseLocation
