@@ -332,11 +332,16 @@ func TestManagedBicepNetworkGrantScope(t *testing.T) {
 		if resource.Type != "Microsoft.Authorization/roleAssignments" {
 			continue
 		}
-		var properties struct{ RoleDefinitionID string }
-		if err := json.Unmarshal(resource.Properties, &properties); err != nil {
+		var value any
+		if err := json.Unmarshal(resource.Properties, &value); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(properties.RoleDefinitionID, "4d97b98b-1d4f-4787-a291-c67834d212e7") {
+		properties, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		roleDefinitionID, _ := properties["roleDefinitionId"].(string)
+		if strings.Contains(roleDefinitionID, "4d97b98b-1d4f-4787-a291-c67834d212e7") {
 			found = true
 			if !strings.Contains(resource.Scope, "Microsoft.Network/publicIPAddresses") {
 				t.Fatal("cluster Network Contributor grant widened beyond the outbound public IP")
