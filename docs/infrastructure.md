@@ -108,3 +108,23 @@ az deployment group create --subscription "$AZURE_SUBSCRIPTION_ID" \
 Use the returned FQDN with strict certificate/hostname verification. Independently
 arrange SQL bootstrap and application deployment if needed. Deleting the dedicated
 resource group deletes the database and its data; retain required backups first.
+
+## Managed monitoring
+
+The shared subscription/resource-group entrypoints accept
+`monitoringEnabled` (default `false`) and `monitoringLocation` (default AKS
+region). Set them before creation to provision managed Prometheus and Standard
+Grafana independently of the installer. Registry-only deployment excludes them.
+
+`infra/monitoring.bicep` is also a resource-group module for an existing AKS
+cluster whose `azureMonitorProfile.metrics.enabled` is already `true`. Its
+parameters are `location`, `installationId`, `clusterName` and
+`grafanaAdminObjectId`. It creates the workspace, DCE/DCR/association, Grafana and
+scoped access roles. It does not modify an existing cluster's other settings.
+Its `monitoring` output returns workspace/query and Grafana resource/endpoints.
+
+The root passes `assetPublisherObjectId` as Grafana admin. Standalone callers can
+choose that identity directly on the leaf. The module does not install the
+in-cluster collector, configure application exporters, or reconcile dashboard
+content. Those are separate Kubernetes/Grafana steps; see the embedded
+`deploy.Monitoring()` YAML and [monitoring guide](monitoring.md).

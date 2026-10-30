@@ -517,6 +517,7 @@ make verify
 make test
 make build
 make bicep
+make test-monitoring # additionally requires Docker; runs the actual OTel collector
 ```
 
 | Command | Coverage |
@@ -526,6 +527,7 @@ make bicep
 | `make test-contract` | Compatibility with a disposable checkout of the exact source pin |
 | `make test` | Unit tests and contracts |
 | `make bicep` | Compile the infrastructure template |
+| `make test-monitoring` | Actual pinned OTel collector pipeline in Docker |
 
 Contract tests need Git, Go, `kubectl`, and network access to source and module
 downloads. Missing prerequisites fail the tests rather than skipping them.
@@ -535,7 +537,7 @@ To use an existing pristine source checkout:
 
 ```sh
 go test -race -tags=integration ./internal/installer \
-  -run 'TestPinned(Upstream|ImagePublisher|ImageCheck|PodmanPublisher)Contract' \
+  -run 'TestPinned(Upstream|UpstreamMonitoring|ImagePublisher|ImageCheck|PodmanPublisher)Contract' \
   -count=1 -args -contract-root /absolute/path/to/pinned/substrate
 ```
 
@@ -654,7 +656,8 @@ recovery from interrupted installs, and other regions, SKUs, Kubernetes versions
 and CPU architectures.
 
 Not part of this quickstart: installing into an existing cluster, upgrades,
-autoscaling, dashboards, and shared filesystems.
+autoscaling, and shared filesystems. [Managed metrics and Grafana](monitoring.md)
+are available as an opt-in capability.
 
 ### Managed PostgreSQL acceptance
 
@@ -801,5 +804,5 @@ operations can remain provisioning/deleting for extended periods and fail;
 inspect Azure operation status rather than assuming an accepted request succeeded.
 
 Existing-cluster support, managed database migration/adoption/rotation, other
-private actor registries, actor-scoped Blob authorization, autoscaling, dashboards,
+private actor registries, actor-scoped Blob authorization, autoscaling,
 shared filesystems, and upgrade automation remain deferred.

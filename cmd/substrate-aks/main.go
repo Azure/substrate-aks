@@ -67,6 +67,8 @@ init flags:
   --name substrate-dev --location eastus2
   --database bundled|flexible-server|horizondb  HorizonDB is preview
   --database-location REGION              Managed database region (default: AKS region)
+  --monitoring                            Opt in managed Prometheus and Grafana (billable)
+  --monitoring-location REGION            Monitoring region (default: AKS region)
 
 setup flags:
   Same configuration flags as init when creating a new installation; without
@@ -104,10 +106,10 @@ func reportCommandError(out io.Writer, err error) {
 }
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
-	return runCommand(ctx, args, out, stderr, nil)
+	return runCommand(ctx, args, out, stderr, nil, nil)
 }
 
-func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clientResult *installer.ClientSetup) (resultErr error) {
+func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clientResult *installer.ClientSetup, monitoringResult *string) (resultErr error) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, err := io.WriteString(out, usage)
 		return err
@@ -143,6 +145,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	var contextFile string
 	var useContext bool
 	var database, databaseLocation string
+	var monitoring bool
+	var monitoringLocation string
 	var yes, withDemo, unrestrictedAPI, accessible, skipContextHandoff bool
 	var registryOnly, checkImages, resetImages bool
 	var azureChecks bool
@@ -186,6 +190,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
 		fs.StringVar(&database, "database", "bundled", "bundled, flexible-server or horizondb (preview)")
 		fs.StringVar(&databaseLocation, "database-location", "", "managed database region (default: AKS region)")
+		fs.BoolVar(&monitoring, "monitoring", false, "provision managed Prometheus and Standard Grafana (additional charges)")
+		fs.StringVar(&monitoringLocation, "monitoring-location", "", "managed monitoring region (default: AKS region)")
 	}
 	if command == "setup" {
 		fs.BoolVar(&yes, "yes", false, "accept billable deployment and select the kube-context without prompts")
@@ -272,6 +278,12 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 				return fmt.Errorf("database region: %w", err)
 			}
 		}
+		if monitoringLocation != "" {
+			monitoringLocation, err = validateAzureRegion(monitoringLocation, regions)
+			if err != nil {
+				return fmt.Errorf("monitoring region: %w", err)
+			}
+		}
 		if err := installer.ValidateDatabaseRegion(ctx, installer.ExecRunner{}, defaults.subscription, location,
 			installer.DatabaseConfig{Backend: installer.DatabaseBackend(database), Location: databaseLocation}); err != nil {
 			return err
@@ -286,14 +298,16 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			publisherType = defaults.signedInType
 		}
 		return initialize(home, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType,
-			installer.DatabaseConfig{Backend: installer.DatabaseBackend(database), Location: databaseLocation}, out)
+			installer.DatabaseConfig{Backend: installer.DatabaseBackend(database), Location: databaseLocation},
+			installer.MonitoringConfig{Enabled: monitoring, Location: monitoringLocation}, out)
 	}
 	if command == "setup" {
 		var client installer.ClientSetup
+		var dashboardURL string
 		var configFlags bool
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "location", "database", "database-location":
+			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "location", "database", "database-location", "monitoring", "monitoring-location":
 				configFlags = true
 			}
 		})
@@ -309,10 +323,12 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			operatorID:      operatorID, operatorType: operatorType,
 			publisherType: publisherType, readerType: readerType,
 			contextFile: contextFile, skipContextHandoff: skipContextHandoff,
-			client:   &client,
-			database: database, databaseLocation: databaseLocation,
+			client:                 &client,
+			monitoringDashboardURL: &dashboardURL,
+			database:               database, databaseLocation: databaseLocation,
+			monitoring: monitoring, monitoringLocation: monitoringLocation,
 		}, os.Stdin, out, stderr, func(ctx context.Context, args []string, out, stderr io.Writer) error {
-			return runCommand(ctx, args, out, stderr, &client)
+			return runCommand(ctx, args, out, stderr, &client, &dashboardURL)
 		})
 	}
 	if command == "doctor" {
@@ -483,7 +499,22 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		}
 		return err
 	case "install":
-		return a.Install(ctx, component)
+		if err := a.Install(ctx, component); err != nil {
+			return err
+		}
+		if c.Monitoring.Enabled {
+			dashboardURL, err := a.MonitoringDashboardURL(ctx)
+			if err != nil {
+				return err
+			}
+			if monitoringResult != nil {
+				*monitoringResult = dashboardURL
+				return nil
+			}
+			p.pause()
+			fmt.Fprintln(out, "Monitoring dashboards:", dashboardURL)
+		}
+		return nil
 	case "demo":
 		return a.Demo(ctx)
 	case "client":
@@ -519,7 +550,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	return nil
 }
 
-func initialize(home, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, database installer.DatabaseConfig, out io.Writer) error {
+func initialize(home, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, database installer.DatabaseConfig, monitoring installer.MonitoringConfig, out io.Writer) error {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return err
@@ -530,6 +561,7 @@ func initialize(home, subscription, publisher, reader, cidr, name, location stri
 	if database.Backend != "" {
 		c.Database = database
 	}
+	c.Monitoring = monitoring
 	c.Installation.ID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	c.Installation.Name = name
 	c.Azure = installer.AzureConfig{

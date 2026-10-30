@@ -4,6 +4,7 @@ package deploy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -17,11 +18,27 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
-//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components database-bootstrap.yaml
+//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components database-bootstrap.yaml monitoring.yaml
 var manifests embed.FS
 
 func DatabaseBootstrap() ([]byte, error) {
 	return manifests.ReadFile("database-bootstrap.yaml")
+}
+
+func Monitoring() ([]byte, error) {
+	data, err := manifests.ReadFile("monitoring.yaml")
+	if err != nil {
+		return nil, err
+	}
+	tmpl, err := template.New("monitoring").Option("missingkey=error").Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	var result bytes.Buffer
+	if err := tmpl.Execute(&result, struct{ ConfigHash string }{fmt.Sprintf("%x", sha256.Sum256(data))}); err != nil {
+		return nil, err
+	}
+	return result.Bytes(), nil
 }
 
 // AdaptBase removes the pinned GKE monitoring reference without building the
@@ -60,6 +77,7 @@ type Values struct {
 	CredentialConfigExists bool
 	// NodeSelectorExists reports whether demo input already has a nodeSelector.
 	NodeSelectorExists bool
+	MonitoringEnabled  bool
 }
 
 // Render applies one embedded component to upstream Kubernetes YAML.

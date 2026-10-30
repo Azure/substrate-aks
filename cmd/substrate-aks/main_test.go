@@ -128,6 +128,56 @@ esac
 	}
 }
 
+func TestInitMonitoringOptIn(t *testing.T) {
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", `test "$1" = rest || exit 19; printf '%s' '`+testRegionsJSON+`'`)
+	t.Setenv("PATH", bin)
+	for _, tc := range []struct {
+		name, region string
+		enabled      bool
+	}{
+		{"disabled", "", false},
+		{"enabled", "", true},
+		{"custom-region", "eastus2", true},
+	} {
+		path := testRecord(t, tc.name)
+		args := []string{"init", recordName(path), "--subscription", defaultSubscription,
+			"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+			"--api-cidr", "203.0.113.8/32"}
+		if tc.enabled {
+			args = append(args, "--monitoring")
+		}
+		if tc.region != "" {
+			args = append(args, "--monitoring-location", tc.region)
+		}
+		var output bytes.Buffer
+		if err := run(t.Context(), args, &output, &output); err != nil {
+			t.Fatal(err)
+		}
+		c, err := installer.LoadInstallation(recordHome(path), recordName(path))
+		if err != nil || c.Monitoring.Enabled != tc.enabled || c.Monitoring.Location != tc.region {
+			t.Fatalf("monitoring opt-in did not survive config creation: %+v: %v", c.Monitoring, err)
+		}
+	}
+}
+
+func TestInitRejectsInvalidMonitoringRegionBeforeSaving(t *testing.T) {
+	path := testRecord(t, "monitored")
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", `test "$1" = rest || exit 19; printf '%s' '`+testRegionsJSON+`'`)
+	t.Setenv("PATH", bin)
+	var output bytes.Buffer
+	err := run(t.Context(), []string{"init", recordName(path), "--subscription", defaultSubscription,
+		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+		"--api-cidr", "203.0.113.8/32", "--monitoring", "--monitoring-location", "notaregion"}, &output, &output)
+	if err == nil || !strings.Contains(err.Error(), "monitoring region:") {
+		t.Fatalf("bundled database bypassed monitoring-region validation: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("invalid monitoring region saved an installation")
+	}
+}
+
 func TestNewManagedConfigRejectsUnsupportedRegion(t *testing.T) {
 	bin := t.TempDir()
 	for _, tool := range []string{"git", "go", "kubelogin"} {
@@ -400,7 +450,7 @@ func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
 	}
 	var out bytes.Buffer
 	if err := initialize(home, c.Azure.SubscriptionID, c.Azure.AssetPublisherObjectID, "", "203.0.113.8/32",
-		"substrate-other", "eastus2", false, nil, "", "", installer.DatabaseConfig{}, &out); err != nil {
+		"substrate-other", "eastus2", false, nil, "", "", installer.DatabaseConfig{}, installer.MonitoringConfig{}, &out); err != nil {
 		t.Fatal(err)
 	}
 	err = run(t.Context(), []string{"status"}, &out, &out)

@@ -19,6 +19,8 @@ import (
 type setupOptions struct {
 	home, subscription, publisher, reader, cidr, name, location string
 	database, databaseLocation                                  string
+	monitoring                                                  bool
+	monitoringLocation                                          string
 	yes, withDemo, verbose, configFlags, accessible             bool
 	discovery                                                   installer.Runner
 	unrestrictedAPI                                             bool
@@ -31,6 +33,7 @@ type setupOptions struct {
 	contextFile                                                 string
 	skipContextHandoff                                          bool
 	client                                                      *installer.ClientSetup
+	monitoringDashboardURL                                      *string
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -322,7 +325,14 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		if o.publisherType == "" && strings.EqualFold(o.publisher, defaults.signedInObjectID) {
 			o.publisherType = defaults.signedInType
 		}
-		if err := initialize(o.home, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, db, io.Discard); err != nil {
+		if o.monitoringLocation != "" {
+			o.monitoringLocation, err = validateAzureRegion(o.monitoringLocation, regions)
+			if err != nil {
+				return fmt.Errorf("monitoring region: %w", err)
+			}
+		}
+		if err := initialize(o.home, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, db,
+			installer.MonitoringConfig{Enabled: o.monitoring, Location: o.monitoringLocation}, io.Discard); err != nil {
 			return err
 		}
 		created = true
@@ -367,6 +377,11 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			if c.ManagedDatabase() {
 				if _, err := validateAzureRegion(c.DatabaseLocation(), regions); err != nil {
 					return fmt.Errorf("database region: %w; edit database.location in %s before retrying", err, record)
+				}
+			}
+			if c.Monitoring.Enabled {
+				if _, err := validateAzureRegion(c.MonitoringLocation(), regions); err != nil {
+					return fmt.Errorf("monitoring region: %w; edit monitoring.location in %s before retrying", err, record)
 				}
 			}
 			return nil
@@ -563,6 +578,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if o.client == nil || o.client.Kubeconfig == "" || o.client.BinDir == "" || o.client.Context != c.AKS.ClusterName {
 		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", o.name))
 	}
+	if c.Monitoring.Enabled && (o.monitoringDashboardURL == nil || *o.monitoringDashboardURL == "") {
+		return fmt.Errorf("Substrate is installed, but monitoring setup returned no dashboard URL.\nInspect: %s", cliCommand("status", o.name))
+	}
 	selected, handoffWarning, err := offerContextSwitch(ctx, o, c, prompt, ui)
 	if err != nil {
 		handoff := []string{"client", o.name, "--use-context"}
@@ -597,6 +615,10 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	}
 	if o.withDemo {
 		steps.demo()
+	}
+	if c.Monitoring.Enabled {
+		steps.section("# Open monitoring dashboards:")
+		fmt.Fprintln(out, "# "+*o.monitoringDashboardURL)
 	}
 	steps.section("# Delete all resources and persistent data when finished:")
 	steps.command(teardownCommand(o.name, c.Azure.ResourceGroup))
