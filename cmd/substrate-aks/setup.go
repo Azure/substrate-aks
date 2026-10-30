@@ -358,9 +358,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				reconcile = append(reconcile, option.flag)
 			}
 		}
-		return fmt.Errorf("setup stopped at %s: %w\n\nResources are retained.\nRetry failed stage: %s\nFull reconciliation (starts from the beginning, reusing configured images): %s\nTeardown: %s",
+		return fmt.Errorf("setup stopped at %s: %w\n\nResources are retained.\nRetry failed stage: %s\nFull reconciliation (starts from the beginning, reusing configured images): %s\nTeardown:\n%s",
 			label, err, cliCommand(args...), cliCommand(reconcile...),
-			cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
+			teardownCommand(o.path, c.Azure.ResourceGroup))
 	}
 	activePhase := ""
 	stage := func(label, command string, flags ...string) error {
@@ -443,7 +443,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if o.client == nil || o.client.Kubeconfig == "" || o.client.BinDir == "" || o.client.Context != c.AKS.ClusterName {
 		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", "--config", o.path))
 	}
-	selected, err := offerContextSwitch(ctx, o, c, prompt, ui)
+	selected, handoffWarning, err := offerContextSwitch(ctx, o, c, prompt, ui)
 	if err != nil {
 		handoff := []string{"client", "--config", o.path, "--use-context"}
 		if o.contextFile != "" {
@@ -455,13 +455,21 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	ui.complete(c.AKS.ClusterName, o.withDemo)
 	if ui.session != nil {
 		steps.complete(c.AKS.ClusterName, o.withDemo)
+		// The workspace closes on success, so repeat why the kubeconfig was
+		// left unchanged next to the exports that rely on it.
+		if len(handoffWarning) > 0 {
+			steps.warning(handoffWarning[0])
+			for _, line := range handoffWarning[1:] {
+				steps.note(line)
+			}
+		}
 	}
 	client := *o.client
 	if selected != "" {
 		client.Kubeconfig = selected
 		ui.note("The selected kubeconfig now uses this installation's context. Apply the final printed exports in your current shell; PATH and shell profiles are unchanged.")
 	} else {
-		ui.note("Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
+		ui.note("Apply the printed shell configuration to use this installation's private kubeconfig.")
 	}
 	steps.section("# Connect from this shell:")
 	if err := printClientSetup(out, client); err != nil {
@@ -471,7 +479,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		steps.demo()
 	}
 	steps.section("# Delete all resources and persistent data when finished:")
-	steps.command(cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
+	steps.command(teardownCommand(o.path, c.Azure.ResourceGroup))
 	return nil
 }
 
@@ -534,14 +542,24 @@ func shellQuote(s string) string {
 func cliCommand(args ...string) string {
 	parts := append([]string{os.Args[0]}, args...)
 	for i, arg := range parts {
-		if arg == "" || strings.IndexFunc(arg, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
-				r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
-		}) >= 0 {
-			parts[i] = shellQuote(arg)
-		}
+		parts[i] = cliCommandArg(arg)
 	}
 	return strings.Join(parts, " ")
+}
+
+func cliCommandArg(arg string) string {
+	if arg == "" || strings.IndexFunc(arg, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+	}) >= 0 {
+		return shellQuote(arg)
+	}
+	return arg
+}
+
+func teardownCommand(path, resourceGroup string) string {
+	return fmt.Sprintf("%s \\\n  --config %s \\\n  --confirm-delete %s",
+		cliCommand("destroy"), cliCommandArg(path), cliCommandArg(resourceGroup))
 }
 
 func printClientSetup(out io.Writer, c installer.ClientSetup) error {

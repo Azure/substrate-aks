@@ -116,6 +116,11 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 	for _, fail := range []string{"", "images", "demo", "client"} {
 		t.Run("failure="+fail, func(t *testing.T) {
 			path := testCLIConfig(t)
+			config, loadErr := installer.LoadConfig(path)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			wantTeardown := teardownCommand(path, config.Azure.ResourceGroup)
 			var commands []string
 			publications, imageChecks := 0, 0
 			want := errors.New("publisher failed")
@@ -147,7 +152,8 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 				t.Fatalf("setup lost a required stage, changed order or continued after failure: %v", commands)
 			}
 			if fail != "" {
-				if !errors.Is(err, want) || !strings.Contains(err.Error(), "Resources are retained") {
+				if !errors.Is(err, want) || !strings.Contains(err.Error(), "Resources are retained") ||
+					!strings.Contains(err.Error(), "Teardown:\n"+wantTeardown) {
 					t.Fatalf("stage failure lost retry/cleanup guidance: %v", err)
 				}
 				if strings.Contains(output.String(), "Setup complete.") || strings.Contains(output.String(), "# Try the counter demo:") {
@@ -158,7 +164,8 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 				if strings.Count(output.String(), "DONE  Setup complete.") != 1 ||
-					!strings.Contains(output.String(), "Counter microVM demo installed.") {
+					!strings.Contains(output.String(), "Counter microVM demo installed.") ||
+					!strings.Contains(output.String(), wantTeardown+"\n") {
 					t.Fatalf("successful setup did not print its final completion banner:\n%s", &output)
 				}
 				if publications != 1 || imageChecks != 1 {
@@ -499,6 +506,37 @@ func TestCLICommandQuotesOnlyWhenNeeded(t *testing.T) {
 			t.Cleanup(func() { os.Args = original })
 			if got := cliCommand(tc.args...); got != tc.want {
 				t.Fatalf("command = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTeardownCommandFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		name, executable, path, group, want string
+	}{
+		{
+			name: "ordinary arguments", executable: "bin/substrate-aks",
+			path: "deploy-substrate-20261029-183726.json", group: "substrate-20261029-183726",
+			want: "bin/substrate-aks destroy \\\n  --config deploy-substrate-20261029-183726.json \\\n  --confirm-delete substrate-20261029-183726",
+		},
+		{
+			name: "paths with spaces and apostrophes", executable: "/tmp/substrate cli",
+			path: "operator's config.json", group: "substrate-test",
+			want: "'/tmp/substrate cli' destroy \\\n  --config 'operator'\"'\"'s config.json' \\\n  --confirm-delete substrate-test",
+		},
+		{
+			name: "shell syntax and empty arguments", executable: "bin/substrate-aks",
+			path: "$(printf unsafe);*.json", group: "",
+			want: "bin/substrate-aks destroy \\\n  --config '$(printf unsafe);*.json' \\\n  --confirm-delete ''",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := os.Args
+			os.Args = []string{tc.executable}
+			t.Cleanup(func() { os.Args = original })
+			if got := teardownCommand(tc.path, tc.group); got != tc.want {
+				t.Fatalf("teardown command = %q; want %q", got, tc.want)
 			}
 		})
 	}

@@ -10,7 +10,6 @@ builds the images, and installs Substrate.
 > entire group and all installation data. Do not add unrelated resources to it.
 
 [Quickstart](#quickstart) · [What gets installed](#what-gets-installed) ·
-[Installation design](#installation-design) ·
 [Try the demo](#try-the-demo) · [Manage](#manage-your-installation) ·
 [Tear down](#tearing-down) · [Documentation](#documentation)
 
@@ -24,7 +23,7 @@ builds the images, and installs Substrate.
 | Go 1.27.3+ and Git | Go can download the required toolchain automatically |
 | Azure CLI | Sign in to the target subscription; install Bicep with `az bicep install` |
 | `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
-| Azure `kubelogin` | Required for new installs; uses the existing Azure CLI login for managed Entra authentication |
+| Azure `kubelogin` | Signs `kubectl` in to the cluster with your Azure CLI login |
 | Docker with buildx or Podman | Running and able to build Linux/amd64 images |
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
@@ -44,14 +43,13 @@ make setup
 `make setup` builds `bin/substrate-aks` and runs `bin/substrate-aks setup`. Pass
 setup flags with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
 
-Setup asks for a name and region, previews the changes, and requests approval
-before creating billable resources. Press `/` to filter regions. Your settings
-are saved in `deploy.json`.
+Setup checks your tools and Azure access, asks for a name and region, and
+saves your choices in `deploy.json`. It previews every billable change and waits
+for your approval before creating anything. Press `?` in the workspace for keys.
 
-**When setup finishes, run the final shell exports it prints.** These select the
-installation's kubeconfig and make `kubectl ate` available. Setup also offers to
-select the new context in your regular kubeconfig; the default is No.
-`--yes` selects it automatically. Shell profiles are never edited.
+**When setup finishes, run the shell exports it prints.** They point `kubectl`
+at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
+cluster to your regular kubeconfig; it asks first, and never edits shell profiles.
 
 **Useful variants**
 
@@ -91,18 +89,10 @@ Snapshot inspection is optional and read-only. Snapshots can contain memory,
 files, and secrets. Removing the reader from your config does not revoke an
 existing grant; remove it in Azure IAM or tear down.
 
-The region picker checks region names, not quota or VM capacity. See the
+Setup checks quota and VM availability before billing, but Azure capacity is
+not reserved. See the
 [tested configurations and remaining limits](docs/operations.md#live-acceptance-and-limitations)
 before choosing a different region or VM size.
-
-## Installation design
-
-Bicep defines the Azure resources; Kustomize components configure the workloads.
-The CLI applies those settings through a pinned version of upstream `ate-setup`.
-
-There is no standalone Kustomize, Helm, or GitOps install yet. See
-[architecture](docs/architecture.md) for the deployment flow and
-[source settings](docs/configuration.md#source-and-image-settings) for the pin.
 
 ## Try the demo
 
@@ -177,7 +167,7 @@ fresh config. See [retry and teardown](docs/operations.md#retry-and-teardown).
 
 | Guide | Contents |
 | --- | --- |
-| [Installation architecture](docs/architecture.md) | How Bicep, Kustomize, and upstream Substrate fit together |
+| [Installation architecture](docs/architecture.md) | How Bicep, Kustomize, and the pinned upstream `ate-setup` fit together; no standalone Helm or GitOps install yet |
 | [Configuration](docs/configuration.md) | Config fields, identities, permissions, networking, and image/source settings |
 | [Operations](docs/operations.md) | Lifecycle commands, client setup, diagnostics, retries, teardown, and validation limits |
 | [Azure deployment components](deploy/README.md) | Where to change Azure workload settings |

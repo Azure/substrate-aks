@@ -25,124 +25,76 @@ az login
 make setup
 ```
 
-`make setup` builds `bin/substrate-aks` and runs its `setup` command; pass flags
-with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
+`make setup` builds `bin/substrate-aks` and runs its `setup` command. Pass setup
+flags with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
 
-Setup asks for a name and region, explains snapshot access, and previews changes
-before requesting approval. It then builds images, creates the infrastructure,
-checks the cluster, installs Substrate, and sets up the client.
-Before any provisioning, read-only Azure checks verify discoverable deployment
-permissions, AKS version/SKU availability, and CPU quota. These checks do not
-reserve capacity or replace later Azure validation.
-VM SKU discovery uses a server-filtered regional Resource SKUs request and
-follows all result pages; it does not download the subscription-wide catalog.
+### What setup does
 
-Interactive terminals use an alternate-screen installation workspace. The
-header, phase rail, content pane, and keyboard footer persist after the welcome
-screen, including initial configuration, approvals, retries, and client handoff.
-The rail begins with Preparation and derives the remaining phases from the same
-plan used to execute setup. Registry preview and provisioning share the Images
-and assets phase with image publication and verification; their individual
-checks and approval boundaries are preserved. The rail has no separate heading.
-Long checklists keep the active or failed check in view, including when returning
-from logs to a retry prompt.
-Every phase reserves a marker column: gray pending
-circle, purple current-phase circle, green completion check, or red failure
-cross. Above them, a "STAGE n OF m" label sits over a blue progress bar.
-The rail hides on narrow terminals and uses tighter spacing on short terminals.
-The active phase reports named operations and elapsed time. Environment
-discovery and deployment validation show their applicable checks up front.
-The same preset checklist pattern covers registry bootstrap, image publication
-and verification, AKS provisioning, Substrate installation, the optional demo,
-and client setup. Rows represent the applicable setup operations, not individual
-Azure log messages. Substeps update one detail line beneath the active row;
-they never append a growing list. Resource previews expand beneath their
-checklist row with the approval below, so the phase checklist stays in place.
-Timers count setup work only: they pause while a question or approval waits on
-you, and the panel shows "paused for input".
-Image verification declares separate rows for resolving registry credentials,
-fetching the pinned source, preparing the checker, and verifying published images
-and the plugin. These rows remain visible on reruns that reuse saved images;
-each completes only when its operation returns successfully.
-Successful checks receive green checkmarks; the active check shows a blue spinner,
-elapsed time, and one short status line beneath its row. The status line is
-indented with a tree branch and light-blue text, distinguishing it from pending
-operations; failed-operation details remain red. Pending rows use only their
-circle marker and operation name, without a redundant status label.
-While a check runs, including Preparation's environment checks, the latest lines
-of the current private diagnostic log fill the space beneath the checklist; `l` expands them into the full,
-scrollable logs view. Progress messages alone never mark a check successful. Image-builder selection
-is part of the local environment check, before Azure discovery or validation, with the
-choice immediately below the active row. The one-line header shows the Agent Substrate on AKS badge on the left and
-the cluster, region, and subscription name on the right; the subscription ID is
-shown, shortened, until its name is known. Unknown values show a dash and long
-values shorten, so completing configuration does not move the header or change
-the content width.
-The header has no global status or elapsed timer.
+Setup works through a fixed sequence of stages. The left rail shows where you
+are; the main pane lists each stage's operations as they run.
 
-New installations show the cluster/resource-group name, searchable Azure
-region, and optional read-only snapshot-inspection grant together in one form.
-Available regions load as the last environment check, so the list is ready when
-the form opens. Enter or Tab moves between fields; Shift+Tab goes back to an earlier field. The
-form sits below its heading without an empty status area, and the region list
-grows with the available terminal height; a filtered list shrinks to its matches
-so the following field stays beneath them.
-The name input shows an example placeholder when empty and validation feedback
-as it is edited. Invalid names cannot advance; validation uses the same
-3-40-character naming rules as the saved configuration.
-Short terminals scroll the form to the focused field.
-Accessible mode asks the same questions sequentially, including
-snapshot-access consent. Billable-change approvals remain separate prompts.
+| Stage | What happens |
+| --- | --- |
+| Preparation | Checks local tools and the image builder, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. |
+| Images and assets | Previews and creates the private registry, then builds and publishes images and runtime assets. Skipped when the config already has published images; they are only verified. |
+| AKS cluster | Previews and provisions AKS, storage, and identities, then checks the cluster. |
+| Substrate | Renders the Azure settings and installs Substrate. |
+| Counter demo | Optional; deploys the counter microVM demo. |
+| Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
 
-Quick start is available; Advanced configuration is explicitly marked **Planned**
-and cannot start an installation. The branded opening screen has two selectable
-cards; use the arrow keys to choose, then Enter to begin Quick start. Saved
-configuration files remain supported; "Advanced" refers to a future guided editor.
+Each billable step shows an Azure preview first and waits for your approval.
+The registry and the full infrastructure are approved separately. Previews
+summarize changes by resource type; press `d` for full resource IDs. When a
+preview deletes resources or contains unknown changes, scroll to the end and
+press `a` to acknowledge it before approving. Use standalone `plan` for previews
+too large to show inline.
+
+The preflight checks are a snapshot, not a reservation: capacity, policy, and
+later Azure validation can still fail.
+
+### Using the workspace
+
+In a terminal, setup runs as a full-screen workspace. Timers count setup work
+only and pause while a question or approval waits for you. While an operation
+runs, the latest lines of its diagnostic log appear beneath the checklist.
 
 | Key | Action |
 | --- | --- |
-| `d` | Inspect the installation review or full resource-change IDs |
-| `l` | Follow the current command's private diagnostic log (commands, output, and steps) |
+| `l` | Open the full, scrollable diagnostic log for the current command |
+| `d` | Show the installation review or full resource-change IDs |
 | `PgUp` / `PgDn` | Scroll a review or the log |
-| `Esc` | Close details/logs; never skips an approval |
+| `Esc` | Close details or logs; never skips an approval |
+| `a` | Acknowledge a destructive or unknown preview after reading it |
 | `?` | Show help |
-| `a` | Acknowledge a destructive/unknown summary after reading it through |
-| `Ctrl-C` | Stop owned subprocess work, retaining Azure resources |
+| `Ctrl-C` | Stop local work after confirming (press twice to stop now); Azure resources are retained |
 
-Registry and full-infrastructure approvals remain separate. Compact previews
-use a change summary with nonzero counts and readable resource categories.
-Child resources, such as blob containers or federated credentials, are counted
-on indented rows beneath their parent rather than in the parent's count;
-full provider types and resource IDs remain available in details (`d`).
-Completion chatter stays in activity rather than the approval. Deletion IDs and
-unknown change types are shown explicitly; read their summary through to the bottom and press `a`
-to acknowledge it before answering the approval. Oversized previews are refused,
-not silently truncated. Use standalone `plan` for its full table.
-Each resource category shows explicit action counts: green creates, yellow
-updates, and red deletes. Text labels remain visible with `NO_COLOR`.
-Letter shortcuts pause while entering text or filtering choices, so names and
-searches can contain those letters normally.
+Letter shortcuts pause while you type a name or filter regions. In the region
+list, press `/` to filter, then Enter to select. Tab and Shift+Tab move between
+fields.
 
-Narrow windows use one column. Below 40 columns or 14 rows, setup shows compact
-status and pauses input until resized; work and cancellation remain active.
-After restoring the terminal, setup prints persistent connection instructions
-with exactly one final set of exports. The completion card and command headings
-retain terminal colors; `NO_COLOR` and redirected output remain unstyled.
-Failures print recovery commands instead.
+The welcome screen offers **Quick start**. **Advanced configuration** is a
+planned guided editor and cannot start an installation yet; edit `deploy.json`
+directly for custom settings.
+
+On narrow terminals the rail is hidden. Below 40 columns or 14 rows, setup shows
+compact status and waits for a larger window before accepting input; work in
+progress continues.
+
+When setup finishes, it restores your terminal and prints one block of shell
+exports. On failure it prints recovery commands instead.
+
+### Options and automation
 
 | Option | Use |
 | --- | --- |
-| `--accessible` | Line-oriented prompts; also used for redirected output and `TERM=dumb` |
-| `NO_COLOR=1` | Disable color; use `--accessible` for append-only output |
+| `--accessible` | Line-oriented prompts for screen readers; also used automatically for redirected output and `TERM=dumb` |
+| `NO_COLOR=1` | Disable color |
 | `--yes` | Accept billing and select the new kube-context without prompts |
-| `--skip-context-handoff` | Leave the user kubeconfig untouched and print private kubeconfig exports |
-| `--with-demo` | Include the counter demo in noninteractive setup |
-| `--container-engine=auto\|docker\|podman` | Choose an image builder; auto mode offers a choice when both work |
+| `--with-demo` | Include the counter demo without prompts |
+| `--skip-context-handoff` | Leave your kubeconfig untouched and print exports for the private kubeconfig |
+| `--container-engine=auto\|docker\|podman` | Choose an image builder; `auto` offers a choice when both work |
 
-`--yes` retains the startup banner in a normal terminal. Narrow, accessible, and
-redirected output use a plain heading.
-
-For automation, create a complete [configuration](configuration.md) rather than
+For automation, create a complete [configuration](configuration.md) instead of
 piping answers into prompts:
 
 ```sh
@@ -150,9 +102,8 @@ bin/substrate-aks setup --config deploy.json --yes --with-demo
 ```
 
 **Run the final shell exports printed by setup.** The installer cannot change
-your shell's PATH or `KUBECONFIG`, and does not edit shell profiles. Interactive
-setup asks before selecting the new kube-context; `--yes` selects it automatically.
-CI runs that only need the installation's private kubeconfig can opt out:
+your shell's `PATH` or `KUBECONFIG`, and never edits shell profiles. CI runs that
+only need the installation's private kubeconfig can skip the context handoff:
 
 ```sh
 bin/substrate-aks setup --config deploy.json --yes --skip-context-handoff
@@ -214,27 +165,22 @@ bin/substrate-aks provision --registry-only
 bin/substrate-aks images
 ```
 
-`doctor` checks local tools without Azure resource calls. Add `--config deploy.json`
-to check the configured runtime assets or assembly prerequisites too.
-Add `--azure --config deploy.json` for read-only cloud deployment checks.
-VM SKU checks request only the configured region and follow all result pages;
-permissions and quota are checked live rather than reused from a cache.
-`plan` runs Azure Bicep what-if without deploying resources.
+`doctor` checks local tools without calling Azure. Add `--config deploy.json` to
+also check runtime assets or the tools to assemble them, and `--azure` for
+read-only checks of VM availability, quota, and permissions in the configured
+region. `plan` runs a Bicep what-if and deploys nothing.
 
 > [!WARNING]
 > Registry provisioning starts billing. It creates the dedicated resource group,
 > a Basic ACR, and an `AcrPush` grant for the upload identity. It does not create
 > AKS or Blob storage yet.
 
-Setup checks the image builder with the local tools, before any Azure discovery,
-and offers a choice when both Docker/buildx and Podman work.
-`--yes` prefers Docker/buildx, then Podman. An explicit `--container-engine`
-never falls back to another engine. Reusing configured images needs no builder.
-Builds target Linux/amd64; Podman can run rootless on Linux.
-Before registry provisioning, Docker checks include bootstrapping the selected
-buildx builder, with a separate two-minute startup limit. This may download or
-start a BuildKit container. An unreachable or unhealthy builder triggers Podman
-fallback in automatic mode, or an error when Docker was selected explicitly.
+**Image builder.** Builds target Linux/amd64 with Docker buildx or Podman
+(rootless works on Linux). Setup checks the builder before any Azure calls and
+offers a choice when both work; `--yes` prefers Docker. Checking Docker starts
+the buildx builder, which may download a BuildKit container and has two minutes
+to start. If it is unhealthy, automatic mode falls back to Podman; an explicit
+`--container-engine` never falls back. Reusing configured images needs no builder.
 
 `images` builds the pinned source and publishes the Substrate, demo, and Azure
 storage-plugin images. It assembles runtime assets unless `assetsDir` is set,
@@ -242,9 +188,9 @@ in which case it verifies the supplied files without overwriting them.
 Image settings are saved only after publication and checksum checks succeed.
 
 ACR authentication uses your Azure login. Registry credentials stay in the
-private workspace rather than replacing your usual Docker credentials.
-Docker context and buildx settings are preserved. If the CLI reports a workspace
-context-store conflict, move that old store aside as instructed.
+private workspace; your Docker credentials, context, and buildx settings are left
+alone. If the CLI reports a workspace context-store conflict, move the old store
+aside as instructed.
 
 To check that saved images are still accessible:
 
@@ -256,12 +202,13 @@ bin/substrate-aks images --check --config deploy.json
 are reported separately from missing images; the check never rebuilds images
 or changes your config.
 
-Failed builds can leave images in ACR without updating config. Fix the error
-and retry. New role grants can take time to propagate; the uploader must use
-the configured upload identity or belong to the configured publisher group.
+A failed build can leave images in ACR without updating the config; fix the
+error and retry. New role grants can take a few minutes to propagate. The
+uploader must be the configured upload identity or a member of the configured
+publisher group.
 
-Deployment commands refresh credentials for the owned ACR, so token expiry does
-not require rebuilding images. Other registries use your existing credentials.
+Deployment commands refresh credentials for the owned ACR, so expired tokens
+never require a rebuild. Other registries use your existing credentials.
 
 ## Provision and install
 
@@ -293,15 +240,15 @@ with AKS-managed timing: patched images include security and bug fixes without
 changing the Kubernetes version. See [configuration](configuration.md) for
 identity and access settings.
 
-Node image updates can drain/reimage nodes and interrupt workloads, especially
-with the default single microVM worker. Automatic replacement and actor recovery
-through this maintenance have not been validated; enabling updates is not a
-zero-downtime or cross-node memory-restoration guarantee. Configure an AKS
-maintenance window if you need controlled timing, and recheck KVM/runtime
-readiness and actor restoration after maintenance. See
-[AKS node OS update channels](https://learn.microsoft.com/azure/aks/auto-upgrade-node-os-image).
-The template change takes effect only when infrastructure is provisioned again;
-it does not update an existing cluster merely by downloading a new installer.
+> [!NOTE]
+> Node image updates can drain and reimage nodes, interrupting workloads,
+> especially with the default single microVM worker. Actor recovery through this
+> maintenance has not been validated, and it is not a zero-downtime or
+> cross-node memory guarantee. Configure an AKS maintenance window for
+> controlled timing, and recheck KVM readiness and actors afterward. See
+> [AKS node OS update channels](https://learn.microsoft.com/azure/aks/auto-upgrade-node-os-image).
+> Existing clusters pick up this setting only when infrastructure is provisioned
+> again.
 
 Installation runs a temporary privileged probe that opens `/dev/kvm`, creates
 a test VM, and checks the native ACR credential provider. This needs cluster
@@ -346,13 +293,12 @@ Run `bin/substrate-aks client` and apply its printed exports before using
 | Kubeconfig | Private installation file unless you accept the context handoff |
 | Sharing | Another installation can replace the client; teardown leaves it installed |
 
-Keep Azure CLI and Azure's `kubelogin` on PATH and sign in to the cluster's tenant.
-Credential refresh preserves the old kubeconfig if fetching or conversion fails.
-`check` uses a structured Kubernetes SelfSubjectAccessReview for permission to
-create CRDs, waiting up to five minutes for denied access to become allowed after
-a new grant. This is authorization readiness, not proof that CRDs or workloads
-are healthy. Authentication, network, malformed-response, and authorization
-evaluation failures are reported directly.
+Keep Azure CLI and `kubelogin` on PATH and stay signed in to the cluster's
+tenant. If refreshing credentials fails, the previous kubeconfig is kept.
+
+`check` asks Kubernetes whether you may create CRDs, waiting up to five minutes
+for a new grant to take effect. It confirms authorization only, not that
+workloads are healthy.
 
 ### Optional kube-context handoff
 
@@ -361,18 +307,16 @@ file, or `~/.kube/config`. The interactive default is **No**; `--yes` accepts.
 Use `--context-file PATH` to choose another file. Multi-file `KUBECONFIG` needs
 an explicit destination unless handoff is skipped.
 
-Use `--skip-context-handoff` to skip importing/selecting a context, even with
-`--yes`. Setup still prepares the matching client and prints exports for the
-private installation kubeconfig, without inspecting the user kubeconfig or
-prompting for handoff. This option cannot be combined with `--context-file`.
+`--skip-context-handoff` skips the import, even with `--yes`. Setup still
+installs the client and prints exports for the private kubeconfig, without
+reading yours. It cannot be combined with `--context-file`.
 
-Unrelated entries are preserved. Conflicting names, malformed files, symlinks,
-and relative credential paths are refused. YAML comments and formatting are
-not preserved. The private installation kubeconfig stays unchanged.
-Imports use kubectl's exclusive `<destination>.lock` convention and recheck the
-destination after consent. An existing writer lock is never removed. On a name
-collision, choose an unused `--context-file` or deliberately resolve the named
-conflict; retrying the same conflicting destination will not overwrite it.
+Imports keep unrelated entries but not YAML comments or formatting. They refuse
+conflicting names, malformed files, symlinks, and relative credential paths, and
+never overwrite an existing entry: on a name conflict, choose another
+`--context-file` or resolve the conflict yourself. Imports take kubectl's
+`<destination>.lock` and never remove an existing lock. The private installation
+kubeconfig is never changed.
 
 To do this later:
 
@@ -383,8 +327,10 @@ bin/substrate-aks client --config deploy.json --use-context --context-file ~/.ku
 ```
 
 Setup prints one set of shell exports after the context choice. Apply those
-exports to connect. If handoff fails, the cluster is retained; rerun `client`
-with a suitable destination.
+exports to connect. If handoff is unavailable or fails, setup warns and completes
+with exports for the private kubeconfig, including with `--yes`. Cancellation
+still stops setup. An explicit `client --use-context` command returns an error if
+importing fails; retry it with a suitable destination.
 
 ### Try the counter
 
@@ -427,31 +373,28 @@ Long-duration credential refresh remains a validation gap.
 
 | Output | Location |
 | --- | --- |
-| Progress and completion | stderr; plain updates when redirected |
-| Standalone results/previews and final setup commands | stdout |
-| Detailed command logs | Private files under the installation's `logs/` directory; a new installation's setup preparation logs under `.substrate-aks/logs/` beside its configuration |
-| `--verbose` | Underlying commands, build output, and diagnostics in append-only/standalone flows |
+| Progress and prompts | stderr; plain line updates when redirected |
+| Results, previews, and setup's final commands | stdout |
+| Detailed command logs | Private files in the installation's `logs/` directory. Before a new installation has a workspace, Preparation logs to `.substrate-aks/logs/` next to the config. |
+| `--verbose` | Underlying commands and build output, in standalone commands and accessible setup |
 
-The interactive workspace owns the terminal: subprocess output never writes
-over a form or approval. The logs view (`l`) renders a bounded, sanitized tail of
-the current command's private log inside the workspace: commands, output, and
-step markers, with terminal control sequences removed. Output marked sensitive
-is never written to the log. The full file stays on disk, including with
-`--verbose`. For an append-only verbose transcript, use
-`setup --accessible --verbose`.
+Each command writes its full log to disk, including commands, output, and step
+markers; output marked sensitive is never logged. In the workspace, `l` shows a
+sanitized tail of the current log so subprocess output never overwrites a form
+or approval. For an append-only transcript, use `setup --accessible --verbose`.
 
-Failures show a short error and a log path. The success banner appears only after
-client setup and any accepted context handoff succeed. Color is terminal-only;
-`NO_COLOR=1` disables it.
+Failures show a short error and the log path. If the optional kube-context
+handoff fails, setup still completes, warns, and prints exports for the private
+kubeconfig.
 
 ```sh
 bin/substrate-aks provision --registry-only --verbose
 bin/substrate-aks status --verbose
 ```
 
-The `plan` table distinguishes creates, deletions, and modifications with symbols
-as well as color. Unchanged resources are omitted; property-level details are in
-the logs and verbose output.
+The `plan` table marks creates, deletes, and modifications with symbols as well
+as color, so it stays readable with `NO_COLOR`. Unchanged resources are omitted;
+property-level details are in the logs and verbose output.
 
 ## Retry and teardown
 
@@ -566,37 +509,35 @@ planned choices, compact/destructive previews, bounded activity, and tiny window
 
 ## Live acceptance and limitations
 
-| Area | Completed validation |
-| --- | --- |
-| Baseline | AKS 1.37 in `southcentralus`; one system and one microVM node, both `Standard_D4s_v3` |
-| Setup | Private image publication, infrastructure, Substrate, runtime assets, demo, and client setup |
-| Actor state | Suspend/resume preserved memory, file, and rootfs counters, advancing from 2 to 3 |
-| Cold Blob restore | Memory restored on a new node with a compatible CPU model |
-| Component operations | Image checks, cluster checks/status, a single-component reinstall, and demo redeployment |
-| Managed Entra | Later `eastus2` installation; managed Entra, Azure RBAC, and disabled local accounts independently inspected |
-| Actor-acceptance baseline | Author completed fresh cloud actor acceptance on `acae87e` |
-| Podman | Author confirmed a real Podman-only build, publication, and installation |
-| Later review fixes | Race-enabled tests, pinned contracts, Bicep compilation, and live read-only Azure preflight passed; no new full-install acceptance of these fixes |
-| Teardown | Audit and inspected Entra installations deleted; main and managed node groups independently confirmed absent |
-| Guided workspace | Real interactive `eastus2` installation: image publication, two approved infrastructure previews, Substrate, demo, matching client, and isolated context import succeeded; private and imported contexts reached Ready nodes; one final export block appeared after alternate-screen exit |
-| Workspace teardown | Ownership-checked teardown succeeded; installation and managed node resource groups independently confirmed absent, with no related groups remaining |
+These scenarios have been validated against real Azure resources:
 
-The workspace acceptance used the first-pass binary. Subsequent form-navigation,
-resize, compact-layout, and cancellation hardening passed race-enabled tests and
-real Linux pseudo-terminal checks; it was not followed by another cloud install.
+| Area | Validated |
+| --- | --- |
+| Baseline | AKS 1.37 in `southcentralus`, one system and one microVM node, both `Standard_D4s_v3` |
+| Setup | Private image publication, infrastructure, Substrate, runtime assets, demo, and client |
+| Actor state | Suspend and resume preserved memory, file, and rootfs counters |
+| Cold Blob restore | Memory restored on a new node with a compatible CPU model |
+| Component operations | Image checks, cluster checks and status, single-component reinstall, and demo redeployment |
+| Managed Entra | `eastus2` install with managed Entra, Azure RBAC, and local accounts disabled |
+| Podman | Podman-only build, publication, and installation |
+| Guided workspace | Interactive `eastus2` install through both approvals, demo, client, and context import; both contexts reached Ready nodes |
+| Teardown | Ownership-checked deletion; installation and managed node resource groups confirmed absent |
+
+Changes made after these runs, including later workspace polish, are covered by
+race-enabled unit tests, pseudo-terminal tests, pinned-source contracts, Bicep
+compilation, and read-only Azure preflight, but not by another full cloud install.
 
 **The same VM size can have different CPU models.** A cold restore onto an
-incompatible CPU reset memory while durable file/disk state survived. The
-successful restore is not a guarantee of migration across heterogeneous nodes.
+incompatible CPU lost actor memory, although file and disk state survived. A
+successful restore does not guarantee migration across heterogeneous nodes.
 
-The audit's snapshot-reader role update needed a manual grant. The guard was
-later fixed and regression-tested; clean live reconciliation of that update
-remains unproven.
+Changing the snapshot reader on an existing installation once needed a manual
+grant. The fix is covered by tests; a clean live update has not been repeated.
 
-Remaining gaps include long-duration credential renewal, multi-operator use,
-native macOS installation, automatic node-image replacement/recovery, broader interrupted
-installation recovery, and other regions, SKUs, Kubernetes versions, and runtime
-architectures.
+Not yet validated: long-running credential renewal, multiple operators, native
+macOS installation, automatic node-image replacement and recovery, broader
+recovery from interrupted installs, and other regions, SKUs, Kubernetes versions,
+and CPU architectures.
 
-Existing-cluster installation, managed PostgreSQL, upgrades, autoscaling,
-dashboards, and shared filesystems are not part of this quickstart.
+Not part of this quickstart: installing into an existing cluster, managed
+PostgreSQL, upgrades, autoscaling, dashboards, and shared filesystems.
