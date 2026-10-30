@@ -18,6 +18,8 @@ type setupUI struct {
 	width    int
 	session  *setupSession
 	review   *[]setupReviewEntry
+	// log records workspace checks and steps before stage commands own logging.
+	log io.Writer
 }
 
 func newSetupUI(out io.Writer) *setupUI {
@@ -45,11 +47,10 @@ func (u *setupUI) welcome(decorative bool) {
 	}
 	const tagline = "An AKS packaging layer for Agent Substrate."
 	title := u.renderer.NewStyle().Bold(true)
-	if decorative && u.width >= 64 {
-		banner := setupBrand(u.renderer)
+	if banner := setupBrand(u.renderer, 0); decorative && lipgloss.Width(banner)+2 <= u.width {
 		fmt.Fprintln(u.out, "\n"+u.renderer.NewStyle().PaddingLeft(2).Render(banner)+"\n")
 	} else {
-		fmt.Fprintln(u.out, "\n"+title.Width(u.width).Render("Substrate on AKS"))
+		fmt.Fprintln(u.out, "\n"+title.Width(u.width).Render("Agent Substrate on AKS"))
 		u.note(tagline)
 		fmt.Fprintln(u.out)
 	}
@@ -86,9 +87,19 @@ func (u *setupUI) check(name string, work func() error) error {
 		return work()
 	}
 	u.session.send(setupCheckMsg{name: name})
+	u.logf("\n[step] %s\n", name)
 	err := work()
+	if err != nil {
+		u.logf("\n[error] %s: %v\n", name, err)
+	}
 	u.session.send(setupCheckMsg{name: name, done: true, err: err})
 	return err
+}
+
+func (u *setupUI) logf(format string, args ...any) {
+	if u.log != nil {
+		fmt.Fprintf(u.log, format, args...)
+	}
 }
 
 func (u *setupUI) checkGroup(names []string, work func() error) error {
@@ -107,7 +118,7 @@ func (u *setupUI) complete(cluster string, withDemo bool) {
 	st := newSetupStyles(u.renderer)
 	brand, border := setupBadge(u.renderer), lipgloss.RoundedBorder()
 	if plain {
-		brand, border = "Substrate on AKS", lipgloss.ASCIIBorder()
+		brand, border = "Agent Substrate on AKS", lipgloss.ASCIIBorder()
 	}
 	success := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	row := func(label, value string) string {
@@ -260,6 +271,7 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 func (u *setupUI) step(text string) {
 	if u.session != nil {
 		u.session.send(setupStepMsg(text))
+		u.logf("\n[step] %s\n", text)
 		return
 	}
 	u.note(text)

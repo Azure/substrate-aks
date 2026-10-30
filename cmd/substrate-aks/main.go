@@ -59,7 +59,8 @@ init flags:
   --name substrate-dev --location eastus2
 
 setup flags:
-  Same configuration flags as init when creating a new file
+  Same configuration flags as init when creating a new file; without --name,
+  interactive setup asks for one and --yes uses substrate-dev
   --yes                                  Accept billable deployment and select the kube-context without prompts
   --with-demo                            Also deploy the counter microVM demo
   --accessible                           Use screen-reader-friendly prompts
@@ -157,7 +158,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&readerType, "snapshot-reader-principal-type", "", "reader type: User, ServicePrincipal, or Group (otherwise inferred from a matching identity)")
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
-		fs.StringVar(&name, "name", "substrate-dev", "dedicated resource group and cluster name")
+		fs.StringVar(&name, "name", "substrate-dev", "dedicated resource group and cluster name (interactive setup asks when omitted)")
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
 	}
 	if command == "setup" {
@@ -231,13 +232,18 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	}
 	if command == "setup" {
 		var client installer.ClientSetup
-		var configFlags bool
+		var configFlags, nameSet bool
 		fs.Visit(func(f *flag.Flag) {
+			nameSet = nameSet || f.Name == "name"
 			switch f.Name {
 			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "name", "location":
 				configFlags = true
 			}
 		})
+		// Interactive setup asks for a name instead of prefilling the default.
+		if !nameSet && !yes {
+			name = ""
+		}
 		return setup(ctx, setupOptions{
 			path: *configPath, subscription: subscription, publisher: publisher, reader: reader,
 			cidr: cidr, name: name, location: location, yes: yes, withDemo: withDemo,

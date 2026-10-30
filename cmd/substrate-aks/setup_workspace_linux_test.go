@@ -128,11 +128,13 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			p.until(t, "Quick start")
 			p.send(t, "\r")
 			p.until(t, "Loading the VM SKU catalog for ")
-			// The renderer redraws only the changed marker when a row completes, so
-			// the label and its ✓ need not arrive as one contiguous run.
+			// The log preview tails the file directly, so it can show the SKU step
+			// before the checklist redraws. The renderer redraws only the changed
+			// marker when a row completes, so the label and its ✓ need not arrive
+			// as one contiguous run.
 			for _, want := range []string{"Validate your deployment", "Runtime tools", "✓", "○ Operator identity review"} {
 				if !strings.Contains(p.all, want) {
-					t.Fatalf("preflight checklist omitted %q:\n%s", want, p.all)
+					p.until(t, want)
 				}
 			}
 			p.send(t, "l")
@@ -535,14 +537,15 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	p.until(t, "Quick start")
 	p.send(t, "\r")
 	p.until(t, "Press / to filter regions")
-	if !strings.Contains(p.all, "Dedicated resource group") || !strings.Contains(p.all, "Azure region") {
-		t.Fatalf("name and region were not visible together:\n%s", p.all)
+	if !strings.Contains(p.all, "Dedicated resource group") || !strings.Contains(p.all, "Azure region") ||
+		!strings.Contains(p.all, "Grant this Azure identity") {
+		t.Fatalf("name, region, and snapshot inspection were not visible together:\n%s", p.all)
 	}
 	if width >= 96 && (!strings.Contains(p.all, "● Preparation") || !strings.Contains(p.all, "○ Images and assets")) {
 		t.Fatalf("fresh configuration started outside the persistent rail:\n%s", p.all)
 	}
 	if name == "" {
-		if !strings.Contains(p.all, "e.g. substrate-dev") {
+		if !strings.Contains(p.all, "substrate-dev") {
 			t.Fatalf("new installation did not show the name placeholder:\n%s", p.all)
 		}
 		p.send(t, "Bad_Name\r")
@@ -558,7 +561,9 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	p.until(t, "d details  ·  l logs")
 	p.send(t, "/southcentral")
 	p.send(t, "\r")
-	p.until(t, "Grant this Azure identity")
+	// The snapshot question is already drawn; focusing it redraws only its
+	// focus bar.
+	p.until(t, "┃")
 	if width >= 96 && !strings.Contains(p.all, "○ Connect") {
 		t.Fatalf("snapshot consent lost the installation plan:\n%s", p.all)
 	}
@@ -574,7 +579,8 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 		t.Fatal("configuration input cancellation hung")
 	}
 	c, err := installer.LoadConfig(path)
-	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" {
+	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
+		c.Azure.SnapshotReaderObjectID != "" {
 		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
 	}
 }

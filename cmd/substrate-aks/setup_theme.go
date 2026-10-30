@@ -51,72 +51,168 @@ func newSetupStyles(r *lipgloss.Renderer) setupStyles {
 	}
 }
 
-// setupWordmark draws "substrate" with thin rounded box-drawing letters.
-func setupWordmark(r *lipgloss.Renderer) string {
+// setupWordmark draws "agent substrate" with thin rounded box-drawing letters
+// in Agent Substrate's green, lightening toward the start.
+func setupWordmark(r *lipgloss.Renderer, words ...string) string {
 	glyphs := map[rune][3]string{
 		's': {"╭─╴", "╰─╮", "╶─╯"}, 'u': {"╷ ╷", "│ │", "╰─╯"}, 'b': {"┌─╮", "├─┤", "└─╯"},
 		't': {"╶┬╴", " │ ", " ╵ "}, 'r': {"┌─╮", "├┬╯", "╵╰╴"}, 'a': {"╭─╮", "├─┤", "╵ ╵"},
-		'e': {"┌─╴", "├─ ", "└─╴"},
+		'e': {"┌─╴", "├─ ", "└─╴"}, 'g': {"╭─╴", "│╶╮", "╰─╯"}, 'n': {"┌─╮", "│ │", "╵ ╵"},
+		' ': {" ", " ", " "},
 	}
-	gradient := []string{"#b9f0bc", "#a6ebaa", "#93e698", "#80e086", "#71dc78", "#64d86b", "#55c95d", "#45b94f", "#33a946"}
+	if len(words) == 0 {
+		words = []string{"agent substrate"}
+	}
+	text := strings.Join(words, " ")
+	letters := len(strings.ReplaceAll(text, " ", ""))
 	var rows [3]string
-	for i, letter := range "substrate" {
-		style := r.NewStyle().Foreground(lipgloss.Color(gradient[i]))
+	i := 0
+	for n, letter := range text {
+		color := setupSubstrate
+		if letters > 1 {
+			color = blendHex("#b9f0bc", "#33a946", float64(i)/float64(letters-1))
+		}
+		style := r.NewStyle().Foreground(lipgloss.Color(color))
 		for row := range rows {
-			if i > 0 {
+			if n > 0 {
 				rows[row] += " "
 			}
 			rows[row] += style.Render(glyphs[letter][row])
+		}
+		if letter != ' ' {
+			i++
 		}
 	}
 	return strings.Join(rows[:], "\n")
 }
 
-// setupMark draws an isometric block of stacked strata: an Agent Substrate
-// layer on an AKS layer on an Azure base. The shading needs at least 256 colors.
-func setupMark(r *lipgloss.Renderer) string {
+// setupAKS draws "AKS" two rows tall in half-block pixels, a step up from body
+// text without competing with the wordmark.
+func setupAKS(r *lipgloss.Renderer) string {
+	glyphs := [][4]string{
+		{".##.", "#..#", "####", "#..#"},
+		{"#..#", "#.#.", "###.", "#..#"},
+		{".###", "##..", "..##", "###."},
+	}
+	pixels := make([][]string, 4)
+	for y := range pixels {
+		for i, glyph := range glyphs {
+			if i > 0 {
+				pixels[y] = append(pixels[y], "")
+			}
+			for _, bit := range glyph[y] {
+				color := ""
+				if bit == '#' {
+					color = setupAccent
+				}
+				pixels[y] = append(pixels[y], color)
+			}
+		}
+	}
+	return setupHalfBlocks(r, pixels)
+}
+
+// Actor colors and states follow ate.dev's live actor grid.
+var setupActorColors = []string{"#61d76b", "#64b9de", "#f3f17b", "#e77cb2"}
+
+const (
+	setupMarkCells = 5
+	setupMarkFace  = "#222b25"
+	setupMarkIdle  = "#6b7079"
+)
+
+// setupMarkCell reports a top-face agent's color at an animation frame. Each
+// agent cycles independently: idle, resuming, running, suspending.
+func setupMarkCell(cell, frame int) string {
+	hash := func(v int) int {
+		v = (v ^ 61) ^ (v >> 16)
+		v *= 9
+		v ^= v >> 4
+		v *= 0x27d4eb2d
+		v ^= v >> 15
+		return v & 0x7fffffff
+	}
+	period := 26 + hash(cell*7+1)%22
+	t := frame + hash(cell*13+5)%period
+	cycle, phase := t/period, t%period
+	running := 6 + hash(cell*31+cycle)%8
+	color := setupActorColors[hash(cell*17+cycle*5)%len(setupActorColors)]
+	// Agents fade in from the idle grey layer and back out.
+	switch {
+	case phase < 2:
+		return blendHex(setupMarkIdle, color, float64(phase+1)/3)
+	case phase < 2+running:
+		return color
+	case phase < 4+running:
+		return blendHex(setupMarkIdle, color, float64(4+running-phase)/3)
+	default:
+		return setupMarkIdle
+	}
+}
+
+// setupMark draws the isometric stack: agents lighting up on the top face, an
+// Agent Substrate layer, and an AKS base. The shading needs at least 256 colors.
+func setupMark(r *lipgloss.Renderer, frame int) string {
 	// Sixteen-color terminals collapse the shaded faces into solid blocks.
 	if r.ColorProfile() > termenv.ANSI256 {
 		return ""
 	}
-	const half, sides = 6, 6
-	width := 2 * half
-	top := "#d6f7d8"
-	bands := []string{"#64d86b", "#9061e3", "#2f7fe0"}
-	pixels := make([][]string, half+sides)
+	const cells, layer = setupMarkCells, 3
+	// The top face is exactly the agent lattice: two-pixel agents in a
+	// checkerboard whose outermost agents form the face's edges.
+	width, face, center := 4*cells-2, 2*cells-1, 2*cells-1
+	pixels := make([][]string, face+2*layer)
 	for y := range pixels {
 		pixels[y] = make([]string, width)
 	}
-	center := float64(width) / 2
-	for y := range half {
-		reach := 2 * (y + 1)
-		if y >= half/2 {
-			reach = 2 * (half - y)
-		}
-		for x := range width {
-			if abs(float64(x)+0.5-center) <= float64(reach) {
-				pixels[y][x] = top
-			}
+	bottom := make([]int, width)
+	for y := range face {
+		reach := 2 * min(y, face-1-y)
+		for x := center - reach - 1; x <= center+reach; x++ {
+			pixels[y][x] = setupMarkFace
+			bottom[x] = y
 		}
 	}
 	for x := range width {
-		bottom := half - 1 - int(abs(float64(x)+0.5-center)/2)
-		for s := range sides {
-			color := bands[min(s/(sides/len(bands)), len(bands)-1)]
-			if float64(x) >= center {
-				color = shadeHex(color, 0.7)
+		for s := range 2 * layer {
+			color := setupSubstrate
+			if s >= layer {
+				color = "#9b6cf0"
 			}
-			if y := bottom + 1 + s; y < len(pixels) {
+			if x >= center {
+				color = shadeHex(color, 0.68)
+			}
+			if y := bottom[x] + 1 + s; y < len(pixels) {
 				pixels[y][x] = color
 			}
 		}
 	}
+	for i := range cells {
+		for j := range cells {
+			x, y := center+2*(i-j)-1, i+j
+			color := setupMarkCell(i*cells+j, frame)
+			pixels[y][x], pixels[y][x+1] = color, color
+			// Every agent is a voxel: its lit and shaded sides fill the row
+			// below, so idle agents form a grey layer over Agent Substrate.
+			pixels[y+1][x], pixels[y+1][x+1] = shadeHex(color, 0.72), shadeHex(color, 0.5)
+		}
+	}
+	return setupHalfBlocks(r, pixels)
+}
+
+// setupHalfBlocks renders square pixels two to a cell; "" is transparent.
+func setupHalfBlocks(r *lipgloss.Renderer, pixels [][]string) string {
+	if len(pixels)%2 == 1 {
+		pixels = append(pixels, make([]string, len(pixels[0])))
+	}
 	var lines []string
 	for y := 0; y < len(pixels); y += 2 {
 		var line strings.Builder
-		for x := range width {
+		for x := range pixels[y] {
 			upper, lower := pixels[y][x], pixels[y+1][x]
 			switch {
+			case upper != "" && upper == lower:
+				line.WriteString(r.NewStyle().Foreground(lipgloss.Color(upper)).Render("█"))
 			case upper != "" && lower != "":
 				line.WriteString(r.NewStyle().Foreground(lipgloss.Color(upper)).Background(lipgloss.Color(lower)).Render("▀"))
 			case upper != "":
@@ -132,37 +228,56 @@ func setupMark(r *lipgloss.Renderer) string {
 	return strings.Join(lines, "\n")
 }
 
-func abs(v float64) float64 {
-	if v < 0 {
-		return -v
-	}
-	return v
+func hexRGB(hex string) (red, green, blue int) {
+	fmt.Sscanf(hex, "#%02x%02x%02x", &red, &green, &blue)
+	return
 }
 
 func shadeHex(hex string, factor float64) string {
-	var red, green, blue int
-	fmt.Sscanf(hex, "#%02x%02x%02x", &red, &green, &blue)
+	red, green, blue := hexRGB(hex)
 	scale := func(v int) int { return min(255, int(float64(v)*factor)) }
 	return fmt.Sprintf("#%02x%02x%02x", scale(red), scale(green), scale(blue))
 }
 
-// setupBrand is the full landing mark: strata block, wordmark and tagline.
-func setupBrand(r *lipgloss.Renderer) string {
+// blendHex mixes from toward to; amount 0 is from and 1 is to.
+func blendHex(from, to string, amount float64) string {
+	r1, g1, b1 := hexRGB(from)
+	r2, g2, b2 := hexRGB(to)
+	mix := func(a, b int) int { return a + int(float64(b-a)*amount+0.5) }
+	return fmt.Sprintf("#%02x%02x%02x", mix(r1, r2), mix(g1, g2), mix(b1, b2))
+}
+
+// setupOn is the plain, muted "on" between the wordmark and AKS.
+func setupOn(r *lipgloss.Renderer) string {
+	return newSetupStyles(r).muted.Render("on")
+}
+
+// setupStack centers brand lines on one axis with "on" spaced evenly between
+// the wordmark and AKS. Joining them at once keeps odd widths from drifting.
+func setupStack(r *lipgloss.Renderer, wordmark string, rest ...string) string {
+	return lipgloss.JoinVertical(lipgloss.Center, append([]string{wordmark, "", setupOn(r), "", setupAKS(r)}, rest...)...)
+}
+
+// setupBrand is the full landing mark: the animated block beside the wordmark,
+// "on AKS" and the tagline. Frame drives the agents on the block's top face.
+func setupBrand(r *lipgloss.Renderer, frame int) string {
 	st := newSetupStyles(r)
-	text := setupWordmark(r) + "\n" + st.muted.Render("on ") + st.aks.Render("AKS") + "\n" +
-		st.muted.Render("An AKS packaging layer for Agent Substrate.")
-	mark := setupMark(r)
+	text := setupStack(r, setupWordmark(r), "", st.muted.Render("An AKS packaging layer for Agent Substrate."))
+	mark := setupMark(r, frame)
 	if mark == "" {
 		return text
 	}
-	pad := max(0, (lipgloss.Height(mark)-lipgloss.Height(text))/2)
-	return lipgloss.JoinHorizontal(lipgloss.Top, mark, "   ", strings.Repeat("\n", pad)+text)
+	center := func(block string, height int) string {
+		return strings.Repeat("\n", max(0, (height-lipgloss.Height(block))/2)) + block
+	}
+	height := max(lipgloss.Height(mark), lipgloss.Height(text))
+	return lipgloss.JoinHorizontal(lipgloss.Top, center(mark, height), "  ", center(text, height))
 }
 
 // setupBadge is the compact one-line brand used by headers and receipts.
 func setupBadge(r *lipgloss.Renderer) string {
 	st := newSetupStyles(r)
-	return st.substrate.Render("◆ substrate") + st.muted.Render(" on ") + st.aks.Render("AKS")
+	return st.substrate.Render("◆ Agent Substrate") + st.muted.Render(" on ") + st.aks.Render("AKS")
 }
 
 type setupKeyHint struct{ key, label string }

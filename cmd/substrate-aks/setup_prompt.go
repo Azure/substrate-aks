@@ -36,7 +36,7 @@ type setupClusterNameInput struct {
 func newSetupClusterNameInput(value *string) *setupClusterNameInput {
 	return &setupClusterNameInput{
 		Input: huh.NewInput().Title("Dedicated resource group and cluster name").
-			Placeholder("e.g. substrate-dev").Value(value).
+			Placeholder("substrate-dev").Value(value).
 			Validate(func(s string) error { return installer.ValidateInstallationName(strings.TrimSpace(s)) }),
 		value: value, width: 80,
 	}
@@ -236,7 +236,14 @@ func (p *setupPrompt) region(ctx context.Context, fallback string, regions []str
 	return value, err
 }
 
-func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string) (string, string, error) {
+const (
+	setupSnapshotQuestion = "Grant this Azure identity read-only snapshot inspection?"
+	setupSnapshotWarning  = "Optional; runtime access is automatic. Snapshots can contain actor memory, files, and secrets."
+)
+
+// installation asks for the name and region and, when reader is non-nil, the
+// optional snapshot inspection grant, all in one form.
+func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string, reader *bool) (string, string, error) {
 	nameField := newSetupClusterNameInput(&name)
 	if p.accessible {
 		fallback := strings.TrimSpace(name)
@@ -259,19 +266,36 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			name = fallback
 		}
 		location, err := p.region(ctx, location, regions)
+		if err != nil || reader == nil {
+			return name, location, err
+		}
+		p.ui.warning(setupSnapshotWarning)
+		*reader, err = p.confirm(ctx, setupSnapshotQuestion, *reader)
 		return name, location, err
 	}
 	region := newRegionSelector(&location, regions)
+	fields := []huh.Field{nameField, region}
+	var snapshot huh.Field
+	if reader != nil {
+		snapshot = huh.NewConfirm().Title(setupSnapshotQuestion).
+			Description(setupSnapshotWarning).Value(reader)
+		fields = append(fields, snapshot)
+	}
 	formHeight := 0
 	nameField.resize = func() {
-		if formHeight > 0 {
-			region.WithHeight(max(4, formHeight-lipgloss.Height(nameField.View())-1))
+		if formHeight == 0 {
+			return
 		}
+		rest := lipgloss.Height(nameField.View()) + 1
+		if snapshot != nil {
+			rest += lipgloss.Height(snapshot.View()) + 1
+		}
+		region.WithHeight(max(4, formHeight-rest))
 	}
 	err := p.runForm(ctx, func(height int) {
 		formHeight = height
 		nameField.resize()
-	}, nameField, region)
+	}, fields...)
 	return strings.TrimSpace(name), location, err
 }
 

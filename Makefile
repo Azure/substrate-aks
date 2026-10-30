@@ -1,7 +1,12 @@
-.PHONY: build test test-unit test-contract verify bicep
+.PHONY: build setup test test-unit test-contract verify bicep
 
 build:
 	go build -o bin/substrate-aks ./cmd/substrate-aks
+
+# Build, then run guided setup; pass flags with ARGS, for example
+# make setup ARGS="--config deploy-dev.json --accessible".
+setup: build
+	bin/substrate-aks setup $(ARGS)
 
 test: test-unit test-contract
 

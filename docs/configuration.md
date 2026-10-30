@@ -21,7 +21,7 @@ existing file. You can also create it through
 | Subscription | Active Azure CLI subscription |
 | Upload identity | Signed-in identity |
 | Kubernetes operator | Signed-in identity, with managed Entra and Azure RBAC |
-| Resource group / cluster | `substrate-dev` |
+| Resource group / cluster | `substrate-dev` (`init` and `setup --yes`; interactive setup asks) |
 | Region | `eastus2` |
 | AKS | Kubernetes 1.37; one system node and one microVM worker |
 | MicroVM worker | `Standard_D4s_v3`, count 1 |

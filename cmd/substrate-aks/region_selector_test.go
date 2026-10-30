@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestRegionFilterStartsAtFirstMatchAndPreservesNavigation(t *testing.T) {
@@ -71,5 +72,33 @@ func TestRegionFilterEditingReturnsToFirstMatch(t *testing.T) {
 				t.Fatalf("editing the query left a stale selection: %q", value)
 			}
 		})
+	}
+}
+
+func TestRegionFilterDoesNotPadTheFormBelowMatches(t *testing.T) {
+	value, confirmed := "eastus", false
+	regions := []string{"eastus", "indiasouthcentral", "southcentralus", "southcentralusstg", "westus"}
+	region := newRegionSelector(&value, regions)
+	region.WithHeight(12)
+	form := huh.NewForm(huh.NewGroup(
+		region,
+		huh.NewConfirm().Title("Next field").Value(&confirmed),
+	)).WithWidth(60)
+	form.Init()
+	for _, r := range "/southcent" {
+		form.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	lines := strings.Split(ansi.Strip(form.View()), "\n")
+	last, next := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "southcentralusstg") {
+			last = i
+		}
+		if strings.Contains(line, "Next field") {
+			next = i
+		}
+	}
+	if last < 0 || next != last+2 {
+		t.Fatalf("filtered matches end on row %d but the next field starts on row %d:\n%s", last, next, form.View())
 	}
 }

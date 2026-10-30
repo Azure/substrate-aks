@@ -109,13 +109,29 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			ui.session.send(setupTargetMsg{prior, o.withDemo})
 		}
 	}
+	if ui.session != nil {
+		log, err := openSetupPreparationLog(o.path, prior, statErr == nil)
+		if err != nil {
+			return fmt.Errorf("creating the setup log: %w", err)
+		}
+		defer log.Close()
+		fmt.Fprintf(log, "[command] setup preparation\n[config] %s\n", o.path)
+		if o.discovery == nil {
+			runner = installer.ExecRunner{Log: log}
+		}
+		if o.local == nil {
+			local = installer.ExecRunner{Log: log}
+		}
+		ui.log = log
+		ui.session.send(setupLogMsg(log.Name()))
+	}
 	needsBuilder := statErr != nil || prior.Substrate.Images == (installer.ImagesConfig{})
 	environment := []string{"Local tools"}
 	if needsBuilder {
 		environment = append(environment, "Image builder")
 	}
 	if errors.Is(statErr, os.ErrNotExist) {
-		environment = append(environment, "Azure account / identities", "API access address")
+		environment = append(environment, "Azure account / identities", "API access address", "Azure regions")
 	}
 	ui.checklist("Check your environment", environment...)
 	preflight := installer.App{Config: prior, Runner: local, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
@@ -147,6 +163,16 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		if ui.session != nil && defaults.subscriptionName != "" {
 			ui.session.send(setupSubscriptionMsg{defaults.subscription, defaults.subscriptionName})
 		}
+		var regions []string
+		// Regions need a subscription; if discovery found none, this check
+		// runs after it is entered below.
+		loadRegions := func() error {
+			return ui.check("Azure regions", func() error {
+				var err error
+				regions, err = readAzureRegions(ctx, o.subscription, runner)
+				return err
+			})
+		}
 		err = ui.check("API access address", func() error {
 			o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
 			return err
@@ -157,6 +183,11 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			}
 			ui.warning(fmt.Sprintf("Public IPv4 could not be detected: %v", err))
 			ui.note("Enter an allowed API CIDR below; access will not be opened automatically.")
+		}
+		if o.subscription != "" {
+			if err := loadRegions(); err != nil {
+				return err
+			}
 		}
 		if !o.yes {
 			ui.section("Configure your installation")
@@ -180,10 +211,10 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				}
 			}
 		}
-		ui.note("Loading available Azure regions.")
-		regions, err := readAzureRegions(ctx, o.subscription, runner)
-		if err != nil {
-			return err
+		if regions == nil {
+			if err := loadRegions(); err != nil {
+				return err
+			}
 		}
 		o.location, err = validateAzureRegion(o.location, regions)
 		if err != nil {
@@ -191,21 +222,16 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 		if !o.yes {
 			ui.section("Configure your installation")
-			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions)
+			var read *bool
+			if o.reader == "" {
+				read = new(bool)
+			}
+			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions, read)
 			if err != nil {
 				return err
 			}
-			if o.reader == "" {
-				ui.section("Snapshot inspection")
-				ui.warning("Snapshots can contain actor memory, files, and secrets.")
-				ui.note("Runtime identities receive access automatically. Operator inspection is optional and read-only.")
-				read, err := prompt.confirm(ctx, "Grant this Azure identity read-only snapshot inspection?", false)
-				if err != nil {
-					return err
-				}
-				if read {
-					o.reader = o.publisher
-				}
+			if read != nil && *read {
+				o.reader = o.publisher
 			}
 		}
 		operator := installer.OperatorConfig{ObjectID: o.operatorID, PrincipalType: o.operatorType}
@@ -313,6 +339,8 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if ui.session != nil {
 		ui.session.send(setupTargetMsg{c, o.withDemo})
 	}
+	// Each stage writes its own installation log from here on.
+	ui.log = nil
 	stages := setupStages(c, o.withDemo)
 	stopped := func(label string, args []string, err error) error {
 		reconcile := []string{"setup", "--config", o.path}
@@ -543,4 +571,21 @@ func printClientSetup(out io.Writer, c installer.ClientSetup) error {
 	}
 	_, err = fmt.Fprintf(out, "\n# Inspect the installation:\nkubectl --context %s get pods --all-namespaces\nkubectl ate --help\n", shellQuote(c.Context))
 	return err
+}
+
+// openSetupPreparationLog records the environment checks that run before any
+// stage command. A saved installation logs with its stages; a new one has no
+// installation ID yet, so it logs under the default state directory beside the
+// configuration.
+func openSetupPreparationLog(path string, prior installer.Config, saved bool) (*os.File, error) {
+	if saved {
+		return installer.NewLog(prior)
+	}
+	dir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	c := installer.DefaultConfig()
+	c.Installation.StateDir = filepath.Join(dir, c.Installation.StateDir)
+	return installer.NewLog(c)
 }

@@ -27,6 +27,7 @@ type setupFinishedMsg struct{ err error }
 type setupCloseMsg struct{}
 type setupCancelledMsg struct{}
 type setupTickMsg time.Time
+type setupBrandTickMsg struct{}
 
 const (
 	setupRailWidth = 27
@@ -105,6 +106,7 @@ type setupWorkspace struct {
 	formResize         func(height int)
 	reply              chan error
 	welcome            bool
+	brandFrame         int
 	choice             int
 	stopping, finished bool
 	err                error
@@ -183,7 +185,16 @@ func runSetupWorkspace(ctx context.Context, o setupOptions, in io.Reader, out, t
 }
 
 func (m *setupWorkspace) Init() tea.Cmd {
-	return tea.Batch(m.waitEvent(), m.tick())
+	return tea.Batch(m.waitEvent(), m.tick(), m.brandTick())
+}
+
+// brandTick animates the agents on the welcome mark. The mark needs 256
+// colors, and the animation stops once setup begins.
+func (m *setupWorkspace) brandTick() tea.Cmd {
+	if !m.welcome || m.renderer.ColorProfile() > termenv.ANSI256 {
+		return nil
+	}
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return setupBrandTickMsg{} })
 }
 
 func (m *setupWorkspace) waitEvent() tea.Cmd {
@@ -273,6 +284,9 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshLog()
 		}
 		return m, m.tick()
+	case setupBrandTickMsg:
+		m.brandFrame++
+		return m, m.brandTick()
 	case setupCloseMsg:
 		return m, tea.Quit
 	case setupSyncMsg:

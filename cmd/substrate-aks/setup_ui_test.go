@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
 
@@ -167,8 +170,8 @@ func TestSetupWelcomeBanner(t *testing.T) {
 		wantArt    bool
 	}{
 		{"wide", 80, true, true},
-		{"minimum width", 64, true, true},
-		{"narrow", 63, true, false},
+		{"minimum width", 59, true, true},
+		{"narrow", 58, true, false},
 		{"plain", 80, false, false},
 	} {
 		for _, colored := range []bool{false, true} {
@@ -185,7 +188,7 @@ func TestSetupWelcomeBanner(t *testing.T) {
 				if strings.Contains(plain, "╭─╴ ╷ ╷ ┌─╮") != tc.wantArt {
 					t.Fatalf("incorrect decorative/plain welcome:\n%s", plain)
 				}
-				if !tc.wantArt && !strings.Contains(plain, "Substrate on AKS") {
+				if !tc.wantArt && !strings.Contains(plain, "Agent Substrate on AKS") {
 					t.Fatalf("plain welcome lost its heading:\n%s", plain)
 				}
 				for _, line := range strings.Split(plain, "\n") {
@@ -218,19 +221,62 @@ func TestSetupWelcomeUsesBrandArtworkAndText(t *testing.T) {
 			t.Fatalf("banner is incomplete:\n%s", &output)
 		}
 		plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(output.String(), "")
-		if strings.ContainsAny(plain, "▀▄") != tc.mark {
-			t.Fatalf("profile %v drew the strata mark=%v:\n%s", tc.profile, !tc.mark, plain)
+		// The block sits beside the wordmark rows, above the pixel AKS.
+		if strings.ContainsAny(ansi.Strip(strings.Join(lines[:3], "")), "▀▄█") != tc.mark {
+			t.Fatalf("profile %v drew the isometric mark=%v:\n%s", tc.profile, !tc.mark, plain)
 		}
 		// Each wordmark glyph carries its own gradient step, starting from the lightest Substrate green.
-		first := ui.renderer.NewStyle().Foreground(lipgloss.Color("#b9f0bc")).Render("╭─╴")
+		first := ui.renderer.NewStyle().Foreground(lipgloss.Color("#b9f0bc")).Render("╭─╮")
 		if !strings.Contains(lines[0], first) {
 			t.Fatalf("profile %v wordmark lost its gradient: %q", tc.profile, lines[0])
 		}
-		for _, want := range []string{"on AKS", "An AKS packaging layer for Agent Substrate."} {
+		for _, want := range []string{"╭─╮ ╭─╴ ┌─╴ ┌─╮ ╶┬╴   ╭─╴ ╷ ╷ ┌─╮", "█▀▀█ █▀▀▄ ▄▄█▀", "An AKS packaging layer for Agent Substrate."} {
 			if !strings.Contains(plain, want) {
 				t.Fatalf("profile %v banner lost %q:\n%s", tc.profile, want, plain)
 			}
 		}
+		// "on" sits one blank row below the wordmark and one above AKS, centered
+		// on the wordmark.
+		rows := strings.Split(plain, "\n")
+		find := func(text string) (int, int) {
+			for i, row := range rows {
+				if at := strings.Index(row, text); at >= 0 {
+					return i, utf8.RuneCountInString(row[:at])
+				}
+			}
+			return -1, -1
+		}
+		wordRow, wordCol := find("╭─╮ ╭─╴")
+		onRow, onCol := find(" on ")
+		aksRow, _ := find("▄▀▀▄ █ ▄▀")
+		if wordRow < 0 || onRow != wordRow+4 || aksRow != onRow+2 || onCol+1 != wordCol+28 {
+			t.Fatalf("profile %v did not center \"on\" between the wordmark and AKS:\n%s", tc.profile, plain)
+		}
+	}
+}
+
+func TestSetupMarkAnimatesAgentsWithoutMovingTheBlock(t *testing.T) {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.TrueColor)
+	first := setupMark(r, 0)
+	frames := map[string]bool{}
+	for frame := range 60 {
+		mark := setupMark(r, frame)
+		if lipgloss.Width(mark) != lipgloss.Width(first) || lipgloss.Height(mark) != lipgloss.Height(first) {
+			t.Fatalf("frame %d resized the mark:\n%s", frame, ansi.Strip(mark))
+		}
+		frames[mark] = true
+	}
+	if len(frames) < 10 {
+		t.Fatalf("agents barely animate: %d distinct frames in 60", len(frames))
+	}
+}
+
+func TestSetupAKSKeepsSolidPixelsWithoutColor(t *testing.T) {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.Ascii)
+	if got := setupAKS(r); got != "▄▀▀▄ █ ▄▀ ▄█▀▀\n█▀▀█ █▀▀▄ ▄▄█▀" {
+		t.Fatalf("monochrome AKS lost pixels:\n%s", got)
 	}
 }
 

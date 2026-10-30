@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -64,7 +65,7 @@ func TestWorkspacePlannedOptionsCannotStartInstallation(t *testing.T) {
 }
 
 func TestWorkspaceWelcomeCardsFitTerminal(t *testing.T) {
-	for _, size := range [][2]int{{120, 40}, {100, 30}, {80, 24}, {79, 24}, {64, 34}, {40, 26}, {40, 24}, {80, 14}, {40, 14}} {
+	for _, size := range [][2]int{{120, 40}, {100, 30}, {80, 24}, {79, 24}, {64, 34}, {50, 30}, {40, 26}, {40, 24}, {80, 14}, {40, 14}} {
 		for _, choice := range []int{0, 1} {
 			m := testWorkspace(t)
 			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
@@ -79,7 +80,7 @@ func TestWorkspaceWelcomeCardsFitTerminal(t *testing.T) {
 				t.Fatal("removed option is still advertised")
 			}
 			if size[0] >= 80 && size[1] >= 24 {
-				for _, want := range []string{"╭─╴ ╷ ╷ ┌─╮", "on AKS"} {
+				for _, want := range []string{"╭─╮ ╭─╴ ┌─╴ ┌─╮ ╶┬╴", "╭─╴ ╷ ╷ ┌─╮", "█▀▀█ █▀▀▄ ▄▄█▀", "An AKS packaging layer"} {
 					if !strings.Contains(view, want) {
 						t.Fatalf("landing screen lost branding %q:\n%s", want, view)
 					}
@@ -94,6 +95,21 @@ func TestWorkspaceWelcomeCardsFitTerminal(t *testing.T) {
 				t.Fatalf("%dx%d exceeded terminal height (%d):\n%s", size[0], size[1], lines, view)
 			}
 		}
+	}
+}
+
+func TestWorkspaceAnimatesBrandOnlyOnColorWelcome(t *testing.T) {
+	m := testWorkspace(t)
+	if m.brandTick() != nil {
+		t.Fatal("monochrome welcome animated the mark")
+	}
+	m.renderer.SetColorProfile(termenv.ANSI256)
+	if _, cmd := m.Update(setupBrandTickMsg{}); cmd == nil || m.brandFrame != 1 {
+		t.Fatalf("welcome stopped animating at frame %d", m.brandFrame)
+	}
+	m.welcome = false
+	if _, cmd := m.Update(setupBrandTickMsg{}); cmd != nil {
+		t.Fatal("brand kept animating after the welcome screen")
 	}
 }
 
@@ -210,6 +226,47 @@ func TestWorkspaceChecklistSpinnerKeepsTextAligned(t *testing.T) {
 			}
 			m.checkSpinner, _ = m.checkSpinner.Update(m.checkSpinner.Tick())
 		}
+	}
+}
+
+func TestWorkspacePreparationFollowsItsOwnLog(t *testing.T) {
+	m := testWorkspace(t)
+	m.session.events = make(chan any, 1024)
+	ctx := context.WithValue(t.Context(), setupSessionKey{}, m.session)
+	path := testCLIConfig(t)
+	stop := errors.New("first stage stopped")
+	err := setupForTest(ctx, setupOptions{path: path, yes: true, skipContextHandoff: true, discovery: subscriptionDisplayRunner(t)},
+		strings.NewReader(""), io.Discard, io.Discard, func(context.Context, []string, io.Writer, io.Writer) error { return stop })
+	if !errors.Is(err, stop) {
+		t.Fatalf("setup did not stop at the first stage: %v", err)
+	}
+	logPath := ""
+	for len(m.session.events) > 0 {
+		switch event := (<-m.session.events).(type) {
+		case setupLogMsg:
+			logPath = cmp.Or(logPath, string(event))
+		case setupCheckMsg:
+			if logPath == "" {
+				t.Fatalf("check %q started before Preparation had a log", event.name)
+			}
+		}
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{"[step] Local tools", "[step] Azure deployment readiness"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("Preparation log is missing %q:\n%s", want, log)
+		}
+	}
+	if first := setupStages(c, false)[0].label; strings.Contains(log, first) {
+		t.Fatalf("stage %q wrote to the Preparation log:\n%s", first, log)
 	}
 }
 
@@ -548,7 +605,7 @@ func TestWorkspaceKeepsTargetAndFormVisibleAtConfirmation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceInstallationFormKeepsBothFieldsVisible(t *testing.T) {
+func TestWorkspaceInstallationFormKeepsAllFieldsVisible(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false
 	m.Update(setupSectionMsg("Configure your installation"))
@@ -568,7 +625,7 @@ func TestWorkspaceInstallationFormKeepsBothFieldsVisible(t *testing.T) {
 	})
 	go func() {
 		defer close(finished)
-		_, _, _ = prompt.installation(m.session.ctx, "prefilled-cluster", "eastus2", regions)
+		_, _, _ = prompt.installation(m.session.ctx, "prefilled-cluster", "eastus2", regions, new(bool))
 	}()
 	select {
 	case event := <-m.session.events:
@@ -589,6 +646,9 @@ func TestWorkspaceInstallationFormKeepsBothFieldsVisible(t *testing.T) {
 		want = append(want, "Azure region")
 		if size[1] >= 18 {
 			want = append(want, "eastus2")
+		}
+		if size[1] >= 24 {
+			want = append(want, "Grant this Azure identity", "Snapshots can contain")
 		}
 		for _, text := range want {
 			if !strings.Contains(view, text) {
@@ -621,7 +681,8 @@ func TestWorkspaceInstallationFormKeepsBothFieldsVisible(t *testing.T) {
 		if nameLine-titleLine != gap {
 			t.Fatalf("%dx%d reserved empty context above the form:\n%s", size[0], size[1], view)
 		}
-		if size[1] >= 24 && visibleRegions < size[1]-14 {
+		// The snapshot question below the list takes five rows.
+		if size[1] >= 24 && visibleRegions < size[1]-19 {
 			t.Fatalf("%dx%d left the region list too short (%d visible):\n%s", size[0], size[1], visibleRegions, view)
 		}
 	}
@@ -686,9 +747,6 @@ func TestWorkspaceFrameStaysStableAcrossPreparationAndApprovals(t *testing.T) {
 			setupStepMsg("Checking Azure CLI"),
 			setupSectionMsg("Configure your installation"),
 			setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewInput().Title("Cluster name"))), done: make(chan error, 1)},
-			setupSectionMsg("Snapshot inspection"),
-			setupNoteMsg{text: "Snapshots can contain secrets.", warning: true},
-			form("Grant read-only snapshot inspection?"),
 			setupTargetMsg{c, true},
 			setupReviewMsg{{kind: "note", text: "Review these installation settings."}},
 			form("Continue with this billable installation?"),
@@ -740,7 +798,7 @@ func TestWorkspaceRailReservesMarkersForEveryPhaseState(t *testing.T) {
 	m.renderer.SetColorProfile(termenv.TrueColor)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	initial := ansi.Strip(m.rail())
-	if !strings.HasPrefix(initial, "PHASE 1 OF 5") || !strings.Contains(initial, "● Preparation") ||
+	if !strings.HasPrefix(initial, "STAGE 1 OF 5") || !strings.Contains(initial, "● Preparation") ||
 		!strings.Contains(initial, "○ Images and assets") ||
 		strings.Contains(initial, "Installation") || strings.Contains(initial, "Private registry") {
 		t.Fatalf("fresh installation lacks active/pending phase markers:\n%s", initial)
@@ -779,7 +837,7 @@ func TestWorkspaceRailReservesMarkersForEveryPhaseState(t *testing.T) {
 }
 
 func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
-	for _, width := range []int{120, 96, 80, 40} {
+	for _, width := range []int{128, 96, 80, 40} {
 		m := testWorkspace(t)
 		m.welcome = false
 		m.Update(tea.WindowSizeMsg{Width: width, Height: 32})
@@ -789,7 +847,7 @@ func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
 		m.Update(setupTargetMsg{c, false})
 		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue?"))), done: make(chan error, 1)})
 		header := ansi.Strip(m.headerView())
-		if !strings.HasPrefix(header, "◆ substrate on AKS") || strings.Contains(header, "\n") ||
+		if !strings.HasPrefix(header, "◆ Agent Substrate on AKS") || strings.Contains(header, "\n") ||
 			strings.Contains(header, "Elapsed") || strings.Contains(header, "DECISION") || strings.Contains(header, "WORKING") {
 			t.Fatalf("header retained status noise, lost branding or left one line:\n%s", header)
 		}
@@ -797,7 +855,7 @@ func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
 			!strings.HasSuffix(header, "11111111…") && !strings.HasSuffix(header, c.Azure.SubscriptionID)) {
 			t.Fatalf("target metadata is not right-aligned beside the brand:\n%s", header)
 		}
-		if width >= 120 && !strings.HasSuffix(header, "subscription "+c.Azure.SubscriptionID) {
+		if width >= 128 && !strings.HasSuffix(header, "subscription "+c.Azure.SubscriptionID) {
 			t.Fatalf("wide header abbreviated a subscription that fits:\n%s", header)
 		}
 		for _, line := range strings.Split(ansi.Strip(m.View().Content), "\n") {

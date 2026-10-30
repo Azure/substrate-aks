@@ -21,10 +21,12 @@ add `--config PATH` when managing another installation.
 Install the [prerequisites](../README.md#quickstart), then run:
 
 ```sh
-make build
 az login
-bin/substrate-aks setup
+make setup
 ```
+
+`make setup` builds `bin/substrate-aks` and runs its `setup` command; pass flags
+with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
 
 Setup asks for a name and region, explains snapshot access, and previews changes
 before requesting approval. It then builds images, creates the infrastructure,
@@ -46,7 +48,7 @@ Long checklists keep the active or failed check in view, including when returnin
 from logs to a retry prompt.
 Every phase reserves a marker column: gray pending
 circle, purple current-phase circle, green completion check, or red failure
-cross. The progress bar above the phases is blue.
+cross. Above them, a "STAGE n OF m" label sits over a blue progress bar.
 The rail hides on narrow terminals and uses tighter spacing on short terminals.
 The active phase reports named operations and elapsed time. Environment
 discovery and deployment validation show their applicable checks up front.
@@ -67,27 +69,30 @@ elapsed time, and one short status line beneath its row. The status line is
 indented with a tree branch and light-blue text, distinguishing it from pending
 operations; failed-operation details remain red. Pending rows use only their
 circle marker and operation name, without a redundant status label.
-While a check runs, the latest lines of the current command's private
-diagnostic log fill the space beneath the checklist; `l` expands them into the full,
+While a check runs, including Preparation's environment checks, the latest lines
+of the current private diagnostic log fill the space beneath the checklist; `l` expands them into the full,
 scrollable logs view. Progress messages alone never mark a check successful. Image-builder selection
 is part of the local environment check, before Azure discovery or validation, with the
-choice immediately below the active row. The one-line header shows the Substrate on AKS badge on the left and
+choice immediately below the active row. The one-line header shows the Agent Substrate on AKS badge on the left and
 the cluster, region, and subscription name on the right; the subscription ID is
 shown, shortened, until its name is known. Unknown values show a dash and long
 values shorten, so completing configuration does not move the header or change
 the content width.
 The header has no global status or elapsed timer.
 
-New installations show the cluster/resource-group name and searchable Azure
-region together in one form. Enter or Tab moves between fields; Shift+Tab goes
-back to edit the name. The form sits below its heading without an empty status
-area, and the region list grows with the available terminal height.
+New installations show the cluster/resource-group name, searchable Azure
+region, and optional read-only snapshot-inspection grant together in one form.
+Available regions load as the last environment check, so the list is ready when
+the form opens. Enter or Tab moves between fields; Shift+Tab goes back to an earlier field. The
+form sits below its heading without an empty status area, and the region list
+grows with the available terminal height; a filtered list shrinks to its matches
+so the following field stays beneath them.
 The name input shows an example placeholder when empty and validation feedback
 as it is edited. Invalid names cannot advance; validation uses the same
 3-40-character naming rules as the saved configuration.
 Short terminals scroll the form to the focused field.
-Accessible mode asks the same questions sequentially. Snapshot-access consent
-and billable-change approvals remain separate.
+Accessible mode asks the same questions sequentially, including
+snapshot-access consent. Billable-change approvals remain separate prompts.
 
 Quick start is available; Advanced configuration is explicitly marked **Planned**
 and cannot start an installation. The branded opening screen has two selectable
@@ -424,7 +429,7 @@ Long-duration credential refresh remains a validation gap.
 | --- | --- |
 | Progress and completion | stderr; plain updates when redirected |
 | Standalone results/previews and final setup commands | stdout |
-| Detailed command logs | Private files under the installation's `logs/` directory |
+| Detailed command logs | Private files under the installation's `logs/` directory; a new installation's setup preparation logs under `.substrate-aks/logs/` beside its configuration |
 | `--verbose` | Underlying commands, build output, and diagnostics in append-only/standalone flows |
 
 The interactive workspace owns the terminal: subprocess output never writes

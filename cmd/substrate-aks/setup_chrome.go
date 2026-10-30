@@ -255,14 +255,28 @@ func (m *setupWorkspace) welcomeView() string {
 	st := m.st
 	width := min(m.width-4, 100)
 	wide := width >= 76
-	var brand string
-	switch {
-	case width >= 64 && ((wide && m.height >= 22) || m.height >= 32):
-		brand = setupBrand(m.renderer)
-	case width >= 40 && m.height >= 20:
-		brand = setupWordmark(m.renderer) + "\n" + st.muted.Render("on ") + st.aks.Render("AKS")
-	default:
-		brand = setupBadge(m.renderer)
+	// The brand may use the side margins; it is centered on its own.
+	room := m.width - 2
+	brandHeight := 32
+	if wide {
+		brandHeight = 22
+	}
+	brand := setupBadge(m.renderer)
+	for _, candidate := range []struct {
+		text   string
+		height int
+	}{
+		{setupBrand(m.renderer, m.brandFrame), brandHeight},
+		{setupStack(m.renderer, setupWordmark(m.renderer)), 25},
+		{lipgloss.JoinVertical(lipgloss.Center, setupWordmark(m.renderer),
+			lipgloss.JoinHorizontal(lipgloss.Top, setupOn(m.renderer), "  ", setupAKS(m.renderer))), 20},
+		{setupStack(m.renderer, lipgloss.JoinVertical(lipgloss.Center,
+			setupWordmark(m.renderer, "agent"), setupWordmark(m.renderer, "substrate"))), 30},
+	} {
+		if lipgloss.Width(candidate.text) <= room && m.height >= candidate.height {
+			brand = candidate.text
+			break
+		}
 	}
 	cardWidth := width
 	if wide {
@@ -313,6 +327,7 @@ func (m *setupWorkspace) welcomeView() string {
 		choices = lipgloss.JoinHorizontal(lipgloss.Top, cards[0], "   ", cards[1])
 	}
 	content := lipgloss.PlaceHorizontal(width, lipgloss.Center, brand) + "\n\n" + choices
+	// The claims are a bonus: show them only when they fit above the footer.
 	if m.height >= 24 {
 		claims := []string{"Checks tools and Azure access first", "Previews Azure changes for approval", "Honors saved deploy.json settings"}
 		widest := 0
@@ -331,7 +346,9 @@ func (m *setupWorkspace) welcomeView() string {
 			}
 			strip = strings.Join(facts, "\n")
 		}
-		content += "\n\n" + lipgloss.PlaceHorizontal(width, lipgloss.Center, strip)
+		if lipgloss.Height(content)+1+lipgloss.Height(strip) <= m.height-2 {
+			content += "\n\n" + lipgloss.PlaceHorizontal(width, lipgloss.Center, strip)
+		}
 	}
 	return content
 }
@@ -347,12 +364,12 @@ func (m *setupWorkspace) rail() string {
 			done++
 		}
 	}
-	label := fmt.Sprintf("PHASE %d OF %d", index+1, total)
+	label := fmt.Sprintf("STAGE %d OF %d", index+1, total)
 	switch {
 	case succeeded:
 		label, done = "COMPLETE", total
 	case failed:
-		label = fmt.Sprintf("STOPPED · PHASE %d OF %d", index+1, total)
+		label = fmt.Sprintf("STOPPED · STAGE %d OF %d", index+1, total)
 	}
 	barWidth := setupRailWidth - 2
 	filled := barWidth * done / max(1, total)

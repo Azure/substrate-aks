@@ -38,9 +38,11 @@ git clone https://github.com/Azure/substrate-aks.git
 cd substrate-aks
 az login
 az bicep install
-make build
-bin/substrate-aks setup
+make setup
 ```
+
+`make setup` builds `bin/substrate-aks` and runs `bin/substrate-aks setup`. Pass
+setup flags with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
 
 Setup asks for a name and region, previews the changes, and requests approval
 before creating billable resources. Press `/` to filter regions. Your settings
