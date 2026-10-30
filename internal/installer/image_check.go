@@ -18,6 +18,28 @@ var imageCheckSource embed.FS
 
 var errImagesMissing = errors.New("configured image is missing")
 
+const (
+	imageCheckCredentials = "Resolve registry credentials"
+	imageCheckFetch       = "Fetch pinned Substrate source"
+	imageCheckTools       = "Prepare image verification tools"
+	imageCheckInventory   = "Verify published images and plugin"
+)
+
+func ImageCheckSteps() []string {
+	return []string{imageCheckCredentials, imageCheckFetch, imageCheckTools, imageCheckInventory}
+}
+
+func (a App) imageCheckStep(name string, work func() error) error {
+	if a.ImageCheckProgress != nil {
+		a.ImageCheckProgress(name, false, nil)
+	}
+	err := work()
+	if a.ImageCheckProgress != nil {
+		a.ImageCheckProgress(name, true, err)
+	}
+	return err
+}
+
 func prepareImageChecker(root string) error {
 	for _, pkg := range []string{"cmd", "steps"} {
 		data, err := imageCheckSource.ReadFile("imagecheck/" + pkg + ".go.txt")
@@ -38,17 +60,20 @@ func prepareImageChecker(root string) error {
 }
 
 func (a App) CheckImages(ctx context.Context) error {
-	if err := a.Config.ValidateInstall(); err != nil {
-		return err
-	}
 	s := a.Config.Substrate
 	var ownedHost, dockerDir string
-	azureRegistry := false
-	for _, image := range []string{s.Images.Repository, s.Images.Plugin} {
-		host, _, _ := strings.Cut(image, "/")
-		azureRegistry = azureRegistry || strings.HasSuffix(host, ".azurecr.io")
-	}
-	if azureRegistry {
+	if err := a.imageCheckStep(imageCheckCredentials, func() error {
+		if err := a.Config.ValidateInstall(); err != nil {
+			return err
+		}
+		azureRegistry := false
+		for _, image := range []string{s.Images.Repository, s.Images.Plugin} {
+			host, _, _ := strings.Cut(image, "/")
+			azureRegistry = azureRegistry || strings.HasSuffix(host, ".azurecr.io")
+		}
+		if !azureRegistry {
+			return nil
+		}
 		r, err := a.registry(ctx)
 		if errors.Is(err, errGroupAbsent) {
 			a.progress("Installation resource group is absent; checking saved images with existing registry credentials")
@@ -61,33 +86,46 @@ func (a App) CheckImages(ctx context.Context) error {
 				return err
 			}
 		}
-	}
-	if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
+		return nil
+	}); err != nil {
 		return err
 	}
-	root, err := os.MkdirTemp(a.Config.workspace(), "image-check-")
-	if err != nil {
+	var root string
+	defer func() {
+		if root != "" {
+			os.RemoveAll(root)
+		}
+	}()
+	if err := a.imageCheckStep(imageCheckFetch, func() error {
+		if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
+			return err
+		}
+		var err error
+		root, err = os.MkdirTemp(a.Config.workspace(), "image-check-")
+		if err != nil {
+			return err
+		}
+		return a.fetchPinnedSource(ctx, root)
+	}); err != nil {
 		return err
 	}
-	defer os.RemoveAll(root)
-	if err := a.fetchPinnedSource(ctx, root); err != nil {
+	if err := a.imageCheckStep(imageCheckTools, func() error { return prepareImageChecker(root) }); err != nil {
 		return err
 	}
-	if err := prepareImageChecker(root); err != nil {
-		return err
-	}
-	a.progress("Verifying the pinned publisher's image inventory and the Azure plugin digest")
-	data, err := a.Runner.Run(ctx, Command{
-		Dir: root,
-		Args: []string{"go", "run", "./cmd/ate-setup", "publish", "check-images",
-			s.Images.Repository, s.Images.Tag, s.Images.Plugin, ownedHost, dockerDir,
-			"--no-dev-env", "--no-report-defaults"},
-		Env: []string{"NO_DEV_ENV=1", "VERSION=" + s.Images.Tag},
+	return a.imageCheckStep(imageCheckInventory, func() error {
+		a.progress("Verifying the pinned publisher's image inventory and the Azure plugin digest")
+		data, err := a.Runner.Run(ctx, Command{
+			Dir: root,
+			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "check-images",
+				s.Images.Repository, s.Images.Tag, s.Images.Plugin, ownedHost, dockerDir,
+				"--no-dev-env", "--no-report-defaults"},
+			Env: []string{"NO_DEV_ENV=1", "VERSION=" + s.Images.Tag},
+		})
+		if err != nil {
+			return fmt.Errorf("running the pinned image checker (no images or install checkpoints changed): %w", err)
+		}
+		return imageCheckResult(data)
 	})
-	if err != nil {
-		return fmt.Errorf("running the pinned image checker (no images or install checkpoints changed): %w", err)
-	}
-	return imageCheckResult(data)
 }
 
 func imageCheckResult(data []byte) error {

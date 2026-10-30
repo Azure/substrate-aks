@@ -50,13 +50,40 @@ func TestSavedImagesInRecreatedRegistry(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := script(t, imageCheckReplies(c, string(report))...)
-			err = (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).CheckImages(t.Context())
+			type stepResult struct {
+				name string
+				done bool
+				err  error
+			}
+			var events []stepResult
+			err = (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()},
+				ImageCheckProgress: func(name string, done bool, err error) {
+					events = append(events, stepResult{name, done, err})
+				},
+			}).CheckImages(t.Context())
 			if tc.status == "available" {
 				if err != nil {
 					t.Fatal(err)
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tc.message) || errors.Is(err, errImagesMissing) != tc.missing {
 				t.Fatalf("image failure was misclassified: %v", err)
+			}
+			steps := ImageCheckSteps()
+			if len(events) != 2*len(steps) {
+				t.Fatalf("image verification did not report all operation boundaries: %+v", events)
+			}
+			for i, name := range steps {
+				start, end := events[2*i], events[2*i+1]
+				if start.name != name || start.done || start.err != nil || end.name != name || !end.done {
+					t.Fatalf("image step %q lost its explicit start/result: %+v", name, events)
+				}
+				want := error(nil)
+				if i == len(steps)-1 {
+					want = err
+				}
+				if !errors.Is(end.err, want) {
+					t.Fatalf("image step %q reported %v instead of %v", name, end.err, want)
+				}
 			}
 			if !reflect.DeepEqual(c, before) {
 				t.Fatal("image verification changed configuration")
@@ -177,9 +204,42 @@ func TestImageCheckLoginFailureIsNotMissing(t *testing.T) {
 	want := errors.New("login expired")
 	r := script(t, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
 		reply{contains: "acr login", err: want})
-	err := (App{Config: c, Runner: r}).CheckImages(t.Context())
+	var completed []string
+	err := (App{Config: c, Runner: r, ImageCheckProgress: func(name string, done bool, err error) {
+		if done {
+			completed = append(completed, name)
+			if !errors.Is(err, want) {
+				t.Errorf("registry access was presented as successful: %v", err)
+			}
+		}
+	}}).CheckImages(t.Context())
 	if !errors.Is(err, want) || errors.Is(err, errImagesMissing) {
 		t.Fatalf("login failure was treated as missing images: %v", err)
+	}
+	if !reflect.DeepEqual(completed, ImageCheckSteps()[:1]) {
+		t.Fatalf("login failure started later verification operations: %v", completed)
+	}
+}
+
+func TestImageCheckStopsStepsAfterSourceFailure(t *testing.T) {
+	c := testConfig(t)
+	want := errors.New("source fetch failed")
+	r := script(t, reply{contains: "git init"}, reply{contains: "git fetch", err: want})
+	var completed []string
+	err := (App{Config: c, Runner: r, ImageCheckProgress: func(name string, done bool, err error) {
+		if done {
+			completed = append(completed, name)
+			if name == imageCheckFetch && !errors.Is(err, want) {
+				t.Errorf("failed source fetch was presented as successful: %v", err)
+			}
+		}
+	}}).CheckImages(t.Context())
+	if !errors.Is(err, want) || !reflect.DeepEqual(completed, ImageCheckSteps()[:2]) {
+		t.Fatalf("source failure did not stop the verification checklist: %v, %v", completed, err)
+	}
+	temporary, err := filepath.Glob(filepath.Join(c.workspace(), "image-check-*"))
+	if err != nil || len(temporary) != 0 {
+		t.Fatalf("failed source checkout was retained: %v, %v", temporary, err)
 	}
 }
 

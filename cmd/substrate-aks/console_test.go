@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"regexp"
@@ -79,6 +80,21 @@ func TestRedirectedConsoleDisablesStylesEvenWhenColorIsForced(t *testing.T) {
 			ui.warning("Billable resources")
 			ui.complete("substrate-test", true)
 			ui.demo()
+			var receipt bytes.Buffer
+			session := &setupSession{receipt: newSetupUI(file)}
+			ctx := context.WithValue(t.Context(), setupSessionKey{}, session)
+			buffered := newSetupReceiptUI(ctx, &receipt)
+			// A terminal renderer built while the workspace owns input queries
+			// the terminal and can block forever on the swallowed reply.
+			if buffered.renderer != session.receipt.renderer {
+				t.Fatal("receipt built a new terminal renderer instead of reusing the session's")
+			}
+			buffered.complete("substrate-test", true)
+			buffered.section("# Connect from this shell:")
+			buffered.command("kubectl ate --help")
+			if bytes.Contains(receipt.Bytes(), []byte{0x1b}) || !strings.Contains(receipt.String(), "DONE  Setup complete.") {
+				t.Fatalf("buffered receipt styled redirected output or lost its content: %q", &receipt)
+			}
 			prompt := newSetupPrompt(strings.NewReader("\n"), ui, true)
 			if _, err := prompt.text(t.Context(), "Resource group", "substrate-dev"); err != nil {
 				t.Fatal(err)

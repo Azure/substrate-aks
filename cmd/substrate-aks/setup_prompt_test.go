@@ -7,26 +7,91 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestSetupClusterNameInputValidationAndPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"", false}, {"ab", false}, {"abc", true}, {"substrate-dev", true},
+		{"Uppercase", false}, {"under_score", false}, {"9cluster", false}, {"cluster-", false},
+		{strings.Repeat("a", 40), true}, {strings.Repeat("a", 41), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := tc.name
+			field := newSetupClusterNameInput(&value)
+			form := huh.NewForm(huh.NewGroup(field))
+			form.WithWidth(80)
+			view := ansi.Strip(field.View())
+			if tc.name == "" {
+				if !strings.Contains(view, "e.g. substrate-dev") {
+					t.Fatalf("empty name lost its example placeholder:\n%s", view)
+				}
+			} else if strings.Contains(view, "Valid cluster name.") != tc.ok {
+				t.Fatalf("editing feedback did not reflect the name:\n%s", view)
+			}
+			field.Focus()
+			_, cmd := field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if (field.Error() == nil) != tc.ok || (!tc.ok && cmd != nil) {
+				t.Fatalf("invalid name advanced or valid name rejected: %q, %v", value, field.Error())
+			}
+			if value != tc.name {
+				t.Fatalf("name was silently changed or truncated: %q", value)
+			}
+		})
+	}
+}
+
+func TestSetupClusterNameInputFeedbackFollowsEdits(t *testing.T) {
+	value := ""
+	field := newSetupClusterNameInput(&value)
+	field.Focus()
+	field.Update(tea.PasteMsg{Content: "bad_name"})
+	if view := field.View(); !strings.Contains(view, "Invalid name:") {
+		t.Fatalf("invalid paste did not update feedback before submission:\n%s", view)
+	}
+	field.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	field.Update(tea.PasteMsg{Content: "valid-name"})
+	if view := field.View(); value != "valid-name" || !strings.Contains(view, "Valid cluster name.") || strings.Contains(view, "Invalid name:") {
+		t.Fatalf("correction left stale validation feedback: %q\n%s", value, view)
+	}
+}
 
 func TestSetupPromptsKeepAnswersAndDefaults(t *testing.T) {
 	var out bytes.Buffer
-	p := newSetupPrompt(strings.NewReader("\nsouthcen\nsouthcentralus\nno\nyes\n"), newSetupUI(&out), true)
-	name, err := p.text(t.Context(), "Resource group", "substrate-dev")
+	p := newSetupPrompt(strings.NewReader("Bad_Name\n\nsouthcen\nsouthcentralus\nno\nyes\n"), newSetupUI(&out), true)
+	name, region, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"})
 	if err != nil || name != "substrate-dev" {
 		t.Fatalf("resource name default lost: %q, %v", name, err)
 	}
-	region, err := p.region(t.Context(), "eastus2", []string{"eastus2", "southcentralus"})
 	if err != nil || region != "southcentralus" {
 		t.Fatalf("region selection lost: %q, %v", region, err)
 	}
 	if !strings.Contains(out.String(), "possible matches: southcentralus") {
 		t.Fatalf("invalid region did not display inline validation: %s", &out)
 	}
+	if !strings.Contains(out.String(), "must be 3-40") {
+		t.Fatalf("invalid cluster name did not show accessible validation: %s", &out)
+	}
 	for _, want := range []bool{false, true} {
 		value, err := p.confirm(t.Context(), "Proceed?", !want)
 		if err != nil || value != want {
 			t.Fatalf("confirmation answer lost: %v, %v", value, err)
+		}
+	}
+}
+
+func TestAccessibleInstallationFormRejectsIncompleteAnswers(t *testing.T) {
+	for _, answer := range []string{"", "\n", "\nsouthcen\n", "\nsouthcentralus"} {
+		var out bytes.Buffer
+		p := newSetupPrompt(strings.NewReader(answer), newSetupUI(&out), true)
+		if _, _, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"}); !errors.Is(err, io.EOF) {
+			t.Fatalf("incomplete installation form accepted: %q, %v", answer, err)
 		}
 	}
 }

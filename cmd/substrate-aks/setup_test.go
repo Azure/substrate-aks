@@ -308,6 +308,44 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 	}
 }
 
+func TestNewInstallationChoosesEngineBeforeAzureDiscovery(t *testing.T) {
+	scratch := t.TempDir()
+	t.Setenv("TMPDIR", scratch)
+	path := filepath.Join(t.TempDir(), "deploy.json")
+	var output bytes.Buffer
+	var calls []string
+	stop := errors.New("stop after discovery")
+	err := setupForTest(t.Context(), setupOptions{
+		path: path, cidr: "203.0.113.8/32",
+		discovery: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
+			calls = append(calls, "azure")
+			return nil, stop
+		}),
+		local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
+			calls = append(calls, c.Args[0])
+			return []byte("Status: running\n"), nil
+		}),
+	}, strings.NewReader("podman\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
+		t.Fatal("unfinished setup reached installation stages")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("setup continued without the remaining answers")
+	}
+	text := strings.Join(strings.Fields(output.String()), " ")
+	picker := strings.Index(text, "Image builder: docker or podman [docker]")
+	first := slices.Index(calls, "azure")
+	if picker < 0 || first < 0 || slices.Contains(calls[first:], "docker") || slices.Contains(calls[first:], "podman") {
+		t.Fatalf("new installation did not choose its builder before Azure discovery: %v\n%s", calls, text)
+	}
+	if left, _ := os.ReadDir(scratch); len(left) != 0 {
+		t.Fatalf("builder probe left its throwaway workspace behind: %v", left)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("builder probe created the installation before it was configured: %v", err)
+	}
+}
+
 func TestSetupEnginePickerEOFStopsBeforeConfirmationAndStages(t *testing.T) {
 	path := testCLIConfig(t)
 	var output bytes.Buffer

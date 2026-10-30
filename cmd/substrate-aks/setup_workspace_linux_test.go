@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
 )
 
@@ -64,12 +65,17 @@ func TestWorkspacePTYImageBuilderKeepsChecklist(t *testing.T) {
 	p.until(t, "Quick start")
 	p.send(t, "\r")
 	p.until(t, "Choose an engine")
-	if !strings.Contains(p.all, "✓ Azure deployment readiness") || !strings.Contains(p.all, "? Image builder") {
-		t.Fatalf("image-builder selection hid its validation context:\n%s", p.all)
+	// The choice belongs to the local environment check, before Azure validation.
+	// Completed rows may redraw only their ✓ marker; see TestWorkspacePTYStablePreflightChecklist.
+	if !strings.Contains(p.all, "Local tools") || !strings.Contains(p.all, "✓") ||
+		!strings.Contains(p.all, "? Image builder") || strings.Contains(p.all, "Validate your deployment") {
+		t.Fatalf("image-builder selection left the local environment check:\n%s", p.all)
 	}
 	p.send(t, "\x1b[B\r")
-	p.until(t, "Continue with this billable")
-	p.send(t, "\x03")
+	// The confirmation title replaces "Choose an engine" in place, and the
+	// renderer skips the unchanged leading "C".
+	p.until(t, "with this billable")
+	p.send(t, "\x03\x03")
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
@@ -122,13 +128,15 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			p.until(t, "Quick start")
 			p.send(t, "\r")
 			p.until(t, "Loading the VM SKU catalog for ")
-			for _, want := range []string{"Validate your deployment", "✓ Runtime tools", "○ Operator identity review", "○ Image builder"} {
+			// The renderer redraws only the changed marker when a row completes, so
+			// the label and its ✓ need not arrive as one contiguous run.
+			for _, want := range []string{"Validate your deployment", "Runtime tools", "✓", "○ Operator identity review"} {
 				if !strings.Contains(p.all, want) {
 					t.Fatalf("preflight checklist omitted %q:\n%s", want, p.all)
 				}
 			}
-			p.send(t, "\x1b[13~")
-			p.until(t, "ACTIVITY")
+			p.send(t, "l")
+			p.until(t, "LOGS")
 			p.send(t, "\x1b")
 			p.until(t, "Validate your deployment")
 			close(release)
@@ -140,7 +148,7 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			} else {
 				p.until(t, "Continue with this billable")
 			}
-			p.send(t, "\x03")
+			p.send(t, "\x03\x03")
 			select {
 			case err := <-done:
 				expected := error(context.Canceled)
@@ -163,15 +171,35 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 }
 
 func TestWorkspacePTYRetryAndPersistentHandoff(t *testing.T) {
+	for _, noColor := range []string{"", "1"} {
+		t.Run("NO_COLOR="+noColor, func(t *testing.T) {
+			testWorkspacePTYRetryAndPersistentHandoff(t, noColor)
+		})
+	}
+}
+
+func testWorkspacePTYRetryAndPersistentHandoff(t *testing.T, noColor string) {
+	t.Helper()
+	t.Setenv("CI", "")
 	t.Setenv("TERM", "xterm-256color")
-	t.Setenv("NO_COLOR", "1")
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", noColor)
 	p := newSetupPTY(t, 110, 30)
 	path := testCLIConfig(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	done := make(chan error, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("handoff worker did not stop before terminal cleanup")
+		}
+	})
 	attempts := 0
 	go func() {
+		defer close(finished)
 		done <- setupForTest(ctx, setupOptions{path: path, withDemo: true, discovery: subscriptionDisplayRunner(t)},
 			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
 				s := setupSessionFrom(ctx)
@@ -214,8 +242,14 @@ func TestWorkspacePTYRetryAndPersistentHandoff(t *testing.T) {
 	if attempts != 2 || !strings.Contains(p.all, "kubectl ate --help") || strings.Count(p.all, "export KUBECONFIG=") != 1 {
 		t.Fatalf("retry or persistent receipt failed: attempts=%d\n%s", attempts, p.all)
 	}
-	if exit, export := strings.LastIndex(p.all, "\x1b[?1049l"), strings.Index(p.all, "export KUBECONFIG="); exit < 0 || export <= exit {
+	exit, export := strings.LastIndex(p.all, "\x1b[?1049l"), strings.Index(p.all, "export KUBECONFIG=")
+	if exit < 0 || export <= exit {
 		t.Fatal("shell handoff was printed inside the alternate screen")
+	}
+	for _, style := range []string{"\x1b[38;2;", "\x1b[1;32mDONE  Setup complete."} {
+		if strings.Contains(p.all[exit:], style) != (noColor == "") {
+			t.Fatalf("buffered receipt lost terminal colors or ignored NO_COLOR:\n%q", p.all[exit:])
+		}
 	}
 }
 
@@ -265,7 +299,8 @@ func TestWorkspacePTYRegistryChecklistPrecedesProgressAndApproval(t *testing.T) 
 	phaseStart := len(p.all)
 	p.send(t, "y\r")
 	p.until(t, "Checking Azure subscription access")
-	for _, want := range []string{"Preview registry bootstrap", "○ Provision the private registry"} {
+	for _, want := range []string{"Preview registry bootstrap", "○ Provision the private registry",
+		"○ Publish images and prepare runtime assets", "○ Fetch pinned Substrate source"} {
 		if !strings.Contains(p.all, want) {
 			t.Fatalf("registry work began without its preset checklist %q:\n%s", want, p.all)
 		}
@@ -277,7 +312,7 @@ func TestWorkspacePTYRegistryChecklistPrecedesProgressAndApproval(t *testing.T) 
 	p.until(t, "Preparing infrastructure template")
 	release <- struct{}{}
 	p.until(t, "Apply these planned changes")
-	p.send(t, "\x03")
+	p.send(t, "\x03\x03")
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Resources are retained") {
@@ -315,7 +350,7 @@ func TestWorkspacePTYCancellationStopsOwnedSubprocess(t *testing.T) {
 	p.until(t, "Apply these planned changes")
 	p.send(t, "y\r")
 	p.until(t, "Waiting for cancellable subprocess")
-	p.send(t, "\x03")
+	p.send(t, "\x03\x03")
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Resources are retained") {
@@ -389,7 +424,8 @@ func (p *setupPTY) until(t *testing.T, text string) {
 	t.Helper()
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
-	for !strings.Contains(p.text, text) {
+	// Styled key hints split text into separate SGR runs, so also match the unstyled stream.
+	for !strings.Contains(p.text, text) && !strings.Contains(ansi.Strip(p.text), text) {
 		select {
 		case chunk, ok := <-p.chunks:
 			if !ok {
@@ -435,8 +471,7 @@ func TestWorkspacePTYInputResizeAndPromptCancellation(t *testing.T) {
 			p.until(t, "Quick start")
 			p.send(t, "\r")
 			p.until(t, "Continue with this billable")
-			// Escape-prefixed details keys must not submit or consume the form.
-			p.send(t, "\x1bOQ")
+			p.send(t, "d")
 			p.until(t, "DETAILS")
 			p.resize(t, 72, 20)
 			p.send(t, "\x1b")
@@ -444,7 +479,7 @@ func TestWorkspacePTYInputResizeAndPromptCancellation(t *testing.T) {
 			if size[0] == 48 {
 				cancel()
 			} else {
-				p.send(t, "\x03")
+				p.send(t, "\x03\x03")
 			}
 			select {
 			case err := <-done:
@@ -464,15 +499,34 @@ func TestWorkspacePTYInputResizeAndPromptCancellation(t *testing.T) {
 
 func TestWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
-	p := newSetupPTY(t, 100, 28)
+	t.Setenv("NO_COLOR", "1")
+	t.Run("wide", func(t *testing.T) {
+		testWorkspacePTYConfigurationInputAndRegionFilter(t, 100, 28, "")
+	})
+	t.Run("compact-prefilled", func(t *testing.T) {
+		testWorkspacePTYConfigurationInputAndRegionFilter(t, 48, 18, "guided-local-pty-test")
+	})
+}
+
+func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, height int, name string) {
+	p := newSetupPTY(t, width, height)
 	path := filepath.Join(t.TempDir(), "deploy.json")
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	done := make(chan error, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("configuration worker did not stop before terminal cleanup")
+		}
+	})
 	go func() {
+		defer close(finished)
 		done <- setupForTest(ctx, setupOptions{
 			path: path, subscription: defaultSubscription, publisher: defaultPublisher,
-			operatorID: defaultPublisher, cidr: "203.0.113.8/32", location: "eastus2",
+			operatorID: defaultPublisher, cidr: "203.0.113.8/32", name: name, location: "eastus2",
 			discovery: subscriptionDisplayRunner(t),
 		}, p.slave, p.slave, p.slave, func(context.Context, []string, io.Writer, io.Writer) error {
 			return errors.New("configuration test must never provision")
@@ -480,15 +534,37 @@ func TestWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T) {
 	}()
 	p.until(t, "Quick start")
 	p.send(t, "\r")
-	p.until(t, "Dedicated resource group")
-	p.send(t, "guided-pty-test\r")
-	p.until(t, "Azure region")
+	p.until(t, "Press / to filter regions")
+	if !strings.Contains(p.all, "Dedicated resource group") || !strings.Contains(p.all, "Azure region") {
+		t.Fatalf("name and region were not visible together:\n%s", p.all)
+	}
+	if width >= 96 && (!strings.Contains(p.all, "● Preparation") || !strings.Contains(p.all, "○ Images and assets")) {
+		t.Fatalf("fresh configuration started outside the persistent rail:\n%s", p.all)
+	}
+	if name == "" {
+		if !strings.Contains(p.all, "e.g. substrate-dev") {
+			t.Fatalf("new installation did not show the name placeholder:\n%s", p.all)
+		}
+		p.send(t, "Bad_Name\r")
+		p.until(t, "must be 3-40")
+		p.send(t, "\x15")
+		p.send(t, "guided-local-pty-test")
+	}
+	p.send(t, "\r")
+	p.until(t, "d details  ·  l logs")
+	p.send(t, "\x1b[Z")
+	p.until(t, "enter continue")
+	p.send(t, "-edited\r")
+	p.until(t, "d details  ·  l logs")
 	p.send(t, "/southcentral")
 	p.send(t, "\r")
 	p.until(t, "Grant this Azure identity")
+	if width >= 96 && !strings.Contains(p.all, "○ Connect") {
+		t.Fatalf("snapshot consent lost the installation plan:\n%s", p.all)
+	}
 	p.send(t, "n\r")
 	p.until(t, "Continue with this billable")
-	p.send(t, "\x03")
+	p.send(t, "\x03\x03")
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
@@ -498,7 +574,7 @@ func TestWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T) {
 		t.Fatal("configuration input cancellation hung")
 	}
 	c, err := installer.LoadConfig(path)
-	if err != nil || c.Azure.ResourceGroup != "guided-pty-test" || c.Azure.Location != "southcentralus" {
+	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" {
 		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
 	}
 }
@@ -530,17 +606,17 @@ func TestWorkspacePTYDestructiveApprovalRequiresAcknowledgement(t *testing.T) {
 	p.send(t, "\r")
 	p.until(t, "Continue with this billable")
 	p.send(t, "y\r")
-	p.until(t, "F4 acknowledge summary")
-	p.send(t, "y\r\x1bOR")
-	p.until(t, "ACTIVITY")
+	p.until(t, "a acknowledge summary")
+	p.send(t, "y\rl")
+	p.until(t, "LOGS")
 	select {
 	case <-provisioned:
 		t.Fatal("hidden approval accepted before destructive review")
 	default:
 	}
 	p.send(t, "\x1b")
-	p.until(t, "F4 acknowledge summary")
-	p.send(t, strings.Repeat("\x1b[6~", 20)+"\x1bOS")
+	p.until(t, "a acknowledge summary")
+	p.send(t, strings.Repeat("\x1b[6~", 20)+"a")
 	p.until(t, "Apply these planned changes")
 	p.send(t, "n\r")
 	p.until(t, "Installation stopped")

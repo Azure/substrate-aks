@@ -36,22 +36,58 @@ VM SKU discovery uses a server-filtered regional Resource SKUs request and
 follows all result pages; it does not download the subscription-wide catalog.
 
 Interactive terminals use an alternate-screen installation workspace. The
-target stays visible during questions and approvals; completed phases collapse
-while the active phase reports named operations and elapsed time. Environment
+header, phase rail, content pane, and keyboard footer persist after the welcome
+screen, including initial configuration, approvals, retries, and client handoff.
+The rail begins with Preparation and derives the remaining phases from the same
+plan used to execute setup. Registry preview and provisioning share the Images
+and assets phase with image publication and verification; their individual
+checks and approval boundaries are preserved. The rail has no separate heading.
+Long checklists keep the active or failed check in view, including when returning
+from logs to a retry prompt.
+Every phase reserves a marker column: gray pending
+circle, purple current-phase circle, green completion check, or red failure
+cross. The progress bar above the phases is blue.
+The rail hides on narrow terminals and uses tighter spacing on short terminals.
+The active phase reports named operations and elapsed time. Environment
 discovery and deployment validation show their applicable checks up front.
 The same preset checklist pattern covers registry bootstrap, image publication
 and verification, AKS provisioning, Substrate installation, the optional demo,
 and client setup. Rows represent the applicable setup operations, not individual
 Azure log messages. Substeps update one detail line beneath the active row;
-they never append a growing list. Approval cards temporarily replace the checklist,
-which returns with its completed rows preserved after consent.
-Successful checks receive green checkmarks; the active check shows a spinner,
-elapsed time, and one short status line beneath its row. Full progress remains
-available in activity (`F3`); progress messages alone never mark a check
-successful. Image-builder selection keeps completed validation checks visible,
-with the choice immediately below the active row. Wide terminals place
-"Agent Substrate on AKS" on the left and stack cluster, region, and subscription
-on the right. The header has no global status or elapsed timer.
+they never append a growing list. Resource previews expand beneath their
+checklist row with the approval below, so the phase checklist stays in place.
+Timers count setup work only: they pause while a question or approval waits on
+you, and the panel shows "paused for input".
+Image verification declares separate rows for resolving registry credentials,
+fetching the pinned source, preparing the checker, and verifying published images
+and the plugin. These rows remain visible on reruns that reuse saved images;
+each completes only when its operation returns successfully.
+Successful checks receive green checkmarks; the active check shows a blue spinner,
+elapsed time, and one short status line beneath its row. The status line is
+indented with a tree branch and light-blue text, distinguishing it from pending
+operations; failed-operation details remain red. Pending rows use only their
+circle marker and operation name, without a redundant status label.
+While a check runs, the latest lines of the current command's private
+diagnostic log fill the space beneath the checklist; `l` expands them into the full,
+scrollable logs view. Progress messages alone never mark a check successful. Image-builder selection
+is part of the local environment check, before Azure discovery or validation, with the
+choice immediately below the active row. The one-line header shows the Substrate on AKS badge on the left and
+the cluster, region, and subscription name on the right; the subscription ID is
+shown, shortened, until its name is known. Unknown values show a dash and long
+values shorten, so completing configuration does not move the header or change
+the content width.
+The header has no global status or elapsed timer.
+
+New installations show the cluster/resource-group name and searchable Azure
+region together in one form. Enter or Tab moves between fields; Shift+Tab goes
+back to edit the name. The form sits below its heading without an empty status
+area, and the region list grows with the available terminal height.
+The name input shows an example placeholder when empty and validation feedback
+as it is edited. Invalid names cannot advance; validation uses the same
+3-40-character naming rules as the saved configuration.
+Short terminals scroll the form to the focused field.
+Accessible mode asks the same questions sequentially. Snapshot-access consent
+and billable-change approvals remain separate.
 
 Quick start is available; Advanced configuration is explicitly marked **Planned**
 and cannot start an installation. The branded opening screen has two selectable
@@ -60,25 +96,34 @@ configuration files remain supported; "Advanced" refers to a future guided edito
 
 | Key | Action |
 | --- | --- |
-| `F2` | Inspect the installation review or full resource-change IDs |
-| `F3` | Inspect recent operation activity and the private diagnostic log path |
-| `PgUp` / `PgDn` | Scroll a review or activity |
-| `Esc` | Close details/activity; never skips an approval |
-| `F1` | Show help |
+| `d` | Inspect the installation review or full resource-change IDs |
+| `l` | Follow the current command's private diagnostic log (commands, output, and steps) |
+| `PgUp` / `PgDn` | Scroll a review or the log |
+| `Esc` | Close details/logs; never skips an approval |
+| `?` | Show help |
+| `a` | Acknowledge a destructive/unknown summary after reading it through |
 | `Ctrl-C` | Stop owned subprocess work, retaining Azure resources |
 
 Registry and full-infrastructure approvals remain separate. Compact previews
-use a change-summary card with nonzero counts and readable resource categories;
-full provider types and resource IDs remain available in details (`F2`).
+use a change summary with nonzero counts and readable resource categories.
+Child resources, such as blob containers or federated credentials, are counted
+on indented rows beneath their parent rather than in the parent's count;
+full provider types and resource IDs remain available in details (`d`).
 Completion chatter stays in activity rather than the approval. Deletion IDs and
-unknown change types are shown explicitly; read their summary through to the bottom and press `F4`
+unknown change types are shown explicitly; read their summary through to the bottom and press `a`
 to acknowledge it before answering the approval. Oversized previews are refused,
 not silently truncated. Use standalone `plan` for its full table.
+Each resource category shows explicit action counts: green creates, yellow
+updates, and red deletes. Text labels remain visible with `NO_COLOR`.
+Letter shortcuts pause while entering text or filtering choices, so names and
+searches can contain those letters normally.
 
 Narrow windows use one column. Below 40 columns or 14 rows, setup shows compact
 status and pauses input until resized; work and cancellation remain active.
 After restoring the terminal, setup prints persistent connection instructions
-with exactly one final set of exports. Failures print recovery commands instead.
+with exactly one final set of exports. The completion card and command headings
+retain terminal colors; `NO_COLOR` and redirected output remain unstyled.
+Failures print recovery commands instead.
 
 | Option | Use |
 | --- | --- |
@@ -176,7 +221,8 @@ permissions and quota are checked live rather than reused from a cache.
 > a Basic ACR, and an `AcrPush` grant for the upload identity. It does not create
 > AKS or Blob storage yet.
 
-Setup offers a builder choice when both Docker/buildx and Podman work.
+Setup checks the image builder with the local tools, before any Azure discovery,
+and offers a choice when both Docker/buildx and Podman work.
 `--yes` prefers Docker/buildx, then Podman. An explicit `--container-engine`
 never falls back to another engine. Reusing configured images needs no builder.
 Builds target Linux/amd64; Podman can run rootless on Linux.
@@ -382,9 +428,11 @@ Long-duration credential refresh remains a validation gap.
 | `--verbose` | Underlying commands, build output, and diagnostics in append-only/standalone flows |
 
 The interactive workspace owns the terminal: subprocess output never writes
-over a form or approval. Activity is a bounded list of reported operations, not
-an unfiltered subprocess transcript. Raw diagnostics stay in private command
-logs, including with `--verbose`. For an append-only verbose transcript, use
+over a form or approval. The logs view (`l`) renders a bounded, sanitized tail of
+the current command's private log inside the workspace: commands, output, and
+step markers, with terminal control sequences removed. Output marked sensitive
+is never written to the log. The full file stays on disk, including with
+`--verbose`. For an append-only verbose transcript, use
 `setup --accessible --verbose`.
 
 Failures show a short error and a log path. The success banner appears only after

@@ -139,12 +139,22 @@ func readConfig(path string) (Config, error) {
 	return c, nil
 }
 
+// ValidateInstallationName validates a cluster or dedicated resource-group name.
+func ValidateInstallationName(name string) error {
+	if !namePattern.MatchString(name) {
+		return errors.New("must be 3-40 lowercase letters, digits or hyphens, starting with a letter and ending with a letter or digit")
+	}
+	return nil
+}
+
 func (c Config) Validate() error {
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
-	if !namePattern.MatchString(c.Azure.ResourceGroup) || !namePattern.MatchString(c.AKS.ClusterName) {
-		return errors.New("azure.resourceGroup and aks.clusterName must be 3-40 lowercase letters, digits or hyphens, starting with a letter and ending with a letter or digit")
+	for _, name := range []string{c.Azure.ResourceGroup, c.AKS.ClusterName} {
+		if err := ValidateInstallationName(name); err != nil {
+			return fmt.Errorf("azure.resourceGroup and aks.clusterName %w", err)
+		}
 	}
 	if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.Azure.Location) {
 		return errors.New("azure.location must be an Azure region name such as eastus2")

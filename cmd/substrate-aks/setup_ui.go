@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
+	"github.com/muesli/termenv"
 )
 
 type setupUI struct {
@@ -18,18 +20,6 @@ type setupUI struct {
 	review   *[]setupReviewEntry
 }
 
-const setupAccent = "#b48cf2"
-
-func setupBrand(renderer *lipgloss.Renderer) string {
-	const slab = "/___________/|\n|___________|/"
-	purple := renderer.NewStyle().Foreground(lipgloss.Color(setupAccent))
-	layers := purple.Render(" ____________\n" + slab + "\n" + slab + "\n" + slab)
-	mark := renderer.NewStyle().PaddingRight(5).Render(layers)
-	label := "\n" + purple.Bold(true).Render("s u b s t r a t e") + "\n\n" + purple.Render("on AKS") +
-		"\n\n" + purple.Width(24).Render("An AKS packaging layer for Agent Substrate.")
-	return lipgloss.JoinHorizontal(lipgloss.Top, mark, label)
-}
-
 func newSetupUI(out io.Writer) *setupUI {
 	width := 80
 	if file, ok := out.(interface{ Fd() uintptr }); ok && term.IsTerminal(file.Fd()) {
@@ -38,6 +28,15 @@ func newSetupUI(out io.Writer) *setupUI {
 		}
 	}
 	return &setupUI{out: out, renderer: newConsole(out).renderer, width: width}
+}
+
+func newSetupReceiptUI(ctx context.Context, out io.Writer) *setupUI {
+	if session := setupSessionFrom(ctx); session != nil && session.receipt != nil {
+		ui := *session.receipt
+		ui.out = out
+		return &ui
+	}
+	return newSetupUI(out)
 }
 
 func (u *setupUI) welcome(decorative bool) {
@@ -66,7 +65,13 @@ func (u *setupUI) section(title string) {
 		u.session.send(setupSectionMsg(title))
 		return
 	}
-	fmt.Fprintln(u.out, "\n"+u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(title))
+	// Style lines separately so multi-line headings are not padded to a common width.
+	style := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	lines := strings.Split(title, "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	fmt.Fprintln(u.out, "\n"+strings.Join(lines, "\n"))
 }
 
 func (u *setupUI) checklist(title string, items ...string) {
@@ -86,23 +91,42 @@ func (u *setupUI) check(name string, work func() error) error {
 	return err
 }
 
+func (u *setupUI) checkGroup(names []string, work func() error) error {
+	u.session.send(setupCheckGroupMsg{names: names})
+	u.session.send(setupCheckMsg{name: names[0]})
+	err := work()
+	u.session.send(setupCheckGroupMsg{names: names, done: true, err: err})
+	return err
+}
+
 func (u *setupUI) complete(cluster string, withDemo bool) {
 	if u.session != nil {
 		return
 	}
-	brand := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color(setupAccent))
+	plain := u.renderer.ColorProfile() == termenv.Ascii
+	st := newSetupStyles(u.renderer)
+	brand, border := setupBadge(u.renderer), lipgloss.RoundedBorder()
+	if plain {
+		brand, border = "Substrate on AKS", lipgloss.ASCIIBorder()
+	}
 	success := u.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-	content := brand.Render("Substrate on AKS") + "\n\n" + success.Render("DONE  Setup complete.") +
-		"\nCluster: " + cluster
+	row := func(label, value string) string {
+		// Long identifiers move below their label instead of breaking mid-word.
+		if lipgloss.Width(label+value) > u.width-6 {
+			return "\n" + st.muted.Render(strings.TrimSpace(label)) + "\n" + value
+		}
+		return "\n" + st.muted.Render(label) + value
+	}
+	content := brand + "\n\n" + success.Render("DONE  Setup complete.") + row("Cluster  ", cluster)
 	if withDemo {
-		content += "\nCounter microVM demo installed."
+		content += row("Demo     ", "Counter microVM demo installed.")
 	}
 	if u.width < 32 {
 		fmt.Fprintln(u.out, "\n"+u.renderer.NewStyle().Width(u.width).Render(content))
 		return
 	}
 	panel := u.renderer.NewStyle().Width(u.width-2).Padding(1, 2).
-		Border(lipgloss.ASCIIBorder()).BorderForeground(lipgloss.Color(setupAccent))
+		Border(border).BorderForeground(lipgloss.Color(setupAccent))
 	fmt.Fprintln(u.out, "\n"+panel.Render(content))
 }
 
@@ -115,8 +139,7 @@ func (u *setupUI) command(command string) {
 
 func (u *setupUI) demo() {
 	const post = "curl --fail-with-body -X POST \\\n  -H 'ate-target-actor: ate-demo-counter-microvm/my-counter' \\\n  http://localhost:8000/"
-	u.section("# Try the counter demo:")
-	u.section("# 1. Create a counter actor")
+	u.section("# Try the counter demo:\n# 1. Create a counter actor")
 	u.command("kubectl ate create actor my-counter \\\n  -a ate-demo-counter-microvm --template counter-microvm")
 	u.section("# 2. In another terminal, with the same KUBECONFIG")
 	u.command("kubectl -n ate-system port-forward svc/atenet-router 8000:80")

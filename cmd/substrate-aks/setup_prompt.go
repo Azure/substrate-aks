@@ -11,7 +11,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/muesli/termenv"
 )
@@ -23,17 +26,84 @@ type setupPrompt struct {
 	accessible bool
 }
 
+type setupClusterNameInput struct {
+	*huh.Input
+	value  *string
+	width  int
+	resize func()
+}
+
+func newSetupClusterNameInput(value *string) *setupClusterNameInput {
+	return &setupClusterNameInput{
+		Input: huh.NewInput().Title("Dedicated resource group and cluster name").
+			Placeholder("e.g. substrate-dev").Value(value).
+			Validate(func(s string) error { return installer.ValidateInstallationName(strings.TrimSpace(s)) }),
+		value: value, width: 80,
+	}
+}
+
+func (i *setupClusterNameInput) WithWidth(width int) huh.Field {
+	i.width = width
+	i.Input.WithWidth(width)
+	return i
+}
+
+func (i *setupClusterNameInput) Update(msg tea.Msg) (huh.Model, tea.Cmd) {
+	_, cmd := i.Input.Update(msg)
+	if i.resize != nil {
+		i.resize()
+	}
+	return i, cmd
+}
+
+func (i *setupClusterNameInput) View() string {
+	if i.Input.Error() != nil {
+		return i.Input.View()
+	}
+	name := strings.TrimSpace(*i.value)
+	// Before typing this is guidance, not an error; color follows validity.
+	feedback, style := "✓ Valid cluster name.", lipgloss.NewStyle().Foreground(lipgloss.Color(setupOK))
+	if name == "" {
+		feedback, style = "Enter a cluster name.", lipgloss.NewStyle().Foreground(lipgloss.Color(setupMuted))
+	} else if err := installer.ValidateInstallationName(name); err != nil {
+		feedback, style = "✗ Invalid name: "+err.Error(), lipgloss.NewStyle().Foreground(lipgloss.Color(setupFail))
+	}
+	lines := strings.Split(ansi.Wrap(feedback, max(1, i.width-2), ""), "\n")
+	for n, line := range lines {
+		lines[n] = "  " + style.Render(line)
+	}
+	return i.Input.View() + "\n" + strings.Join(lines, "\n")
+}
+
 func setupFormTheme(isDark bool) *huh.Styles {
 	theme := huh.ThemeCharm(isDark)
 	// Huh uses Lip Gloss v2; v1 colors resolve through a different renderer.
+	// Prompts use the primary purple (setupAccent) with a deeper border.
 	accent := color.RGBA{R: 0xb4, G: 0x8c, B: 0xf2, A: 0xff}
-	theme.Focused.Title = theme.Focused.Title.Foreground(accent)
-	theme.Focused.NoteTitle = theme.Focused.NoteTitle.Foreground(accent)
-	theme.Focused.SelectSelector = theme.Focused.SelectSelector.Foreground(accent)
-	theme.Focused.TextInput.Prompt = theme.Focused.TextInput.Prompt.Foreground(accent)
-	theme.Focused.FocusedButton = theme.Focused.FocusedButton.
-		Background(accent).Foreground(color.RGBA{R: 0x18, G: 0x19, B: 0x26, A: 0xff})
-	theme.Focused.Next = theme.Focused.FocusedButton
+	deep := color.RGBA{R: 0x7c, G: 0x5c, B: 0xc4, A: 0xff}
+	muted := ansi.BrightBlack
+	// Charm's blurred styles are copied before these overrides, so recolor
+	// both states; otherwise inactive fields keep Charm's pink/green/indigo.
+	for _, field := range []*huh.FieldStyles{&theme.Focused, &theme.Blurred} {
+		field.Title = field.Title.Foreground(accent)
+		field.NoteTitle = field.NoteTitle.Foreground(accent)
+		field.SelectSelector = field.SelectSelector.Foreground(accent)
+		field.NextIndicator = field.NextIndicator.Foreground(accent)
+		field.PrevIndicator = field.PrevIndicator.Foreground(accent)
+		field.MultiSelectSelector = field.MultiSelectSelector.Foreground(accent)
+		field.SelectedOption = field.SelectedOption.Foreground(accent).Bold(true)
+		field.SelectedPrefix = field.SelectedPrefix.Foreground(accent)
+		field.TextInput.Cursor = field.TextInput.Cursor.Foreground(accent)
+		field.TextInput.Prompt = field.TextInput.Prompt.Foreground(accent)
+		field.FocusedButton = field.FocusedButton.
+			Background(accent).Foreground(color.RGBA{R: 0x18, G: 0x19, B: 0x26, A: 0xff})
+		field.Next = field.FocusedButton
+	}
+	theme.Focused.Base = theme.Focused.Base.BorderForeground(deep)
+	theme.Focused.Card = theme.Focused.Base
+	theme.Blurred.Title = theme.Blurred.Title.Foreground(muted)
+	theme.Blurred.SelectSelector = theme.Blurred.SelectSelector.Foreground(muted)
+	theme.Blurred.TextInput.Prompt = theme.Blurred.TextInput.Prompt.Foreground(muted)
 	theme.Group.Title = theme.Focused.Title
 	return theme
 }
@@ -90,12 +160,16 @@ func (in *setupInput) Read(p []byte) (int, error) {
 }
 
 func (p *setupPrompt) run(ctx context.Context, field huh.Field) error {
+	return p.runForm(ctx, nil, field)
+}
+
+func (p *setupPrompt) runForm(ctx context.Context, resize func(height int), fields ...huh.Field) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	form := huh.NewForm(huh.NewGroup(field))
+	form := huh.NewForm(huh.NewGroup(fields...))
 	if p.ui.session != nil {
-		return p.ui.session.prompt(ctx, form)
+		return p.ui.session.prompt(ctx, form, resize)
 	}
 	if colorProfile(p.ui.out) == termenv.Ascii {
 		form.WithTheme(huh.ThemeFunc(huh.ThemeBase)).
@@ -160,6 +234,45 @@ func (p *setupPrompt) region(ctx context.Context, fallback string, regions []str
 	}
 	err := p.run(ctx, newRegionSelector(&value, regions))
 	return value, err
+}
+
+func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string) (string, string, error) {
+	nameField := newSetupClusterNameInput(&name)
+	if p.accessible {
+		fallback := strings.TrimSpace(name)
+		if fallback != "" {
+			nameField.Title("Dedicated resource group and cluster name [" + fallback + "]")
+		}
+		nameField.Validate(func(s string) error {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				s = fallback
+			}
+			return installer.ValidateInstallationName(s)
+		})
+		err := p.run(ctx, nameField)
+		if err != nil {
+			return "", "", err
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = fallback
+		}
+		location, err := p.region(ctx, location, regions)
+		return name, location, err
+	}
+	region := newRegionSelector(&location, regions)
+	formHeight := 0
+	nameField.resize = func() {
+		if formHeight > 0 {
+			region.WithHeight(max(4, formHeight-lipgloss.Height(nameField.View())-1))
+		}
+	}
+	err := p.runForm(ctx, func(height int) {
+		formHeight = height
+		nameField.resize()
+	}, nameField, region)
+	return strings.TrimSpace(name), location, err
 }
 
 func (p *setupPrompt) confirm(ctx context.Context, label string, fallback bool) (bool, error) {

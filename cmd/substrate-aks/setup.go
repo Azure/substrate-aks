@@ -33,6 +33,33 @@ type setupOptions struct {
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
 
+type setupStage struct {
+	label, command string
+	flags          []string
+}
+
+func setupStages(c installer.Config, withDemo bool) []setupStage {
+	var stages []setupStage
+	if c.Substrate.Images == (installer.ImagesConfig{}) {
+		stages = append(stages,
+			setupStage{"Preview registry bootstrap", "plan", []string{"--registry-only"}},
+			setupStage{"Provision the private registry", "provision", []string{"--registry-only"}},
+			setupStage{"Publish images and prepare runtime assets", "images", nil})
+	}
+	stages = append(stages,
+		setupStage{"Verify configured images before provisioning AKS", "images", []string{"--check"}},
+		setupStage{"Preview full infrastructure", "plan", nil},
+		setupStage{"Provision AKS, storage, and identities", "provision", nil},
+		setupStage{"Check cluster compatibility", "check", nil},
+		setupStage{"Prepare Azure deployment manifests", "prepare", nil},
+		setupStage{"Install Substrate and runtime assets", "install", nil},
+		setupStage{"Inspect workload status", "status", nil})
+	if withDemo {
+		stages = append(stages, setupStage{"Deploy and warm the counter microVM demo", "demo", nil})
+	}
+	return append(stages, setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil})
+}
+
 func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
 	if useSetupWorkspace(o, in, stderr) {
 		return runSetupWorkspace(ctx, o, in, out, stderr, execute)
@@ -44,7 +71,13 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if file, ok := in.(*os.File); !o.yes && ok && !term.IsTerminal(file.Fd()) {
 		return errors.New("setup needs an interactive terminal; use --yes with a complete configuration for automation")
 	}
-	ui := newSetupUI(stderr)
+	var ui *setupUI
+	if session := setupSessionFrom(ctx); session != nil && session.ui != nil {
+		copied := *session.ui
+		ui = &copied
+	} else {
+		ui = newSetupUI(stderr)
+	}
 	ui.session = setupSessionFrom(ctx)
 	prompt := newSetupPrompt(in, ui, o.accessible)
 	ui.welcome(!prompt.accessible)
@@ -76,7 +109,11 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			ui.session.send(setupTargetMsg{prior, o.withDemo})
 		}
 	}
+	needsBuilder := statErr != nil || prior.Substrate.Images == (installer.ImagesConfig{})
 	environment := []string{"Local tools"}
+	if needsBuilder {
+		environment = append(environment, "Image builder")
+	}
 	if errors.Is(statErr, os.ErrNotExist) {
 		environment = append(environment, "Azure account / identities", "API access address")
 	}
@@ -84,6 +121,14 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	preflight := installer.App{Config: prior, Runner: local, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
 	if err := ui.check("Local tools", func() error { return preflight.Doctor(ctx) }); err != nil {
 		return fmt.Errorf("local prerequisites failed before Azure discovery or provisioning: %w", err)
+	}
+	engineLabel := "Not needed (reuse configured images)"
+	if needsBuilder {
+		var err error
+		engineLabel, err = checkImageBuilder(ctx, &o, prior, statErr != nil, local, prompt, ui)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
 		err = ui.check("Azure account / identities", func() error {
@@ -99,6 +144,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 		o.subscription, o.publisher = defaults.subscription, defaults.publisher
 		o.operatorID, o.operatorType = defaults.operator.ObjectID, defaults.operator.PrincipalType
+		if ui.session != nil && defaults.subscriptionName != "" {
+			ui.session.send(setupSubscriptionMsg{defaults.subscription, defaults.subscriptionName})
+		}
 		err = ui.check("API access address", func() error {
 			o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
 			return err
@@ -122,7 +170,6 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				{"Azure identity Entra object UUID", &o.publisher, o.publisher != ""},
 				{"AKS operator Entra object UUID (cluster-scoped RBAC Cluster Admin)", &o.operatorID, o.operatorID != ""},
 				{"Client public IPv4 CIDR allowed to reach AKS (for example 203.0.113.8/32)", &o.cidr, o.cidr != "" || o.unrestrictedAPI},
-				{"Dedicated resource group and cluster name", &o.name, false},
 			} {
 				if field.skip {
 					continue
@@ -143,7 +190,8 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			return err
 		}
 		if !o.yes {
-			o.location, err = prompt.region(ctx, o.location, regions)
+			ui.section("Configure your installation")
+			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions)
 			if err != nil {
 				return err
 			}
@@ -193,9 +241,6 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		validation = append(validation, "Azure subscription")
 	}
 	validation = append(validation, "Runtime tools", "Azure deployment readiness", "Operator identity review")
-	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		validation = append(validation, "Image builder")
-	}
 	ui.checklist("Validate your deployment", validation...)
 	if !created {
 		if err := ui.check("Saved Azure region", func() error {
@@ -221,6 +266,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				return errors.New("Azure CLI returned a missing name or a different subscription ID")
 			}
 			defaults.subscriptionName = account.Name
+			if ui.session != nil {
+				ui.session.send(setupSubscriptionMsg{account.ID, account.Name})
+			}
 			return nil
 		})
 		if lookupErr != nil {
@@ -246,44 +294,6 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if err := ui.check("Operator identity review", func() error { return warnOperatorIdentity(ctx, c, defaults, runner, ui) }); err != nil {
 		return err
 	}
-	engineLabel := "Not needed (reuse configured images)"
-	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		if err := ui.check("Image builder", func() error {
-			builder := installer.App{Config: c, Runner: local, ContainerEngine: o.containerEngine,
-				Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
-			automatic := o.containerEngine == "" || o.containerEngine == "auto"
-			var engine string
-			mode := "explicit selection"
-			if automatic && !o.yes {
-				engines, err := builder.AvailableContainerEngines(ctx)
-				if err != nil {
-					return fmt.Errorf("checking the local image builders before provisioning: %w", err)
-				}
-				engine, mode = engines[0], "auto-detected"
-				if len(engines) > 1 {
-					engine, err = prompt.containerEngine(ctx)
-					if err != nil {
-						return err
-					}
-					mode = "selected"
-				}
-			} else {
-				engine, err = builder.DetectContainerEngine(ctx)
-				if err != nil {
-					return fmt.Errorf("checking the local image builder before provisioning: %w", err)
-				}
-				if automatic {
-					mode = "auto-detected"
-					ui.note("Auto-detection prefers working Docker/buildx, then Podman.")
-				}
-			}
-			engineLabel = engine + " (" + mode + ")"
-			o.containerEngine = engine
-			return nil
-		}); err != nil {
-			return err
-		}
-	}
 	ui.summary(c, defaults, o.path, created, engineLabel)
 	if !o.yes {
 		accepted, err := prompt.confirm(ctx, "Continue with this billable installation?", false)
@@ -303,29 +313,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if ui.session != nil {
 		ui.session.send(setupTargetMsg{c, o.withDemo})
 	}
-	type setupStage struct {
-		label, command string
-		flags          []string
-	}
-	var stages []setupStage
-	if c.Substrate.Images == (installer.ImagesConfig{}) {
-		stages = append(stages,
-			setupStage{"Preview registry bootstrap", "plan", []string{"--registry-only"}},
-			setupStage{"Provision the private registry", "provision", []string{"--registry-only"}},
-			setupStage{"Publish images and prepare runtime assets", "images", nil})
-	}
-	stages = append(stages,
-		setupStage{"Verify configured images before provisioning AKS", "images", []string{"--check"}},
-		setupStage{"Preview full infrastructure", "plan", nil},
-		setupStage{"Provision AKS, storage, and identities", "provision", nil},
-		setupStage{"Check cluster compatibility", "check", nil},
-		setupStage{"Prepare Azure deployment manifests", "prepare", nil},
-		setupStage{"Install Substrate and runtime assets", "install", nil},
-		setupStage{"Inspect workload status", "status", nil})
-	if o.withDemo {
-		stages = append(stages, setupStage{"Deploy and warm the counter microVM demo", "demo", nil})
-	}
-	stages = append(stages, setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil})
+	stages := setupStages(c, o.withDemo)
 	stopped := func(label string, args []string, err error) error {
 		reconcile := []string{"setup", "--config", o.path}
 		if o.containerEngine != "" {
@@ -356,7 +344,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				var items []string
 				for _, planned := range stages {
 					if setupPhase(planned.command, planned.flags) == phase {
-						items = append(items, planned.label)
+						items = append(items, setupStageChecks(planned.label, planned.command, planned.flags)...)
 					}
 				}
 				ui.checklist(setupPhaseTitle(phase), items...)
@@ -382,7 +370,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			work := func() error { return execute(ctx, args, stageOut, stageErr) }
 			var err error
 			if ui.session != nil {
-				err = ui.check(label, work)
+				items := setupStageChecks(label, command, flags)
+				if len(items) > 1 {
+					err = ui.checkGroup(items, work)
+				} else {
+					err = ui.check(label, work)
+				}
 			} else {
 				err = work()
 			}
@@ -430,9 +423,10 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 		return stopped("Kubernetes context handoff", handoff, err)
 	}
+	steps := newSetupReceiptUI(ctx, out)
 	ui.complete(c.AKS.ClusterName, o.withDemo)
 	if ui.session != nil {
-		newSetupUI(out).complete(c.AKS.ClusterName, o.withDemo)
+		steps.complete(c.AKS.ClusterName, o.withDemo)
 	}
 	client := *o.client
 	if selected != "" {
@@ -441,7 +435,6 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	} else {
 		ui.note("Apply the printed shell configuration; the installer has not changed your default kubeconfig or PATH.")
 	}
-	steps := newSetupUI(out)
 	steps.section("# Connect from this shell:")
 	if err := printClientSetup(out, client); err != nil {
 		return err
@@ -452,6 +445,58 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	steps.section("# Delete all resources and persistent data when finished:")
 	steps.command(cliCommand("destroy", "--config", o.path, "--confirm-delete", c.Azure.ResourceGroup))
 	return nil
+}
+
+// checkImageBuilder pins the image builder during the local environment check,
+// offering a choice when auto-detection finds both. A new installation has no
+// workspace yet, so it probes from a throwaway one: the probe copies only the
+// caller's Docker context and plugin settings, and buildx state stays shared.
+func checkImageBuilder(ctx context.Context, o *setupOptions, c installer.Config, fresh bool, local installer.Runner, prompt *setupPrompt, ui *setupUI) (string, error) {
+	if fresh {
+		dir, err := os.MkdirTemp("", "substrate-aks-builder-")
+		if err != nil {
+			return "", err
+		}
+		defer os.RemoveAll(dir)
+		c = installer.DefaultConfig()
+		c.Installation.StateDir, c.Installation.ID = dir, "probe"
+	}
+	var label string
+	err := ui.check("Image builder", func() error {
+		builder := installer.App{Config: c, Runner: local, ContainerEngine: o.containerEngine,
+			Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+		automatic := o.containerEngine == "" || o.containerEngine == "auto"
+		var engine string
+		mode := "explicit selection"
+		if automatic && !o.yes {
+			engines, err := builder.AvailableContainerEngines(ctx)
+			if err != nil {
+				return fmt.Errorf("checking the local image builders before provisioning: %w", err)
+			}
+			engine, mode = engines[0], "auto-detected"
+			if len(engines) > 1 {
+				engine, err = prompt.containerEngine(ctx)
+				if err != nil {
+					return err
+				}
+				mode = "selected"
+			}
+		} else {
+			var err error
+			engine, err = builder.DetectContainerEngine(ctx)
+			if err != nil {
+				return fmt.Errorf("checking the local image builder before provisioning: %w", err)
+			}
+			if automatic {
+				mode = "auto-detected"
+				ui.note("Auto-detection prefers working Docker/buildx, then Podman.")
+			}
+		}
+		label = engine + " (" + mode + ")"
+		o.containerEngine = engine
+		return nil
+	})
+	return label, err
 }
 
 func shellQuote(s string) string {

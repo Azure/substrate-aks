@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,10 @@ type setupSessionKey struct{}
 type setupSession struct {
 	ctx    context.Context
 	events chan any
+	// ui and receipt are built before the workspace starts: building a
+	// renderer for a terminal queries it, and the running workspace would
+	// consume the reply, blocking the query forever.
+	ui, receipt *setupUI
 }
 
 func setupSessionFrom(ctx context.Context) *setupSession {
@@ -51,6 +56,9 @@ type setupTargetMsg struct {
 	config installer.Config
 	demo   bool
 }
+
+// setupSubscriptionMsg names a subscription once Azure discovery has read it.
+type setupSubscriptionMsg struct{ id, name string }
 type setupPhaseMsg string
 type setupStepMsg string
 type setupChecklistMsg struct {
@@ -62,6 +70,11 @@ type setupCheckMsg struct {
 	done bool
 	err  error
 }
+type setupCheckGroupMsg struct {
+	names []string
+	done  bool
+	err   error
+}
 type setupSyncMsg chan struct{}
 type setupLogMsg string
 type setupPlanMsg struct {
@@ -69,8 +82,9 @@ type setupPlanMsg struct {
 	changes      []installer.ResourceChange
 }
 type setupFormMsg struct {
-	form *huh.Form
-	done chan error
+	form   *huh.Form
+	done   chan error
+	resize func(height int)
 }
 
 func useSetupWorkspace(o setupOptions, in io.Reader, out io.Writer) bool {
@@ -90,7 +104,7 @@ func setupPhase(command string, flags []string) string {
 	case "plan", "provision":
 		for _, flag := range flags {
 			if flag == "--registry-only" {
-				return "registry"
+				return "images"
 			}
 		}
 		return "cluster"
@@ -109,9 +123,27 @@ func setupPhase(command string, flags []string) string {
 	}
 }
 
-func (s *setupSession) prompt(ctx context.Context, form *huh.Form) error {
+func setupStageChecks(label, command string, flags []string) []string {
+	if command == "images" && len(flags) > 0 && flags[0] == "--check" {
+		return installer.ImageCheckSteps()
+	}
+	return []string{label}
+}
+
+func setupPhases(c installer.Config, withDemo bool) []string {
+	phases := []string{"prepare"}
+	for _, stage := range setupStages(c, withDemo) {
+		phase := setupPhase(stage.command, stage.flags)
+		if !slices.Contains(phases, phase) {
+			phases = append(phases, phase)
+		}
+	}
+	return phases
+}
+
+func (s *setupSession) prompt(ctx context.Context, form *huh.Form, resize func(height int)) error {
 	done := make(chan error, 1)
-	s.send(setupFormMsg{form, done})
+	s.send(setupFormMsg{form: form, done: done, resize: resize})
 	select {
 	case err := <-done:
 		return err
@@ -132,8 +164,9 @@ func (s *setupSession) preview(subscription string, changes []installer.Resource
 	return s.ctx.Err()
 }
 
-// Raw subprocess output belongs in the command's private log, never in the
-// interactive renderer. Display only explicit progress and structured previews.
+// Raw subprocess output belongs in the command's private log, never in progress
+// messages. Progress shows explicit steps and structured previews; the logs
+// view reads a sanitized tail of the log file instead.
 func commandProgress(ctx context.Context, out, log io.Writer, stage string, animate bool) *progress {
 	s := setupSessionFrom(ctx)
 	if s == nil {
@@ -145,9 +178,14 @@ func commandProgress(ctx context.Context, out, log io.Writer, stage string, anim
 		started: time.Now(), done: make(chan struct{}), stopped: stopped, session: s}
 }
 
-func (m *setupWorkspace) planView(changes []installer.ResourceChange) string {
+// planView summarizes a preview. Inline previews sit in the checklist callout,
+// which supplies its own frame and is four columns narrower than the body.
+func (m *setupWorkspace) planView(changes []installer.ResourceChange, inline bool) string {
 	width := min(m.bodyWidth(), 88)
-	boxed := width >= 60 && m.height >= 24
+	boxed := width >= 60 && m.height >= 24 && !inline
+	if inline {
+		width = max(1, min(m.bodyWidth()-4, 84))
+	}
 	innerWidth := width
 	if boxed {
 		innerWidth -= 6
@@ -157,29 +195,30 @@ func (m *setupWorkspace) planView(changes []installer.ResourceChange) string {
 	for _, change := range changes {
 		counts[change.ChangeType]++
 	}
+	actions := []struct{ name, heading, label, color string }{
+		{"Create", "to create", "create", "2"}, {"Modify", "to update", "update", "3"},
+		{"Delete", "to delete", "delete", "1"}, {"Deploy", "to deploy", "deploy", setupAccent},
+		{"Unknown", "unrecognized", "unrecognized", "3"},
+	}
+	counts["Unknown"] = len(changes) - counts["Create"] - counts["Modify"] - counts["Delete"] - counts["Deploy"] - counts["NoChange"]
 	var totals []string
-	for _, kind := range []struct{ name, label, color string }{
-		{"Create", "to create", "2"}, {"Modify", "to update", "3"},
-		{"Delete", "to delete", "1"}, {"Deploy", "to deploy", setupAccent},
-	} {
+	for _, kind := range actions {
 		if count := counts[kind.name]; count > 0 {
 			totals = append(totals, m.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color(kind.color)).
-				Render(fmt.Sprintf("%d %s", count, kind.label)))
+				Render(fmt.Sprintf("%d %s", count, kind.heading)))
 		}
-	}
-	unknown := len(changes) - counts["Create"] - counts["Modify"] - counts["Delete"] - counts["Deploy"] - counts["NoChange"]
-	if unknown > 0 {
-		totals = append(totals, m.renderer.NewStyle().Foreground(lipgloss.Color("3")).
-			Render(fmt.Sprintf("%d unrecognized", unknown)))
 	}
 	headline := strings.Join(totals, "   ")
 	if headline == "" {
 		headline = m.renderer.NewStyle().Bold(true).Render("No resource changes")
 	}
 	lines := []string{ansi.Wrap(headline, innerWidth, "")}
-	resources := map[string]int{}
+	// Group by top-level resource; child resources (blob containers, federated
+	// credentials) get their own indented rows so parent counts stay literal.
+	type row struct{ kind, child string }
+	resources := map[row]map[string]int{}
 	names := map[string]string{
-		"Microsoft.Authorization/roleAssignments":          "Access grants",
+		"Microsoft.Authorization/roleAssignments":          "Role assignments",
 		"Microsoft.ContainerRegistry/registries":           "Container registry",
 		"Microsoft.ContainerService/managedClusters":       "AKS cluster",
 		"Microsoft.Storage/storageAccounts":                "Storage account",
@@ -188,48 +227,90 @@ func (m *setupWorkspace) planView(changes []installer.ResourceChange) string {
 		"Microsoft.Network/privateEndpoints":               "Private endpoint",
 		"Microsoft.Network/privateDnsZones":                "Private DNS zone",
 	}
+	childNames := map[string]string{
+		"blobServices":                 "Blob service",
+		"blobServices/containers":      "Blob containers",
+		"federatedIdentityCredentials": "Federated credentials",
+		"agentPools":                   "Node pools",
+	}
 	for _, change := range changes {
 		if change.ChangeType == "NoChange" {
 			continue
 		}
 		parts := strings.Split(strings.Trim(safeSetupText(change.ResourceID), "/"), "/")
-		kind := "Other resources"
+		key := row{kind: "Other resources"}
 		for i, part := range parts {
 			if strings.EqualFold(part, "providers") && i+2 < len(parts) {
-				kind = parts[i+1] + "/" + parts[i+2]
+				// Provider paths alternate type and name after the namespace.
+				var types []string
+				for j := i + 2; j < len(parts); j += 2 {
+					types = append(types, parts[j])
+				}
+				key = row{kind: parts[i+1] + "/" + types[0], child: strings.Join(types[1:], "/")}
 			}
 		}
-		if kind == "Other resources" && len(parts) == 4 && strings.EqualFold(parts[2], "resourceGroups") {
-			kind = "Resource group"
+		if key.kind == "Other resources" && len(parts) == 4 && strings.EqualFold(parts[2], "resourceGroups") {
+			key.kind = "Resource group"
 		}
-		if name, ok := names[kind]; ok {
-			kind = name
+		if name, ok := names[key.kind]; ok {
+			key.kind = name
 		}
-		resources[kind]++
+		if name, ok := childNames[key.child]; ok {
+			key.child = name
+		}
+		if resources[key] == nil {
+			resources[key] = map[string]int{}
+		}
+		if key.child != "" && resources[row{kind: key.kind}] == nil {
+			resources[row{kind: key.kind}] = map[string]int{}
+		}
+		action := change.ChangeType
+		switch action {
+		case "Create", "Modify", "Delete", "Deploy":
+		default:
+			action = "Unknown"
+		}
+		resources[key][action]++
 	}
-	kinds := make([]string, 0, len(resources))
-	for kind := range resources {
-		kinds = append(kinds, kind)
+	rows := make([]row, 0, len(resources))
+	for key := range resources {
+		rows = append(rows, key)
 	}
-	sort.Slice(kinds, func(i, j int) bool {
-		if kinds[i] == kinds[j] {
-			return false
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.kind != b.kind {
+			if a.kind == "Resource group" || b.kind == "Resource group" {
+				return a.kind == "Resource group"
+			}
+			return a.kind < b.kind
 		}
-		if kinds[i] == "Resource group" {
-			return true
-		}
-		if kinds[j] == "Resource group" {
-			return false
-		}
-		return kinds[i] < kinds[j]
+		return a.child < b.child
 	})
-	if len(kinds) > 0 {
+	if len(rows) > 0 {
 		lines = append(lines, "")
 	}
-	for _, kind := range kinds {
+	for _, key := range rows {
+		var labels []string
+		for _, action := range actions {
+			if count := resources[key][action.name]; count > 0 {
+				labels = append(labels, m.renderer.NewStyle().Foreground(lipgloss.Color(action.color)).
+					Render(fmt.Sprintf("%d %s", count, action.label)))
+			}
+		}
+		summary := strings.Join(labels, "  ")
+		label, labelStyle := key.kind, m.renderer.NewStyle()
+		if key.child != "" {
+			label, labelStyle = "  "+key.child, muted
+		}
+		labelWidth := min(26, innerWidth/2)
+		if ansi.StringWidth(summary) > innerWidth-labelWidth-2 {
+			lines = append(lines, labelStyle.Render(ansi.Hardwrap(label, innerWidth, true)),
+				"    "+ansi.Wrap(summary, innerWidth-4, ""))
+			continue
+		}
 		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
-			m.renderer.NewStyle().Width(innerWidth-4).Render(kind),
-			muted.Width(4).Align(lipgloss.Right).Render(fmt.Sprint(resources[kind]))))
+			labelStyle.Width(labelWidth).Render(label),
+			"  ", summary))
 	}
 	if counts["NoChange"] > 0 {
 		lines = append(lines, "", muted.Render(fmt.Sprintf("%d unchanged", counts["NoChange"])))

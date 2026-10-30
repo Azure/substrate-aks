@@ -173,6 +173,7 @@ func TestCLIImageResetDoesNotBuildOrDeleteResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	c.Substrate.Images = installer.ImagesConfig{
 		Repository: "example.invalid/substrate", Tag: "deleted-build",
 		Plugin: "example.invalid/plugin@sha256:" + strings.Repeat("a", 64),
@@ -202,5 +203,73 @@ esac
 	if err != nil || reset.Substrate.Images != (installer.ImagesConfig{}) ||
 		reset.Installation.ID != c.Installation.ID || !strings.Contains(out.String(), "Cleared saved image references") {
 		t.Fatalf("reset did not provide a usable setup recovery path: %+v, %v, %s", reset.Substrate.Images, err, &out)
+	}
+}
+
+func TestCLIImageVerificationReportsWorkspaceSteps(t *testing.T) {
+	for _, status := range []string{"available", "missing"} {
+		t.Run(status, func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Substrate.Images = installer.ImagesConfig{
+				Repository: "example.invalid/substrate", Tag: "test",
+				Plugin: "example.invalid/plugin@sha256:" + strings.Repeat("a", 64),
+			}
+			c.Substrate.Runtime.AssetsDir = testRuntimeAssets(t)
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			fakeTool(t, bin, "git", `
+case "$1" in
+  init|fetch|checkout) ;;
+  rev-parse)
+    /bin/mkdir -p internal/plugins/azure-blob/config cmd/ate-setup/internal/cmd cmd/ate-setup/internal/steps
+    printf 'resources: []' > internal/plugins/azure-blob/config/kustomization.yaml
+    printf '%s' '`+c.Substrate.Source.Commit+`';;
+  *) exit 19;;
+esac
+`)
+			image := ""
+			if status == "missing" {
+				image = c.Substrate.Images.Repository + "/missing:test"
+			}
+			fakeTool(t, bin, "go", `printf '%s' '`+fmt.Sprintf(
+				`{"status":%q,"image":%q,"checked":18,"expected":18}`, status, image)+`'`)
+			t.Setenv("PATH", bin)
+			m := testWorkspace(t)
+			m.welcome = false
+			m.session.events = make(chan any, 1024)
+			ctx := context.WithValue(t.Context(), setupSessionKey{}, m.session)
+			ui := newSetupUI(&bytes.Buffer{})
+			ui.session = m.session
+			items := setupStageChecks("Verify configured images", "images", []string{"--check"})
+			ui.checklist("Images and assets", items...)
+			err = ui.checkGroup(items, func() error {
+				return run(ctx, []string{"images", "--check", "--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+			})
+			if (err != nil) != (status == "missing") {
+				t.Fatalf("image verification returned %v for %s", err, status)
+			}
+			for len(m.session.events) > 0 {
+				m.Update(<-m.session.events)
+				if len(m.checks) != len(items) {
+					t.Fatal("image verification changed its preset checklist")
+				}
+			}
+			for i, check := range m.checks {
+				failed := status == "missing" && i == len(items)-1
+				if check.name != items[i] || !check.done || (check.err != nil) != failed {
+					t.Fatalf("command result did not reach its checklist row: %+v", m.checks)
+				}
+			}
+		})
 	}
 }

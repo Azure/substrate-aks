@@ -30,11 +30,12 @@ type Infrastructure struct {
 }
 
 type App struct {
-	Config          Config
-	Runner          Runner
-	ContainerEngine string
-	Progress        func(string, ...any)
-	Preview         func([]ResourceChange) error
+	Config             Config
+	Runner             Runner
+	ContainerEngine    string
+	Progress           func(string, ...any)
+	Preview            func([]ResourceChange) error
+	ImageCheckProgress func(name string, done bool, err error)
 }
 
 type ResourceChange struct {

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/Azure/substrate-aks/internal/installer"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
@@ -66,7 +70,7 @@ func TestWorkspaceWelcomeCardsFitTerminal(t *testing.T) {
 			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 			m.choice = choice
 			view := ansi.Strip(m.View().Content)
-			for _, want := range []string{"Quick start", "Advanced configuration", "[Planned]", "cannot start", "Ctrl-C"} {
+			for _, want := range []string{"Quick start", "Advanced configuration", "[Planned]", "cannot start", "ctrl+c"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("%dx%d missing %q:\n%s", size[0], size[1], want, view)
 				}
@@ -75,7 +79,7 @@ func TestWorkspaceWelcomeCardsFitTerminal(t *testing.T) {
 				t.Fatal("removed option is still advertised")
 			}
 			if size[0] >= 80 && size[1] >= 24 {
-				for _, want := range []string{"/___________/|", "s u b s t r a t e", "on AKS"} {
+				for _, want := range []string{"╭─╴ ╷ ╷ ┌─╮", "on AKS"} {
 					if !strings.Contains(view, want) {
 						t.Fatalf("landing screen lost branding %q:\n%s", want, view)
 					}
@@ -106,8 +110,8 @@ func TestWorkspaceWelcomeSelectionHighlightsWithoutMovingText(t *testing.T) {
 		t.Fatal("changing selection moved or changed card text")
 	}
 	view := ansi.Strip(second)
-	if strings.Contains(view, "> ") || !strings.Contains(view, "│  Quick start") ||
-		!strings.Contains(view, "│  Advanced configuration") || !strings.Contains(view, "╭─") {
+	if strings.Contains(view, "> ") || !strings.Contains(view, "│  1  Quick start") ||
+		!strings.Contains(view, "│  2  Advanced configuration") || !strings.Contains(view, "╭─") {
 		t.Fatalf("cards lack clean borders and aligned text:\n%s", view)
 	}
 }
@@ -136,7 +140,7 @@ func TestWorkspaceChecklistRequiresExplicitResults(t *testing.T) {
 		}
 		lines := strings.Split(ansi.Strip(m.contextText()), "\n")
 		if len(lines) != 4 || !strings.Contains(lines[1], "Azure account") ||
-			!strings.HasPrefix(lines[2], "  Long probe detail") || ansi.StringWidth(lines[2]) > m.bodyWidth() ||
+			!strings.HasPrefix(lines[2], "  └─ Long probe detail") || ansi.StringWidth(lines[2]) > m.bodyWidth() ||
 			!strings.Contains(lines[3], "○ API access") {
 			t.Fatalf("active status was not bounded beneath its owning check: %q", m.contextText())
 		}
@@ -146,7 +150,7 @@ func TestWorkspaceChecklistRequiresExplicitResults(t *testing.T) {
 	if strings.Contains(m.contextText(), "Long probe detail") {
 		t.Fatal("completed check retained its live status line")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyF3})
+	m.Update(tea.KeyPressMsg{Code: 'l'})
 	if !strings.Contains(m.contextText(), strings.Repeat("Long probe detail ", 20)) {
 		t.Fatal("activity lost the full progress detail")
 	}
@@ -171,6 +175,9 @@ func TestWorkspaceChecklistSpinnerKeepsTextAligned(t *testing.T) {
 	m.Update(setupChecklistMsg{"Validate your deployment", []string{"Local tools", "Azure readiness", "Image builder"}})
 	m.Update(setupCheckMsg{name: "Local tools", done: true})
 	m.Update(setupCheckMsg{name: "Azure readiness"})
+	if strings.Contains(m.checklistView(), "└─") {
+		t.Fatal("operation without detail displayed an empty child branch")
+	}
 	m.Update(setupStepMsg("Loading regional sizes"))
 	column := func(line, text string) int {
 		index := strings.Index(line, text)
@@ -179,14 +186,30 @@ func TestWorkspaceChecklistSpinnerKeepsTextAligned(t *testing.T) {
 		}
 		return ansi.StringWidth(line[:index])
 	}
-	for range m.checkSpinner.Spinner.Frames {
-		lines := strings.Split(ansi.Strip(m.checklistView()), "\n")
-		start := column(lines[0], "Local tools")
-		if start != column(lines[1], "Azure readiness") || start != column(lines[2], "Loading regional sizes") ||
-			start != column(lines[3], "Image builder") {
-			t.Fatalf("spinner shifted text away from the check/detail column:\n%s", strings.Join(lines, "\n"))
+	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.Ascii} {
+		m.renderer.SetColorProfile(profile)
+		for range m.checkSpinner.Spinner.Frames {
+			view := m.checklistView()
+			rendered := strings.Split(view, "\n")
+			lines := strings.Split(ansi.Strip(view), "\n")
+			active := m.renderer.NewStyle().Foreground(lipgloss.Color(setupActive))
+			if !strings.HasPrefix(rendered[1], active.Render(m.checkSpinner.View())+" "+active.Bold(true).Render("Azure readiness")) ||
+				!strings.HasSuffix(lines[1], "0:00") {
+				t.Fatalf("active spinner/status did not use the active blue with a timer: %q", rendered[1])
+			}
+			if soft := m.renderer.NewStyle().Foreground(lipgloss.Color(setupActiveSoft)); rendered[2] != soft.Render(lines[2]) {
+				t.Fatalf("child status did not use the soft active blue: %q", rendered[2])
+			}
+			if lines[3] != "○ Image builder" {
+				t.Fatalf("pending check added redundant status text: %q", lines[3])
+			}
+			start := column(lines[0], "Local tools")
+			if start != column(lines[1], "Azure readiness") || start != column(lines[3], "Image builder") ||
+				start+3 != column(lines[2], "Loading regional sizes") || !strings.HasPrefix(lines[2], "  └─ ") {
+				t.Fatalf("check rows or child indentation lost their hierarchy:\n%s", strings.Join(lines, "\n"))
+			}
+			m.checkSpinner, _ = m.checkSpinner.Update(m.checkSpinner.Tick())
 		}
-		m.checkSpinner, _ = m.checkSpinner.Update(m.checkSpinner.Tick())
 	}
 }
 
@@ -204,16 +227,19 @@ func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.
 			}
 		}
 	}
-	expected := map[string]int{"registry": 2, "images": 2, "cluster": 3, "substrate": 3, "demo": 1, "connect": 1}
+	expected := map[string]int{"images": 3 + len(installer.ImageCheckSteps()), "cluster": 3, "substrate": 3, "demo": 1, "connect": 1}
 	seen := map[string]string{}
 	err := setupForTest(ctx, setupOptions{
 		path: testCLIConfig(t), yes: true, withDemo: true, skipContextHandoff: true,
 		discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader(""), io.Discard, io.Discard,
-		func(context.Context, []string, io.Writer, io.Writer) error {
+		func(_ context.Context, args []string, _, _ io.Writer) error {
 			drain()
 			if len(m.checks) != expected[m.phase] || len(m.checks) == 0 {
 				t.Fatalf("phase %s did not declare its operations before execution: %+v", m.phase, m.checks)
+			}
+			if m.completed[m.phase] {
+				t.Fatalf("phase %s completed before all of its operations returned", m.phase)
 			}
 			var names []string
 			active := -1
@@ -239,6 +265,12 @@ func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.
 				t.Fatalf("phase %s dynamically changed its operation list", m.phase)
 			}
 			seen[m.phase] = labels
+			if args[0] == "images" && strings.Contains(strings.Join(args, " "), "--check") {
+				for _, name := range installer.ImageCheckSteps() {
+					m.session.send(setupCheckMsg{name: name})
+					m.session.send(setupCheckMsg{name: name, done: true})
+				}
+			}
 			return nil
 		})
 	if err != nil {
@@ -260,7 +292,7 @@ func TestWorkspaceStageChecklistKeepsProgressInlineAndResumesAfterApproval(t *te
 		t.Fatal("installation review flashed stale preflight progress")
 	}
 	items := []string{"Preview registry bootstrap", "Provision the private registry"}
-	m.Update(setupChecklistMsg{"Private registry", items})
+	m.Update(setupChecklistMsg{"Images and assets", items})
 	m.Update(setupCheckMsg{name: items[0]})
 	for _, detail := range []string{"", "Checking Azure subscription access", "Preparing infrastructure templates"} {
 		if detail != "" {
@@ -288,7 +320,7 @@ func TestWorkspaceStageChecklistKeepsProgressInlineAndResumesAfterApproval(t *te
 	}
 	m.Update(setupCheckMsg{name: items[1]})
 	text := ansi.Strip(m.contextText())
-	if m.plan || m.title != "Private registry" || !strings.Contains(text, "✓ "+items[0]) ||
+	if m.plan || m.title != "Images and assets" || !strings.Contains(text, "✓ "+items[0]) ||
 		!strings.Contains(text, items[1]) || strings.Contains(text, "to create") ||
 		strings.Contains(text, "Preparing infrastructure templates") {
 		t.Fatalf("approval did not return to the preserved checklist:\n%s", text)
@@ -307,6 +339,109 @@ func TestWorkspaceStageChecklistKeepsProgressInlineAndResumesAfterApproval(t *te
 	}
 }
 
+func TestWorkspaceImageVerificationChecklistRetriesAllSteps(t *testing.T) {
+	for _, failure := range []string{"before command starts", "source fetch"} {
+		t.Run(failure, func(t *testing.T) {
+			m := testWorkspace(t)
+			m.welcome = false
+			items := installer.ImageCheckSteps()
+			m.Update(setupChecklistMsg{"Images and assets", items})
+			m.Update(setupCheckGroupMsg{names: items})
+			m.Update(setupCheckMsg{name: items[0]})
+			want := errors.New("verification failed")
+			failed := 0
+			if failure == "source fetch" {
+				failed = 1
+				m.Update(setupCheckMsg{name: items[0], done: true})
+				m.Update(setupCheckMsg{name: items[1]})
+				m.Update(setupStepMsg("Fetching Substrate source at the configured commit"))
+				text := ansi.Strip(m.contextText())
+				for _, pending := range items[2:] {
+					if !strings.Contains(text, "○ "+pending) {
+						t.Fatalf("source fetch hid a future verification step:\n%s", text)
+					}
+				}
+				m.Update(setupCheckMsg{name: items[1], done: true, err: want})
+			}
+			m.Update(setupCheckGroupMsg{names: items, done: true, err: want})
+			for i, check := range m.checks {
+				if check.done != (i <= failed) || (check.err != nil) != (i == failed) {
+					t.Fatalf("failure marked the wrong image operation: %+v", m.checks)
+				}
+			}
+			m.Update(setupCheckGroupMsg{names: items})
+			m.Update(setupCheckMsg{name: items[0]})
+			// A command-level success cannot substitute for individual step results.
+			m.Update(setupCheckGroupMsg{names: items, done: true})
+			for i, check := range m.checks {
+				if check.done || check.err != nil || check.started.IsZero() != (i > 0) {
+					t.Fatalf("retry retained a stale result or completed unreported work: %+v", m.checks)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkspaceCombinedImageChecklistKeepsActiveVerificationVisible(t *testing.T) {
+	for _, width := range []int{96, 40} {
+		m := testWorkspace(t)
+		m.welcome = false
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 14})
+		m.Update(setupPhaseMsg("images"))
+		var items []string
+		for _, stage := range setupStages(installer.Config{}, false) {
+			if setupPhase(stage.command, stage.flags) == "images" {
+				items = append(items, setupStageChecks(stage.label, stage.command, stage.flags)...)
+			}
+		}
+		m.Update(setupChecklistMsg{"Images and assets", items})
+		for i, name := range items {
+			m.Update(setupCheckMsg{name: name})
+			if i < len(items)-1 {
+				m.Update(setupCheckMsg{name: name, done: true})
+			}
+		}
+		m.Update(setupStepMsg("Checking saved image inventory"))
+		view := strings.Join(strings.Fields(ansi.Strip(m.View().Content)), " ")
+		if !strings.Contains(view, items[len(items)-1]) || !strings.Contains(view, "Checking saved image inventory") {
+			t.Fatalf("width %d hid the active operation in the merged checklist:\n%s", width, m.View().Content)
+		}
+		workspaceKey(m, 'l')
+		workspaceKey(m, tea.KeyEsc)
+		if !strings.Contains(ansi.Strip(m.View().Content), "Checking saved image inventory") {
+			t.Fatal("closing logs lost the current operation in the merged checklist")
+		}
+	}
+}
+
+func TestWorkspaceCombinedImageChecklistShowsFailedRegistryStepDuringRetry(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.renderer.SetColorProfile(termenv.TrueColor)
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 20})
+	m.Update(setupPhaseMsg("images"))
+	var items []string
+	for _, stage := range setupStages(installer.Config{}, false) {
+		if setupPhase(stage.command, stage.flags) == "images" {
+			items = append(items, setupStageChecks(stage.label, stage.command, stage.flags)...)
+		}
+	}
+	m.Update(setupChecklistMsg{"Images and assets", items})
+	m.Update(setupCheckMsg{name: items[0], done: true})
+	m.Update(setupCheckMsg{name: items[1]})
+	m.Update(setupCheckMsg{name: items[1], done: true, err: errors.New("Registry access denied")})
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Retry this stage?"))), done: make(chan error, 1)})
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Provision the private registry", "Registry access denied", "Retry this stage?"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("merged checklist hid retry context %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(m.checklistView(), m.renderer.NewStyle().Foreground(lipgloss.Color("1")).Render("  └─ Registry access denied")) {
+		t.Fatal("failed child status lost its branch or error color")
+	}
+}
+
 func TestWorkspaceStageChecklistDoesNotAutoScrollDestructiveApproval(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false
@@ -320,12 +455,12 @@ func TestWorkspaceStageChecklistDoesNotAutoScrollDestructiveApproval(t *testing.
 	m.Update(setupPlanMsg{"test", changes})
 	m.Update(setupCheckMsg{name: "Preview full infrastructure", done: true})
 	value := false
-	m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().Title("Apply these planned changes?").Value(&value))), make(chan error, 1)})
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().Title("Apply these planned changes?").Value(&value))), done: make(chan error, 1)})
 	if m.scroll != 0 || !m.reviewRequired || m.contextViewport().AtBottom() {
 		t.Fatal("preserved checklist scrolled a destructive review directly to the bottom")
 	}
-	workspaceKey(m, tea.KeyF4)
+	workspaceKey(m, 'a')
 	if m.reviewed {
 		t.Fatal("destructive approval bypassed the full-summary review")
 	}
@@ -367,9 +502,8 @@ func TestWorkspaceReviewAndPromptColorsRespectOutputProfile(t *testing.T) {
 			t.Fatalf("review lost content or allowed terminal control: %q", m.body)
 		}
 		value := false
-		m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(
-			huh.NewConfirm().Title("Continue with this billable installation?").Value(&value))),
-			make(chan error, 1)})
+		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().Title("Continue with this billable installation?").Value(&value))), done: make(chan error, 1)})
 		coloredReview := strings.Contains(m.body, "\x1b[")
 		beforeTitle, _, found := strings.Cut(m.form.View(), "Continue with")
 		if !found {
@@ -377,7 +511,7 @@ func TestWorkspaceReviewAndPromptColorsRespectOutputProfile(t *testing.T) {
 		}
 		coloredPrompt := strings.Contains(beforeTitle, "\x1b[38;")
 		if profile == termenv.TrueColor && !strings.Contains(beforeTitle, "180;140;242") {
-			t.Fatalf("embedded prompt did not preserve the purple brand color: %q", beforeTitle)
+			t.Fatalf("embedded prompt did not use the primary purple: %q", beforeTitle)
 		}
 		if coloredReview != (profile == termenv.TrueColor) || coloredPrompt != (profile == termenv.TrueColor) {
 			t.Fatalf("profile %v: review colors=%v, prompt colors=%v\n%s", profile, coloredReview, coloredPrompt, m.form.View())
@@ -392,13 +526,13 @@ func TestWorkspaceKeepsTargetAndFormVisibleAtConfirmation(t *testing.T) {
 		c := installer.DefaultConfig()
 		c.AKS.ClusterName, c.Azure.Location, c.Azure.SubscriptionID = "test-install", "eastus2", "subscription"
 		m.Update(setupTargetMsg{c, true})
-		m.Update(setupPhaseMsg("registry"))
+		m.Update(setupPhaseMsg("images"))
 		m.Update(setupPlanMsg{"subscription", []installer.ResourceChange{{ChangeType: "Create", ResourceID: "/subscriptions/subscription/resourceGroups/test-install"}}})
 		value := false
-		m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue with this billable installation?").Value(&value))), make(chan error, 1)})
+		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue with this billable installation?").Value(&value))), done: make(chan error, 1)})
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		view := ansi.Strip(m.View().Content)
-		for _, want := range []string{"test-install", "Continue with this", "Yes", "No", "Ctrl-C"} {
+		for _, want := range []string{"test-install", "Continue with this", "Yes", "No", "ctrl+c"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%dx%d missing %q:\n%s", size[0], size[1], want, view)
 			}
@@ -414,6 +548,85 @@ func TestWorkspaceKeepsTargetAndFormVisibleAtConfirmation(t *testing.T) {
 	}
 }
 
+func TestWorkspaceInstallationFormKeepsBothFieldsVisible(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(setupSectionMsg("Configure your installation"))
+	prompt := &setupPrompt{ui: &setupUI{session: m.session}}
+	regions := []string{
+		"australiaeast", "australiasoutheast", "brazilsouth", "canadacentral",
+		"centralindia", "centralus", "eastasia", "eastus", "eastus2",
+		"francecentral", "germanywestcentral", "japaneast", "koreacentral",
+		"northeurope", "norwayeast", "southafricanorth", "southcentralus",
+		"southeastasia", "swedencentral", "switzerlandnorth", "uksouth",
+		"westcentralus", "westeurope", "westus", "westus2", "westus3",
+	}
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		m.cancel()
+		<-finished
+	})
+	go func() {
+		defer close(finished)
+		_, _, _ = prompt.installation(m.session.ctx, "prefilled-cluster", "eastus2", regions)
+	}()
+	select {
+	case event := <-m.session.events:
+		m.Update(event)
+	case <-time.After(time.Second):
+		t.Fatal("installation form was not presented")
+	}
+	m.Update(tea.PasteMsg{Content: "Bad_Name"})
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Invalid name:") {
+		t.Fatalf("embedded name input lost live validation:\n%s", view)
+	}
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(tea.PasteMsg{Content: "prefilled-cluster"})
+	for _, size := range [][2]int{{120, 32}, {80, 24}, {48, 18}, {40, 14}, {120, 32}} {
+		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		view := ansi.Strip(m.View().Content)
+		want := []string{"Dedicated resource group", "prefilled-cluster", "ctrl+c"}
+		want = append(want, "Azure region")
+		if size[1] >= 18 {
+			want = append(want, "eastus2")
+		}
+		for _, text := range want {
+			if !strings.Contains(view, text) {
+				t.Fatalf("%dx%d missing %q:\n%s", size[0], size[1], text, view)
+			}
+		}
+		titleLine, nameLine, visibleRegions := -1, -1, 0
+		for i, line := range strings.Split(view, "\n") {
+			if strings.Contains(line, "Configure your installation") {
+				titleLine = i
+			}
+			if strings.Contains(line, "Dedicated resource group") {
+				nameLine = i
+			}
+			fields := strings.Fields(line)
+			if len(fields) > 0 && slices.Contains(regions, fields[len(fields)-1]) {
+				visibleRegions++
+			}
+			if ansi.StringWidth(line) > size[0] {
+				t.Fatalf("%dx%d exceeded terminal width:\n%s", size[0], size[1], view)
+			}
+		}
+		if lipgloss.Height(view) > size[1] {
+			t.Fatalf("%dx%d exceeded terminal height:\n%s", size[0], size[1], view)
+		}
+		gap := 2
+		if size[1] <= 18 {
+			gap = 1
+		}
+		if nameLine-titleLine != gap {
+			t.Fatalf("%dx%d reserved empty context above the form:\n%s", size[0], size[1], view)
+		}
+		if size[1] >= 24 && visibleRegions < size[1]-14 {
+			t.Fatalf("%dx%d left the region list too short (%d visible):\n%s", size[0], size[1], visibleRegions, view)
+		}
+	}
+}
+
 func TestWorkspaceShortContextKeepsPromptNearTop(t *testing.T) {
 	for _, size := range [][2]int{{120, 48}, {80, 40}, {40, 14}} {
 		m := testWorkspace(t)
@@ -425,10 +638,9 @@ func TestWorkspaceShortContextKeepsPromptNearTop(t *testing.T) {
 		m.Update(setupCheckMsg{name: "Image builder"})
 		m.Update(setupNoteMsg{text: "Both image builders are available."})
 		engine := "docker"
-		m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(
+		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
 			huh.NewSelect[string]().Title("Choose an image builder").Options(
-				huh.NewOption("Docker", "docker"), huh.NewOption("Podman", "podman")).Value(&engine))),
-			make(chan error, 1)})
+				huh.NewOption("Docker", "docker"), huh.NewOption("Podman", "podman")).Value(&engine))), done: make(chan error, 1)})
 		view := ansi.Strip(m.View().Content)
 		for _, want := range []string{"? Image builder", "Docker", "Podman"} {
 			if !strings.Contains(view, want) {
@@ -450,6 +662,122 @@ func TestWorkspaceShortContextKeepsPromptNearTop(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFrameStaysStableAcrossPreparationAndApprovals(t *testing.T) {
+	for _, size := range [][2]int{{145, 32}, {110, 24}, {96, 14}, {80, 24}, {48, 18}, {40, 14}} {
+		m := testWorkspace(t)
+		m.welcome = false
+		m.renderer.SetColorProfile(termenv.Ascii)
+		m.phases = setupPhases(installer.Config{}, true)
+		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		initialHeader := strings.Split(ansi.Strip(m.headerView()), "\n")
+		initialWidth := m.bodyWidth()
+		if len(initialHeader) != 1 || (size[0] >= 80 &&
+			!strings.Contains(initialHeader[0], "cluster — · region — · subscription —")) {
+			t.Fatalf("fresh installation did not reserve all target fields: %q", initialHeader)
+		}
+		c := installer.DefaultConfig()
+		c.AKS.ClusterName, c.Azure.Location, c.Azure.SubscriptionID = "fresh-cluster", "eastus2", defaultSubscription
+		form := func(title string) setupFormMsg {
+			return setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title))), done: make(chan error, 1)}
+		}
+		for _, event := range []tea.Msg{
+			setupChecklistMsg{"Check your environment", []string{"Local tools", "Azure account"}},
+			setupCheckMsg{name: "Local tools"},
+			setupStepMsg("Checking Azure CLI"),
+			setupSectionMsg("Configure your installation"),
+			setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewInput().Title("Cluster name"))), done: make(chan error, 1)},
+			setupSectionMsg("Snapshot inspection"),
+			setupNoteMsg{text: "Snapshots can contain secrets.", warning: true},
+			form("Grant read-only snapshot inspection?"),
+			setupTargetMsg{c, true},
+			setupReviewMsg{{kind: "note", text: "Review these installation settings."}},
+			form("Continue with this billable installation?"),
+			setupPlanMsg{defaultSubscription, []installer.ResourceChange{{ChangeType: "Create", ResourceID: "/resourceGroups/fresh-cluster"}}},
+			form("Apply these planned changes?"),
+			tea.KeyPressMsg{Code: 'd', Text: "d"},
+			tea.KeyPressMsg{Code: tea.KeyEsc},
+			tea.KeyPressMsg{Code: 'l', Text: "l"},
+			tea.KeyPressMsg{Code: '?', Text: "?"},
+			tea.KeyPressMsg{Code: tea.KeyEsc},
+			setupChecklistMsg{"Validate your deployment", []string{"Azure readiness"}},
+			setupCheckMsg{name: "Azure readiness"},
+			setupCheckMsg{name: "Azure readiness", done: true, err: errors.New("verification failed")},
+			form("Retry this stage?"),
+		} {
+			m.Update(event)
+			header := strings.Split(ansi.Strip(m.headerView()), "\n")
+			if len(header) != len(initialHeader) || m.bodyWidth() != initialWidth {
+				t.Fatalf("%dx%d: %T changed the frame geometry", size[0], size[1], event)
+			}
+			view := ansi.Strip(m.View().Content)
+			lines := strings.Split(view, "\n")
+			if len(lines) != size[1] || !strings.Contains(lines[len(header)], "──") ||
+				!strings.Contains(lines[size[1]-2], "──") {
+				t.Fatalf("%dx%d: %T displaced a frame separator:\n%s", size[0], size[1], event, view)
+			}
+			for _, line := range lines {
+				if ansi.StringWidth(line) > size[0] {
+					t.Fatalf("%T overflowed the frame width:\n%s", event, view)
+				}
+			}
+			for _, phase := range m.phases {
+				mark := "○"
+				if phase == "prepare" {
+					mark = "●"
+				}
+				present := strings.Contains(view, mark+" "+setupPhaseTitle(phase))
+				if present != (size[0] >= 96) {
+					t.Fatalf("%dx%d: %T changed rail visibility for %s:\n%s", size[0], size[1], event, phase, view)
+				}
+			}
+		}
+	}
+}
+
+func TestWorkspaceRailReservesMarkersForEveryPhaseState(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.renderer.SetColorProfile(termenv.TrueColor)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	initial := ansi.Strip(m.rail())
+	if !strings.HasPrefix(initial, "PHASE 1 OF 5") || !strings.Contains(initial, "● Preparation") ||
+		!strings.Contains(initial, "○ Images and assets") ||
+		strings.Contains(initial, "Installation") || strings.Contains(initial, "Private registry") {
+		t.Fatalf("fresh installation lacks active/pending phase markers:\n%s", initial)
+	}
+	for _, phase := range m.phases {
+		m.Update(setupPhaseMsg(phase))
+		purple := m.renderer.NewStyle().Foreground(lipgloss.Color(setupAccent))
+		active := purple.Render("●") + " " + purple.Bold(true).Render(setupPhaseTitle(phase))
+		if !strings.Contains(m.rail(), active) {
+			t.Fatalf("active phase %s did not use the primary purple marker", phase)
+		}
+		for _, line := range strings.Split(ansi.Strip(m.rail()), "\n") {
+			for _, titlePhase := range m.phases {
+				title := setupPhaseTitle(titlePhase)
+				if i := strings.Index(line, title); i >= 0 && ansi.StringWidth(line[:i]) != 2 {
+					t.Fatalf("phase labels moved when their state changed: %q", line)
+				}
+			}
+		}
+	}
+	m.Update(setupFinishedMsg{})
+	rail := ansi.Strip(m.rail())
+	for _, phase := range m.phases {
+		if !strings.Contains(rail, "✓ "+setupPhaseTitle(phase)) {
+			t.Fatalf("successful installation left an incorrect phase marker:\n%s", rail)
+		}
+	}
+	m = testWorkspace(t)
+	m.Update(setupPhaseMsg("cluster"))
+	m.Update(setupFinishedMsg{errors.New("provisioning failed")})
+	rail = ansi.Strip(m.rail())
+	if !strings.Contains(rail, "✓ Preparation") || !strings.Contains(rail, "✗ AKS cluster") ||
+		!strings.Contains(rail, "○ Substrate") {
+		t.Fatalf("failure marked completed or pending phases incorrectly:\n%s", rail)
+	}
+}
+
 func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
 	for _, width := range []int{120, 96, 80, 40} {
 		m := testWorkspace(t)
@@ -459,20 +787,18 @@ func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
 		c.AKS.ClusterName, c.Azure.Location = "substrate-dev-tui", "eastus2"
 		c.Azure.SubscriptionID = "11111111-1111-4111-8111-111111111111"
 		m.Update(setupTargetMsg{c, false})
-		m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue?"))), make(chan error, 1)})
+		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue?"))), done: make(chan error, 1)})
 		header := ansi.Strip(m.headerView())
-		if !strings.Contains(header, "Agent Substrate on AKS") || strings.Contains(header, "Elapsed") ||
-			strings.Contains(header, "DECISION") || strings.Contains(header, "WORKING") {
-			t.Fatalf("header retained status noise or lost branding:\n%s", header)
+		if !strings.HasPrefix(header, "◆ substrate on AKS") || strings.Contains(header, "\n") ||
+			strings.Contains(header, "Elapsed") || strings.Contains(header, "DECISION") || strings.Contains(header, "WORKING") {
+			t.Fatalf("header retained status noise, lost branding or left one line:\n%s", header)
 		}
-		if width >= 80 {
-			lines := strings.Split(header, "\n")
-			if len(lines) != 3 || !strings.Contains(lines[0], c.AKS.ClusterName) ||
-				!strings.Contains(lines[1], "eastus2") || !strings.HasSuffix(lines[2], c.Azure.SubscriptionID) ||
-				strings.Index(lines[0], "Cluster") != strings.Index(lines[1], "Region") ||
-				strings.Index(lines[1], "Region") != strings.Index(lines[2], "Subscription") {
-				t.Fatalf("target metadata is not a right-aligned stack:\n%s", header)
-			}
+		if width >= 80 && (!strings.Contains(header, c.AKS.ClusterName) || !strings.Contains(header, "eastus2") ||
+			!strings.HasSuffix(header, "11111111…") && !strings.HasSuffix(header, c.Azure.SubscriptionID)) {
+			t.Fatalf("target metadata is not right-aligned beside the brand:\n%s", header)
+		}
+		if width >= 120 && !strings.HasSuffix(header, "subscription "+c.Azure.SubscriptionID) {
+			t.Fatalf("wide header abbreviated a subscription that fits:\n%s", header)
 		}
 		for _, line := range strings.Split(ansi.Strip(m.View().Content), "\n") {
 			if ansi.StringWidth(line) > width {
@@ -482,8 +808,8 @@ func TestWorkspaceHeaderStacksTargetBesideBrand(t *testing.T) {
 		if width >= 80 {
 			m.cluster = strings.Repeat("x", 63)
 			header = ansi.Strip(m.headerView())
-			if !strings.Contains(header, c.Azure.SubscriptionID) {
-				t.Fatalf("long cluster name displaced the subscription:\n%s", header)
+			if !strings.Contains(header, "eastus2") || !strings.HasSuffix(header, "11111111…") {
+				t.Fatalf("long cluster name displaced the region or subscription:\n%s", header)
 			}
 			for _, line := range strings.Split(header, "\n") {
 				if ansi.StringWidth(line) > width {
@@ -501,18 +827,21 @@ func TestWorkspacePlanApprovalPresentation(t *testing.T) {
 		m.welcome = false
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m.Update(setupTargetMsg{installer.DefaultConfig(), false})
-		m.Update(setupPhaseMsg("registry"))
+		m.Update(setupPhaseMsg("images"))
 		m.Update(setupPlanMsg{"test", []installer.ResourceChange{
 			{ChangeType: "Create", ResourceID: prefix},
 			{ChangeType: "Create", ResourceID: prefix + "/providers/Microsoft.ContainerRegistry/registries/example"},
 			{ChangeType: "Create", ResourceID: prefix + "/providers/Microsoft.Authorization/roleAssignments/example"},
 		}})
 		m.Update(setupNoteMsg{text: "Infrastructure preview complete (22s)."})
+		if m.title != "Review registry changes" {
+			t.Fatalf("merging the image phase lost the registry-specific approval title: %s", m.title)
+		}
 		accepted := false
-		m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(
-			huh.NewConfirm().Title("Apply these planned changes?").Value(&accepted))), make(chan error, 1)})
+		m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().Title("Apply these planned changes?").Value(&accepted))), done: make(chan error, 1)})
 		body := ansi.Strip(m.body)
-		for _, want := range []string{"3 to create", "Resource group", "Container registry", "Access grants"} {
+		for _, want := range []string{"3 to create", "Resource group", "Container registry", "Role assignments"} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("plan lost its meaningful summary %q:\n%s", want, body)
 			}
@@ -526,7 +855,7 @@ func TestWorkspacePlanApprovalPresentation(t *testing.T) {
 			t.Fatal("presentation change discarded the diagnostic activity")
 		}
 		view := ansi.Strip(m.View().Content)
-		for _, want := range []string{"Review registry changes", "Apply these planned", "Yes", "No", "F2"} {
+		for _, want := range []string{"Review registry changes", "Apply these planned", "Yes", "No", "d details"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%dx%d hid the approval %q:\n%s", size[0], size[1], want, view)
 			}
@@ -540,6 +869,85 @@ func TestWorkspacePlanApprovalPresentation(t *testing.T) {
 		if !strings.Contains(m.body, "No resource changes") || m.reviewRequired {
 			t.Fatal("unchanged infrastructure was presented as new or destructive work")
 		}
+	}
+}
+
+func TestWorkspacePlanLabelsActionsWithinEachResourceCategory(t *testing.T) {
+	prefix := "/subscriptions/test/resourceGroups/example/providers/"
+	changes := []installer.ResourceChange{
+		{ChangeType: "Create", ResourceID: prefix + "Microsoft.ContainerService/managedClusters/aks"},
+		{ChangeType: "Modify", ResourceID: prefix + "Microsoft.ContainerRegistry/registries/acr"},
+		{ChangeType: "Create", ResourceID: prefix + "Microsoft.Storage/storageAccounts/one"},
+		{ChangeType: "Create", ResourceID: prefix + "Microsoft.Storage/storageAccounts/two"},
+		{ChangeType: "Modify", ResourceID: prefix + "Microsoft.Storage/storageAccounts/three"},
+	}
+	for _, width := range []int{120, 96, 40} {
+		for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.Ascii} {
+			m := testWorkspace(t)
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 32})
+			m.renderer.SetColorProfile(profile)
+			body := m.planView(changes, false)
+			text := strings.Join(strings.Fields(ansi.Strip(body)), " ")
+			for _, want := range []string{"AKS cluster 1 create", "Container registry 1 update", "Storage account 2 create 1 update"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("width %d lost resource-specific action counts %q:\n%s", width, want, body)
+				}
+			}
+			for _, action := range []struct{ color, label string }{{"2", "1 create"}, {"3", "1 update"}} {
+				expected := m.renderer.NewStyle().Foreground(lipgloss.Color(action.color)).Render(action.label)
+				if !strings.Contains(body, expected) {
+					t.Fatalf("action %q lost its color coding:\n%s", action.label, body)
+				}
+			}
+			for _, line := range strings.Split(body, "\n") {
+				if ansi.StringWidth(line) > m.bodyWidth() {
+					t.Fatalf("action labels overflowed width %d:\n%s", width, body)
+				}
+			}
+		}
+	}
+}
+
+func TestWorkspaceLetterShortcutsPreserveFormsAndTypedInput(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	value := false
+	reply := make(chan error, 1)
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Apply?").Value(&value))), done: reply})
+	for _, shortcut := range []struct {
+		key  rune
+		view string
+	}{{'d', "details"}, {'l', "activity"}, {'?', "help"}} {
+		workspaceKey(m, shortcut.key)
+		if m.view != shortcut.view {
+			t.Fatalf("%c did not open %s", shortcut.key, shortcut.view)
+		}
+		workspaceKey(m, 'y')
+		workspaceKey(m, tea.KeyEnter)
+		if value || len(reply) != 0 || m.form == nil {
+			t.Fatal("overlay keys answered the hidden approval")
+		}
+		workspaceKey(m, tea.KeyEsc)
+	}
+	var text string
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewInput().Title("Name").Value(&text))), done: make(chan error, 1)})
+	for _, key := range "dla?" {
+		m.Update(tea.KeyPressMsg{Code: key, Text: string(key)})
+	}
+	if text != "dla?" || m.view != "" {
+		t.Fatalf("shortcuts stole typed characters: text=%q view=%q", text, m.view)
+	}
+	selection := huh.NewSelect[string]().Title("Region").
+		Options(huh.NewOption("dallas", "dallas"), huh.NewOption("london", "london"))
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(selection)), done: make(chan error, 1)})
+	for _, key := range "/lo" {
+		m.Update(tea.KeyPressMsg{Code: key, Text: string(key)})
+	}
+	if m.view != "" || !selection.GetFiltering() {
+		t.Fatal("logs shortcut stole input from a choice filter")
+	}
+	if hovered, ok := selection.Hovered(); !ok || hovered != "london" {
+		t.Fatal("choice filter did not receive its typed shortcut letter")
 	}
 }
 
@@ -562,7 +970,7 @@ func TestWorkspaceProgressDetailsAndPhaseTruth(t *testing.T) {
 	if strings.Contains(rail, "[") || !strings.Contains(rail, "✓ Images and assets") || strings.Contains(rail, "✓ Substrate") {
 		t.Fatalf("phase rail has bracketed labels or inaccurate completion marks:\n%s", rail)
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyF3})
+	m.Update(tea.KeyPressMsg{Code: 'l'})
 	m.Update(setupStepMsg("Wait for AKS"))
 	view := m.View().Content
 	if !strings.Contains(view, "Wait for AKS") || !strings.Contains(view, "Verify saved images") {
@@ -578,7 +986,7 @@ func TestWorkspaceProgressDetailsAndPhaseTruth(t *testing.T) {
 	if len(m.activity) != 160 || len(m.body) > 12000 {
 		t.Fatal("retained activity was unbounded")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyF3})
+	m.Update(tea.KeyPressMsg{Code: 'l'})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.followActivity || m.contextViewport().AtBottom() {
 		t.Fatal("activity could not be scrolled away from the live tail")
@@ -613,7 +1021,7 @@ func TestWorkspaceDestructivePlanReviewAndNoTerminalInjection(t *testing.T) {
 	changes = append(changes, installer.ResourceChange{ChangeType: "Unexpected", ResourceID: "/unknown"})
 	m.Update(setupPlanMsg{"test", changes})
 	reply := make(chan error, 1)
-	m.Update(setupFormMsg{huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Apply?"))), reply})
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Apply?"))), done: reply})
 	m.View()
 	if !m.reviewRequired || m.reviewed {
 		t.Fatal("destructive summary did not require scrolling")
@@ -626,7 +1034,7 @@ func TestWorkspaceDestructivePlanReviewAndNoTerminalInjection(t *testing.T) {
 		workspaceKey(m, tea.KeyPgDown)
 		m.View()
 	}
-	workspaceKey(m, tea.KeyF4)
+	workspaceKey(m, 'a')
 	if !m.reviewed || !strings.Contains(m.details, "/unknown") || !strings.Contains(m.body, "WARNING") {
 		t.Fatal("review did not retain deletion IDs and unknown changes")
 	}
@@ -646,12 +1054,56 @@ func TestWorkspaceCancellationWaitsForWorkAndFailureIsNotSuccess(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	if cmd != nil || !m.stopping || m.session.ctx.Err() == nil {
-		t.Fatal("cancellation quit before owned work stopped")
+	if cmd != nil || m.stopping || !m.confirmStop || m.session.ctx.Err() != nil {
+		t.Fatal("first Ctrl-C stopped work without confirmation")
+	}
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Stop setup?") || !strings.Contains(view, "retained") {
+		t.Fatalf("stop confirmation was not shown:\n%s", view)
+	}
+	for _, key := range []tea.KeyPressMsg{{Code: 'x', Text: "x"}, {Code: tea.KeyEnter}} {
+		m.Update(key)
+		if !m.confirmStop || m.stopping {
+			t.Fatalf("%q answered the stop confirmation", key.String())
+		}
+	}
+	for _, key := range []tea.KeyPressMsg{{Code: 'n', Text: "n"}, {Code: tea.KeyEsc}} {
+		m.confirmStop = true
+		m.Update(key)
+		if m.confirmStop || m.stopping || m.session.ctx.Err() != nil {
+			t.Fatalf("%q did not dismiss the stop confirmation", key.String())
+		}
+	}
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	_, cmd = m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if cmd != nil || !m.stopping || m.confirmStop || m.session.ctx.Err() == nil {
+		t.Fatal("confirmed cancellation quit before owned work stopped")
 	}
 	_, cmd = m.Update(setupFinishedMsg{context.Canceled})
 	if cmd == nil {
 		t.Fatal("did not exit after cancellation completed")
+	}
+	m = testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if !m.stopping || m.session.ctx.Err() == nil {
+		t.Fatal("a second Ctrl-C did not stop owned work")
+	}
+	m = testWorkspace(t)
+	m.welcome = false
+	_, cmd = m.Update(setupFinishedMsg{})
+	if cmd == nil || !m.finished {
+		t.Fatal("success did not schedule its closing hold")
+	}
+	if _, ok := cmd().(setupCloseMsg); !ok {
+		t.Fatal("success quit without holding the completion screen")
+	}
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Substrate is running on AKS") ||
+		strings.Contains(view, "DONE  Setup complete.") {
+		t.Fatalf("success screen did not hand off to the one-time receipt:\n%s", view)
+	}
+	if _, cmd = m.Update(setupCloseMsg{}); cmd == nil {
+		t.Fatal("completion hold did not exit")
 	}
 	m = testWorkspace(t)
 	m.welcome = false
@@ -685,7 +1137,7 @@ func TestWorkspaceRetainsIdentityWarningAndShowsActiveWorkFirst(t *testing.T) {
 	if !strings.Contains(m.View().Content, "Waiting for cluster readiness") {
 		t.Fatal("long context hid current operation feedback")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	m.Update(tea.KeyPressMsg{Code: 'd'})
 	if !strings.Contains(m.contextText(), "Installation summary") {
 		t.Fatal("installation review was unavailable after moving to another stage")
 	}
@@ -709,7 +1161,7 @@ func TestSetupSessionPromptCancellationAndProgressOwnership(t *testing.T) {
 		t.Fatal("nested progress wrote outside the root renderer or lost diagnostics")
 	}
 	done := make(chan error, 1)
-	go func() { done <- s.prompt(ctx, huh.NewForm(huh.NewGroup(huh.NewConfirm()))) }()
+	go func() { done <- s.prompt(ctx, huh.NewForm(huh.NewGroup(huh.NewConfirm())), nil) }()
 	cancel()
 	select {
 	case err := <-done:
@@ -730,9 +1182,189 @@ func TestWorkspaceIgnoresNavigationFromPreviousForm(t *testing.T) {
 		return tea.BatchMsg{huh.NextField}
 	})
 	batch := late().(tea.BatchMsg)
-	m.Update(setupFormMsg{current, make(chan error, 1)})
+	m.Update(setupFormMsg{form: current, done: make(chan error, 1)})
 	_, cmd := m.Update(batch[0]())
 	if cmd != nil || m.form != current || current.State != huh.StateNormal {
 		t.Fatal("late navigation from an old form advanced the new approval")
+	}
+}
+
+func TestWorkspacePreviewExpandsUnderItsChecklistRow(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 34})
+	m.Update(setupTargetMsg{installer.DefaultConfig(), false})
+	m.Update(setupPhaseMsg("images"))
+	m.Update(setupChecklistMsg{"Images and assets", []string{"Preview registry bootstrap", "Provision the private registry"}})
+	m.Update(setupCheckMsg{name: "Preview registry bootstrap"})
+	m.Update(setupPlanMsg{"test", []installer.ResourceChange{
+		{ChangeType: "Create", ResourceID: "/subscriptions/test/resourceGroups/example"},
+	}})
+	m.Update(setupCheckMsg{name: "Preview registry bootstrap", done: true})
+	accepted := false
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().Title("Apply these planned changes?").Value(&accepted))), done: make(chan error, 1)})
+	if m.title != "Images and assets" {
+		t.Fatalf("preview replaced the phase checklist title: %q", m.title)
+	}
+	view := ansi.Strip(m.View().Content)
+	order := []string{"✓ Preview registry bootstrap", "Review registry changes", "1 to create", "○ Provision the private registry", "Apply these planned"}
+	last := -1
+	for _, want := range order {
+		at := strings.Index(view, want)
+		if at <= last {
+			t.Fatalf("inline preview is missing or out of order at %q:\n%s", want, view)
+		}
+		last = at
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > 110 {
+			t.Fatalf("inline preview overflowed the terminal:\n%s", view)
+		}
+	}
+	m.form, m.reply = nil, nil
+	m.Update(setupCheckMsg{name: "Provision the private registry"})
+	if m.plan || strings.Contains(ansi.Strip(m.View().Content), "Review registry changes") {
+		t.Fatal("approved preview stayed expanded after the next check started")
+	}
+}
+
+func TestWorkspaceTimersPauseWhileWaitingOnInput(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.workStarted = m.clock()
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
+	m.Update(setupChecklistMsg{"Check your environment", []string{"Image builder"}})
+	m.Update(setupCheckMsg{name: "Image builder"})
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(huh.NewInput().Title("Engine"))), done: make(chan error, 1)})
+	frozen := m.clock()
+	time.Sleep(30 * time.Millisecond)
+	if !m.clock().Equal(frozen) {
+		t.Fatal("work clock advanced while setup waited on the user")
+	}
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "paused for input") || !strings.Contains(view, "waiting for you") {
+		t.Fatalf("waiting state was not visible:\n%s", view)
+	}
+	m.form, m.reply = nil, nil
+	m.Update(setupTickMsg{})
+	if m.waiting() || m.paused < 30*time.Millisecond || m.clock().Before(frozen) {
+		t.Fatalf("clock did not resume without the paused time: paused=%v", m.paused)
+	}
+}
+
+func TestWorkspaceHeaderPrefersSubscriptionName(t *testing.T) {
+	m := testWorkspace(t)
+	c := installer.DefaultConfig()
+	c.Azure.SubscriptionID = "11111111-2222-3333-4444-555555555555"
+	m.Update(setupTargetMsg{c, false})
+	m.Update(setupSubscriptionMsg{"99999999-2222-3333-4444-555555555555", "Someone Else"})
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	if header := ansi.Strip(m.headerView()); strings.Contains(header, "Someone Else") || !strings.Contains(header, c.Azure.SubscriptionID) {
+		t.Fatalf("header named a different subscription: %q", header)
+	}
+	m.Update(setupSubscriptionMsg{strings.ToUpper(c.Azure.SubscriptionID), "Contoso Platform Engineering Dev"})
+	if header := ansi.Strip(m.headerView()); !strings.Contains(header, "subscription Contoso Platform Engineering Dev") {
+		t.Fatalf("header did not prefer the subscription name: %q", header)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 72, Height: 30})
+	if header := ansi.Strip(m.headerView()); !strings.Contains(header, "Contoso Platfor…") || ansi.StringWidth(header) > 72 {
+		t.Fatalf("narrow header did not shorten the subscription name: %q", header)
+	}
+}
+
+func TestWorkspaceLogsViewFollowsTheDiagnosticLog(t *testing.T) {
+	path := t.TempDir() + "/setup.log"
+	write := func(text string) {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if _, err := file.WriteString(text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("[command] plan\n$ \"az\" \"group\" \"show\" \"--name\" \"my rg\"\n{\"id\": \"x\"}\x1b]0;title\x07\x1b[31mred\x1b[0m\r\n")
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
+	m.Update(setupLogMsg(path))
+	workspaceKey(m, 'l')
+	view := m.View().Content
+	plain := ansi.Strip(view)
+	for _, want := range []string{"LOGS", "Following", path, `$ az group show --name "my rg"`, `{"id": "x"}`, "red"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("logs view lost %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(view, "\x1b]0;") || strings.Contains(view, "\x1b[31m") {
+		t.Fatalf("logs view passed through subprocess terminal controls: %q", view)
+	}
+	write("\n[step] Creating the registry\n")
+	m.Update(setupTickMsg{})
+	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "▸ Creating the registry") {
+		t.Fatalf("logs view did not follow new output:\n%s", plain)
+	}
+	write(strings.Repeat("filler output line\n", setupLogTailBytes/10))
+	m.Update(setupTickMsg{})
+	if !strings.Contains(m.logTail, "Earlier output omitted") || len(m.logTail) > 4*setupLogTailBytes {
+		t.Fatal("logs view did not bound a large log")
+	}
+}
+
+func TestWorkspacePreviewCountsChildResourcesUnderTheirParent(t *testing.T) {
+	prefix := "/subscriptions/test/resourceGroups/rg/providers/"
+	storage := prefix + "Microsoft.Storage/storageAccounts/assets"
+	identity := prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/"
+	changes := []installer.ResourceChange{
+		{ChangeType: "Create", ResourceID: storage},
+		{ChangeType: "Create", ResourceID: storage + "/blobServices/default"},
+		{ChangeType: "Create", ResourceID: storage + "/blobServices/default/containers/snapshots"},
+		{ChangeType: "Create", ResourceID: storage + "/blobServices/default/containers/assets"},
+		{ChangeType: "Create", ResourceID: identity + "node"},
+		{ChangeType: "Create", ResourceID: identity + "node/federatedIdentityCredentials/node"},
+	}
+	m := testWorkspace(t)
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 32})
+	lines := strings.Split(ansi.Strip(m.planView(changes, true)), "\n")
+	var rows []string
+	for _, line := range lines {
+		if line = strings.Join(strings.Fields(line), " "); strings.Contains(line, "create") && !strings.Contains(line, "to create") {
+			rows = append(rows, line)
+		}
+	}
+	want := []string{"Managed identity 1 create", "Federated credentials 1 create",
+		"Storage account 1 create", "Blob containers 2 create", "Blob service 1 create"}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("child resources were not listed under their parent:\ngot  %q\nwant %q", rows, want)
+	}
+}
+
+func TestWorkspaceRunningChecklistPreviewsTheLogTail(t *testing.T) {
+	path := t.TempDir() + "/setup.log"
+	var log strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&log, "output line %02d\n\n", i)
+	}
+	if err := os.WriteFile(path, []byte(log.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 34})
+	m.Update(setupChecklistMsg{"AKS cluster", []string{"Provision AKS"}})
+	m.Update(setupCheckMsg{name: "Provision AKS"})
+	if strings.Contains(ansi.Strip(m.View().Content), "── log") {
+		t.Fatal("log preview appeared before any command log existed")
+	}
+	m.Update(setupLogMsg(path))
+	view := ansi.Strip(m.View().Content)
+	_, tail, found := strings.Cut(view, "── log")
+	if !found || !strings.Contains(tail, "l expand") || !strings.Contains(tail, "output line 59") ||
+		strings.Contains(tail, "output line 00") || strings.Contains(tail, "\n\n") {
+		t.Fatalf("running checklist did not preview the last non-blank log lines:\n%s", view)
+	}
+	if shown := strings.Count(tail, "output line"); shown < 15 || lipgloss.Height(view) > 34 {
+		t.Fatalf("log preview should fill the free body rows without overflowing (%d lines shown):\n%s", shown, view)
 	}
 }

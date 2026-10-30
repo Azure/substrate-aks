@@ -99,6 +99,7 @@ func TestConfigNameBoundaries(t *testing.T) {
 		ok   bool
 	}{
 		{"ab", false}, {"abc", true}, {"a-1", true},
+		{"Uppercase", false}, {"under_score", false}, {"9cluster", false}, {"cluster-", false},
 		{strings.Repeat("a", 40), true}, {strings.Repeat("a", 41), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -67,9 +67,9 @@ func TestSetupCompletionBanner(t *testing.T) {
 					ui.complete(cluster, demo)
 					text := output.String()
 					plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
-					compact := strings.Join(strings.Fields(strings.ReplaceAll(plain, "|", "")), "")
-					for _, want := range []string{"SubstrateonAKS", "DONESetupcomplete.", cluster} {
-						if !strings.Contains(compact, want) {
+					compact := strings.Join(strings.Fields(strings.NewReplacer("|", "", "│", "").Replace(plain)), "")
+					for _, want := range []string{"substrateonaks", "donesetupcomplete.", cluster} {
+						if !strings.Contains(strings.ToLower(compact), want) {
 							t.Fatalf("completion banner lost %q:\n%s", want, plain)
 						}
 					}
@@ -182,7 +182,7 @@ func TestSetupWelcomeBanner(t *testing.T) {
 				ui.welcome(tc.decorative)
 				text := output.String()
 				plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
-				if strings.Contains(plain, "s u b s t r a t e") != tc.wantArt {
+				if strings.Contains(plain, "╭─╴ ╷ ╷ ┌─╮") != tc.wantArt {
 					t.Fatalf("incorrect decorative/plain welcome:\n%s", plain)
 				}
 				if !tc.wantArt && !strings.Contains(plain, "Substrate on AKS") {
@@ -204,33 +204,32 @@ func TestSetupWelcomeBanner(t *testing.T) {
 	}
 }
 
-func TestSetupWelcomeUsesPurpleArtworkAndText(t *testing.T) {
-	var output bytes.Buffer
-	ui := newSetupUI(&output)
-	ui.renderer.SetColorProfile(termenv.TrueColor)
-	ui.welcome(true)
-	lines := strings.Split(strings.TrimPrefix(output.String(), "\n"), "\n")
-	if len(lines) < 7 {
-		t.Fatalf("banner is incomplete:\n%s", &output)
-	}
+func TestSetupWelcomeUsesBrandArtworkAndText(t *testing.T) {
 	for _, tc := range []struct {
-		row  int
-		text string
-		bold bool
-	}{
-		{0, " ____________", false},
-		{1, "/___________/|", false},
-		{1, "s u b s t r a t e", true},
-		{3, "/___________/|", false},
-		{3, "on AKS", false},
-		{5, "/___________/|", false},
-		{5, "An AKS packaging layer", false},
-		{6, "for Agent Substrate.", false},
-	} {
-		styled := ui.renderer.NewStyle().Foreground(lipgloss.Color("#b48cf2")).Bold(tc.bold).Render(tc.text)
-		prefix, _, _ := strings.Cut(styled, tc.text)
-		if !strings.Contains(lines[tc.row], prefix+tc.text) {
-			t.Fatalf("banner element %q has the wrong color or alignment: %q", tc.text, lines[tc.row])
+		profile termenv.Profile
+		mark    bool
+	}{{termenv.TrueColor, true}, {termenv.ANSI256, true}, {termenv.ANSI, false}} {
+		var output bytes.Buffer
+		ui := newSetupUI(&output)
+		ui.renderer.SetColorProfile(tc.profile)
+		ui.welcome(true)
+		lines := strings.Split(strings.TrimPrefix(output.String(), "\n"), "\n")
+		if len(lines) < 6 {
+			t.Fatalf("banner is incomplete:\n%s", &output)
+		}
+		plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(output.String(), "")
+		if strings.ContainsAny(plain, "▀▄") != tc.mark {
+			t.Fatalf("profile %v drew the strata mark=%v:\n%s", tc.profile, !tc.mark, plain)
+		}
+		// Each wordmark glyph carries its own gradient step, starting from the lightest Substrate green.
+		first := ui.renderer.NewStyle().Foreground(lipgloss.Color("#b9f0bc")).Render("╭─╴")
+		if !strings.Contains(lines[0], first) {
+			t.Fatalf("profile %v wordmark lost its gradient: %q", tc.profile, lines[0])
+		}
+		for _, want := range []string{"on AKS", "An AKS packaging layer for Agent Substrate."} {
+			if !strings.Contains(plain, want) {
+				t.Fatalf("profile %v banner lost %q:\n%s", tc.profile, want, plain)
+			}
 		}
 	}
 }
