@@ -24,7 +24,7 @@ func TestSetupClusterNameInputValidationAndPlaceholder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			value := tc.name
-			field := newSetupClusterNameInput(&value)
+			field := newSetupClusterNameInput(&value, nil)
 			form := huh.NewForm(huh.NewGroup(field))
 			form.WithWidth(80)
 			view := ansi.Strip(field.View())
@@ -49,7 +49,7 @@ func TestSetupClusterNameInputValidationAndPlaceholder(t *testing.T) {
 
 func TestSetupClusterNameInputFeedbackFollowsEdits(t *testing.T) {
 	value := ""
-	field := newSetupClusterNameInput(&value)
+	field := newSetupClusterNameInput(&value, nil)
 	field.Focus()
 	field.Update(tea.PasteMsg{Content: "bad_name"})
 	if view := field.View(); !strings.Contains(view, "Invalid name:") {

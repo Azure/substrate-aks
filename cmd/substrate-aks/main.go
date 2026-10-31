@@ -3,27 +3,32 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 )
 
-const usage = `substrate-aks <command> [flags]
+const usage = `substrate-aks <command> [NAME] [flags]
 
 An AKS packaging layer for Agent Substrate.
 Azure infrastructure, declarative deployment configuration, and a guided installer.
 
+Installations are saved by name in the user cache directory: ~/.cache/substrate-aks
+on Linux, ~/Library/Caches/substrate-aks on macOS, or SUBSTRATE_AKS_HOME if set.
+NAME may be omitted when exactly one installation exists, except for destroy.
+
 Commands:
-  setup      Guide provisioning, installation, and client setup
-  init       Write a new configuration; creates no Azure resources
-  doctor     Check local tools; --azure adds read-only cloud deployment checks
+  setup      Guide provisioning, installation, and client setup; resumes NAME if it exists
+  list       List saved installations
+  init       Save a new installation; creates no Azure resources
+  doctor     Check local tools; with NAME, check that installation; --azure adds read-only cloud checks
   plan       Run Bicep subscription what-if; requires Azure access
   provision  Create/reconcile billable resources owned by this installation
   images     Build/push images to owned ACR and assemble microVM assets
@@ -36,7 +41,7 @@ Commands:
   destroy    Delete the owned resource group and ALL installation data
 
 Common flags:
-  --config deploy.json
+  --name NAME                            Same as the NAME argument
   --verbose                              Show subprocess commands and diagnostics
   --registry-only                        (plan/provision only; ACR bootstrap)
   --component ate-system|atelet|apiserver  (install only; default ate-system)
@@ -44,7 +49,7 @@ Common flags:
   --check                                (images only; verify saved publication)
   --reset-config                         (images only; clear images after teardown)
   --container-engine auto|docker|podman   (setup/images; setup offers a choice if both work)
-  --azure                                (doctor only; read-only cloud checks, requires --config)
+  --azure                                (doctor only; read-only cloud checks, requires NAME)
 
 init flags:
   --subscription UUID                    Default: active Azure CLI subscription
@@ -59,8 +64,8 @@ init flags:
   --name substrate-dev --location eastus2
 
 setup flags:
-  Same configuration flags as init when creating a new file; without --name,
-  interactive setup asks for one and --yes uses substrate-dev
+  Same configuration flags as init when creating a new installation; without
+  NAME, interactive setup asks for one and --yes uses substrate-dev
   --yes                                  Accept billable deployment and select the kube-context without prompts
   --with-demo                            Also deploy the counter microVM demo
   --accessible                           Use screen-reader-friendly prompts
@@ -104,13 +109,27 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	}
 	command := args[0]
 	switch command {
-	case "init", "setup", "doctor", "plan", "provision", "images", "check", "prepare", "install", "demo", "client", "status", "destroy":
+	case "init", "setup", "list", "doctor", "plan", "provision", "images", "check", "prepare", "install", "demo", "client", "status", "destroy":
 	default:
 		return fmt.Errorf("unknown command %q; use --help", command)
 	}
+	home, err := installer.Home()
+	if err != nil {
+		return err
+	}
+	if command == "list" {
+		if len(args) > 1 {
+			return fmt.Errorf("unexpected arguments: %v", args[1:])
+		}
+		return listInstallations(out, home)
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	configPath := fs.String("config", "deploy.json", "configuration file")
+	// The installation name may come before or after the flags.
+	flagArgs, positional := args[1:], ""
+	if len(flagArgs) > 0 && !strings.HasPrefix(flagArgs[0], "-") {
+		positional, flagArgs = flagArgs[0], flagArgs[1:]
+	}
 	verbose := fs.Bool("verbose", false, "show subprocess commands and diagnostics")
 	var confirmation, component string
 	var subscription, publisher, reader, cidr, name, location string
@@ -126,7 +145,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&containerEngine, "container-engine", "", "image builder: auto (Docker/buildx then Podman), docker or podman")
 	}
 	if command == "doctor" {
-		fs.BoolVar(&azureChecks, "azure", false, "check Azure deployment permissions, AKS versions, SKU availability and CPU quota (requires --config)")
+		fs.BoolVar(&azureChecks, "azure", false, "check Azure deployment permissions, AKS versions, SKU availability and CPU quota (requires NAME)")
 	}
 	if command == "plan" || command == "provision" {
 		fs.BoolVar(&registryOnly, "registry-only", false, "bootstrap only the owned resource group and private ACR")
@@ -158,7 +177,6 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&readerType, "snapshot-reader-principal-type", "", "reader type: User, ServicePrincipal, or Group (otherwise inferred from a matching identity)")
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
-		fs.StringVar(&name, "name", "substrate-dev", "dedicated resource group and cluster name (interactive setup asks when omitted)")
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
 	}
 	if command == "setup" {
@@ -167,14 +185,32 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.BoolVar(&accessible, "accessible", false, "use screen-reader-friendly prompts instead of interactive forms")
 		fs.BoolVar(&skipContextHandoff, "skip-context-handoff", false, "skip importing/selecting a context and print private kubeconfig exports")
 	}
-	if err := fs.Parse(args[1:]); err != nil {
+	fs.StringVar(&name, "name", "", "installation name; for new installations, also the dedicated resource group and cluster name")
+	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
+	if positional == "" && fs.NArg() > 0 {
+		positional = fs.Arg(0)
+		if err := fs.Parse(fs.Args()[1:]); err != nil {
+			return err
+		}
+	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
+	if positional != "" {
+		if name != "" && name != positional {
+			return fmt.Errorf("installation name given twice: %q and --name %q", positional, name)
+		}
+		name = positional
+	}
+	if name != "" {
+		if err := installer.ValidateInstallationName(name); err != nil {
+			return fmt.Errorf("installation name %q %w", name, err)
+		}
 	}
 	if err := installer.ValidateContainerEngine(containerEngine); err != nil {
 		return err
@@ -201,8 +237,11 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		return errors.New("--check and --reset-config are mutually exclusive")
 	}
 	if command == "init" {
-		if _, err := os.Stat(*configPath); err == nil {
-			return fmt.Errorf("%s already exists; edit it to change settings. init never overwrites an existing configuration: %w", *configPath, os.ErrExist)
+		if name == "" {
+			name = "substrate-dev"
+		}
+		if _, err := os.Stat(installer.RecordPath(home, name)); err == nil {
+			return fmt.Errorf("installation %q already exists; init never overwrites an existing installation: %w", name, os.ErrExist)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -228,24 +267,23 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		if publisherType == "" && strings.EqualFold(publisher, defaults.signedInObjectID) {
 			publisherType = defaults.signedInType
 		}
-		return initialize(*configPath, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType, out)
+		return initialize(home, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType, out)
 	}
 	if command == "setup" {
 		var client installer.ClientSetup
-		var configFlags, nameSet bool
+		var configFlags bool
 		fs.Visit(func(f *flag.Flag) {
-			nameSet = nameSet || f.Name == "name"
 			switch f.Name {
-			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "name", "location":
+			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "location":
 				configFlags = true
 			}
 		})
 		// Interactive setup asks for a name instead of prefilling the default.
-		if !nameSet && !yes {
-			name = ""
+		if name == "" && yes {
+			name = "substrate-dev"
 		}
 		return setup(ctx, setupOptions{
-			path: *configPath, subscription: subscription, publisher: publisher, reader: reader,
+			home: home, subscription: subscription, publisher: publisher, reader: reader,
 			cidr: cidr, name: name, location: location, yes: yes, withDemo: withDemo,
 			verbose: *verbose, configFlags: configFlags, unrestrictedAPI: unrestrictedAPI, accessible: accessible,
 			containerEngine: containerEngine,
@@ -258,14 +296,12 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		})
 	}
 	if command == "doctor" {
-		explicitConfig := false
-		fs.Visit(func(f *flag.Flag) { explicitConfig = explicitConfig || f.Name == "config" })
-		if !explicitConfig {
+		if name == "" {
 			if azureChecks {
-				return errors.New("doctor --azure requires --config")
+				return errors.New("doctor --azure requires an installation NAME")
 			}
 			if containerEngine != "" {
-				return errors.New("doctor --container-engine needs --config for an installation-specific builder probe")
+				return errors.New("doctor --container-engine requires an installation NAME for an installation-specific builder probe")
 			}
 			p := newProgress(stderr, io.Discard, "Local prerequisites", false)
 			defer p.stop()
@@ -277,15 +313,28 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			return nil
 		}
 	}
-	c, err := installer.LoadConfig(*configPath)
+	if command == "destroy" && name == "" {
+		return errors.New("destroy requires the installation NAME")
+	}
+	name, err = installer.ResolveInstallation(home, name)
 	if err != nil {
-		return fmt.Errorf("reading deployment configuration %s: %w", *configPath, err)
+		return err
+	}
+	configPath := installer.RecordPath(home, name)
+	c, err := installer.LoadInstallation(home, name)
+	if err != nil {
+		return err
 	}
 	lock, err := installer.Lock(c)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	// Another command may have destroyed or updated the installation while
+	// this one waited for the lock.
+	if c, err = installer.LoadInstallation(home, name); err != nil {
+		return err
+	}
 	log, err := installer.NewLog(c)
 	if err != nil {
 		return fmt.Errorf("creating command log: %w", err)
@@ -313,7 +362,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		session.send(setupLogMsg(log.Name()))
 		out = log
 	}
-	fmt.Fprintf(log, "[command] %s\n[config] %s\n[target] %s / %s\n", command, *configPath, c.Azure.ResourceGroup, c.Azure.Location)
+	fmt.Fprintf(log, "[command] %s\n[installation] %s\n[target] %s / %s\n", command, configPath, c.Azure.ResourceGroup, c.Azure.Location)
 	p.heading(title)
 	if command != "doctor" {
 		p.info("Target: %s / %s", c.Azure.ResourceGroup, c.Azure.Location)
@@ -385,11 +434,11 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			return a.CheckImages(ctx)
 		}
 		if resetImages {
-			if err := a.ResetImageConfig(ctx, *configPath); err != nil {
+			if err := a.ResetImageConfig(ctx, configPath); err != nil {
 				return err
 			}
 			p.pause()
-			fmt.Fprintf(out, "Cleared saved image references in %s after confirming resource-group absence. Runtime asset settings are unchanged.\nNext: %s\n", *configPath, cliCommand("setup", "--config", *configPath))
+			fmt.Fprintf(out, "Cleared saved image references for %s after confirming resource-group absence. Runtime asset settings are unchanged.\nNext: %s\n", name, cliCommand("setup", name))
 			return nil
 		}
 		p.info("Builds and downloads can take several minutes. Failed runs may leave partial images in ACR.")
@@ -398,11 +447,11 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			return err
 		}
 		p.step("Saving image references and runtime asset paths")
-		if err := installer.SaveBuildResult(*configPath, c, result); err != nil {
+		if err := installer.SaveBuildResult(configPath, c, result); err != nil {
 			return err
 		}
 		p.pause()
-		fmt.Fprintf(out, "Updated %s with ACR image references and runtime assets.\n", *configPath)
+		fmt.Fprintf(out, "Saved ACR image references and runtime assets for %s.\n", name)
 		return nil
 	case "check":
 		return a.Check(ctx)
@@ -441,12 +490,16 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	case "status":
 		return a.Status(ctx)
 	case "destroy":
-		return a.Destroy(ctx, confirmation)
+		if err := a.Destroy(ctx, confirmation); err != nil {
+			return err
+		}
+		p.step("Removing local installation state")
+		return installer.RemoveInstallation(c)
 	}
 	return nil
 }
 
-func initialize(path, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, out io.Writer) error {
+func initialize(home, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, out io.Writer) error {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return err
@@ -455,6 +508,7 @@ func initialize(path, subscription, publisher, reader, cidr, name, location stri
 	id[8] = id[8]&0x3f | 0x80
 	c := installer.DefaultConfig()
 	c.Installation.ID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
+	c.Installation.Name = name
 	c.Azure = installer.AzureConfig{
 		SubscriptionID: subscription, AssetPublisherObjectID: publisher,
 		SnapshotReaderObjectID:      reader,
@@ -468,25 +522,37 @@ func initialize(path, subscription, publisher, reader, cidr, name, location stri
 	if cidr != "" {
 		c.AKS.APIAuthorizedCIDRs = []string{cidr}
 	}
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	path, err := installer.CreateInstallation(home, c)
 	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%s already exists; edit it to change settings. init never overwrites an existing configuration: %w", path, err)
-		}
-		return err
-	}
-	_, writeErr := file.Write(append(data, '\n'))
-	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return err
 	}
 	printAPIAccess(out, c.AKS)
-	fmt.Fprintf(out, "Created %s. No Azure resources were created.\nKeep installation.id unchanged for retries and teardown.\nNext: %s\n", path, cliCommand("setup", "--config", path))
+	fmt.Fprintf(out, "Saved installation %s in %s. No Azure resources were created.\nNext: %s\n", name, path, cliCommand("setup", name))
 	return nil
+}
+
+func listInstallations(out io.Writer, home string) error {
+	names, err := installer.ListInstallations(home)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		_, err := fmt.Fprintf(out, "No installations in %s. Run setup to create one.\n", home)
+		return err
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tRESOURCE GROUP\tREGION\tIMAGES")
+	for _, name := range names {
+		c, err := installer.LoadInstallation(home, name)
+		if err != nil {
+			fmt.Fprintf(w, "%s\t(unreadable: %v)\t\t\n", name, err)
+			continue
+		}
+		images := "not published"
+		if c.Substrate.Images != (installer.ImagesConfig{}) {
+			images = "published"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, c.Azure.ResourceGroup, c.Azure.Location, images)
+	}
+	return w.Flush()
 }

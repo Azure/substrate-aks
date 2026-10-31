@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,11 +75,11 @@ func TestAzureRegionCatalogFailsClosed(t *testing.T) {
 func TestSetupRejectsInvalidRegionBeforeSaveOrBilling(t *testing.T) {
 	for _, saved := range []bool{false, true} {
 		t.Run(map[bool]string{false: "new automation", true: "saved configuration"}[saved], func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "deploy.json")
+			path := testRecord(t, "substrate-test")
 			var before []byte
 			if saved {
 				var out bytes.Buffer
-				if err := initialize(path, defaultSubscription, defaultPublisher, "", "203.0.113.8/32",
+				if err := initialize(recordHome(path), defaultSubscription, defaultPublisher, "", "203.0.113.8/32",
 					"substrate-test", "southcen", false, nil, "", "", &out); err != nil {
 					t.Fatal(err)
 				}
@@ -92,8 +91,8 @@ func TestSetupRejectsInvalidRegionBeforeSaveOrBilling(t *testing.T) {
 			}
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, subscription: defaultSubscription, publisher: defaultPublisher, yes: !saved,
-				cidr: "203.0.113.8/32", name: "substrate-test", location: "southcen",
+				home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher, yes: !saved,
+				cidr: "203.0.113.8/32", location: "southcen",
 				discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader("yes\n"), &output, &output,
 				func(context.Context, []string, io.Writer, io.Writer) error {
@@ -120,9 +119,9 @@ func TestInitRejectsUnknownRegionBeforeSaving(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "az", `test "$1" = rest || exit 19; printf '%s' '`+testRegionsJSON+`'`)
 	t.Setenv("PATH", bin)
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	var out bytes.Buffer
-	err := run(t.Context(), []string{"init", "--config", path, "--subscription", defaultSubscription,
+	err := run(t.Context(), []string{"init", recordName(path), "--subscription", defaultSubscription,
 		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
 		"--location", "southcen", "--api-cidr", "203.0.113.8/32"}, &out, &out)
 	if err == nil || !strings.Contains(err.Error(), "southcentralus") {
@@ -134,12 +133,12 @@ func TestInitRejectsUnknownRegionBeforeSaving(t *testing.T) {
 }
 
 func TestSetupCatalogFailureCreatesNoConfiguration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	denied := errors.New("region catalog access denied")
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, subscription: defaultSubscription, publisher: defaultPublisher,
-		yes: true, cidr: "203.0.113.8/32", name: "substrate-test", location: "eastus2",
+		home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher,
+		yes: true, cidr: "203.0.113.8/32", location: "eastus2",
 		discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 			if !isRegionList(c) {
 				t.Fatalf("unexpected Azure command: %v", c.Args)

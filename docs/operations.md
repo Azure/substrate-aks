@@ -2,8 +2,11 @@
 
 [Quickstart](../README.md) | [Architecture](architecture.md) | [Configuration](configuration.md)
 
-Run commands from the repository root. They use `deploy.json` by default;
-add `--config PATH` when managing another installation.
+Run commands from the repository root. Each command takes an installation
+`NAME` (as an argument or `--name`); it is optional when only one installation
+is saved, except for `destroy`. Run `bin/substrate-aks list` to see saved
+installations. Settings are stored in the user cache directory; see
+[configuration](configuration.md#create-a-configuration).
 
 - [Guided installation](#guided-installation)
 - [Registry and image bootstrap](#registry-and-image-bootstrap)
@@ -26,7 +29,11 @@ make setup
 ```
 
 `make setup` builds `bin/substrate-aks` and runs its `setup` command. Pass setup
-flags with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
+flags with `ARGS`, for example `make setup ARGS="--accessible"`.
+
+Plain `setup` creates a new installation and asks for its name; names that are
+already saved are rejected. `setup NAME` resumes or reconciles that saved
+installation.
 
 ### What setup does
 
@@ -73,8 +80,9 @@ list, press `/` to filter, then Enter to select. Tab and Shift+Tab move between
 fields.
 
 The welcome screen offers **Quick start**. **Advanced configuration** is a
-planned guided editor and cannot start an installation yet; edit `deploy.json`
-directly for custom settings.
+planned guided editor and cannot start an installation yet. For custom settings,
+run `init NAME`, edit the saved `installation.json` it reports, then run
+`setup NAME`.
 
 On narrow terminals the rail is hidden. Below 40 columns or 14 rows, setup shows
 compact status and waits for a larger window before accepting input; work in
@@ -94,11 +102,11 @@ exports. On failure it prints recovery commands instead.
 | `--skip-context-handoff` | Leave your kubeconfig untouched and print exports for the private kubeconfig |
 | `--container-engine=auto\|docker\|podman` | Choose an image builder; `auto` offers a choice when both work |
 
-For automation, create a complete [configuration](configuration.md) instead of
-piping answers into prompts:
+For automation, pass a name and flags instead of piping answers into prompts.
+`--yes` uses `substrate-dev` when no name is given:
 
 ```sh
-bin/substrate-aks setup --config deploy.json --yes --with-demo
+bin/substrate-aks setup substrate-dev --yes --with-demo
 ```
 
 **Run the final shell exports printed by setup.** The installer cannot change
@@ -106,7 +114,7 @@ your shell's `PATH` or `KUBECONFIG`, and never edits shell profiles. CI runs tha
 only need the installation's private kubeconfig can skip the context handoff:
 
 ```sh
-bin/substrate-aks setup --config deploy.json --yes --skip-context-handoff
+bin/substrate-aks setup substrate-dev --yes --skip-context-handoff
 ```
 
 ### macOS host setup
@@ -165,7 +173,7 @@ bin/substrate-aks provision --registry-only
 bin/substrate-aks images
 ```
 
-`doctor` checks local tools without calling Azure. Add `--config deploy.json` to
+`doctor` checks local tools without calling Azure. Add an installation `NAME` to
 also check runtime assets or the tools to assemble them, and `--azure` for
 read-only checks of VM availability, quota, and permissions in the configured
 region. `plan` runs a Bicep what-if and deploys nothing.
@@ -195,7 +203,7 @@ aside as instructed.
 To check that saved images are still accessible:
 
 ```sh
-bin/substrate-aks images --check --config deploy.json
+bin/substrate-aks images --check
 ```
 
 `setup` and `install` also run this check. Authentication and network failures
@@ -321,9 +329,9 @@ kubeconfig is never changed.
 To do this later:
 
 ```sh
-bin/substrate-aks client --config deploy.json --use-context
+bin/substrate-aks client --use-context
 # Or choose a destination:
-bin/substrate-aks client --config deploy.json --use-context --context-file ~/.kube/substrate
+bin/substrate-aks client --use-context --context-file ~/.kube/substrate
 ```
 
 Setup prints one set of shell exports after the context choice. Apply those
@@ -375,7 +383,7 @@ Long-duration credential refresh remains a validation gap.
 | --- | --- |
 | Progress and prompts | stderr; plain line updates when redirected |
 | Results, previews, and setup's final commands | stdout |
-| Detailed command logs | Private files in the installation's `logs/` directory. Before a new installation has a workspace, Preparation logs to `.substrate-aks/logs/` next to the config. |
+| Detailed command logs | Private files in the installation's `logs/` directory. Before a new installation is saved, Preparation logs to `logs/` in the installer's home directory. |
 | `--verbose` | Underlying commands and build output, in standalone commands and accessible setup |
 
 Each command writes its full log to disk, including commands, output, and step
@@ -400,11 +408,12 @@ property-level details are in the logs and verbose output.
 
 **Failures retain resources.** Interactive setup offers to retry the failed
 command. `--yes` and cancellation do not enter a retry loop. Follow the printed
-stage-retry command, or rerun setup with the same config.
+stage-retry command, or rerun `setup NAME`.
 
 A new setup process checks the installation from the beginning; it does not
 resume an arbitrary interrupted stage. Keep the installation ID and target
-settings unchanged. Never discard the config while its resources still exist.
+settings unchanged. Never delete the installation's directory while its
+resources still exist.
 
 Ctrl-C, SIGTERM, and terminal hangups (SIGHUP) cancel local command process
 groups and allow cleanup. The interactive workspace restores the terminal after
@@ -416,7 +425,7 @@ remain for retry or teardown.
 To delete the installation:
 
 ```sh
-bin/substrate-aks destroy --config deploy.json --confirm-delete substrate-dev
+bin/substrate-aks destroy substrate-dev --confirm-delete substrate-dev
 ```
 
 > [!CAUTION]
@@ -426,15 +435,16 @@ bin/substrate-aks destroy --config deploy.json --confirm-delete substrate-dev
 
 The CLI checks the ownership tag and waits for Azure deletion. It does not adopt
 or delete a group without the matching tag. An already-absent group is a safe
-no-op. Local config, logs, subscription deployment history, and the shared client
-remain.
+no-op. After Azure deletion succeeds, `destroy` removes the installation's local
+directory, including its settings and logs. Subscription deployment history and
+the shared client remain. If `destroy` fails, local state is kept for a retry.
 
-After complete teardown, clear references to deleted images before reusing the
-config:
+If the resource group was deleted outside the installer, clear references to
+deleted images before reusing the saved installation:
 
 ```sh
-bin/substrate-aks images --reset-config --config deploy.json
-bin/substrate-aks setup --config deploy.json
+bin/substrate-aks images substrate-dev --reset-config
+bin/substrate-aks setup substrate-dev
 ```
 
 Reset requires Azure to confirm that the target group is absent and no other

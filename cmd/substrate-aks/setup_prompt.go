@@ -24,6 +24,8 @@ type setupPrompt struct {
 	reader     *bufio.Reader
 	ui         *setupUI
 	accessible bool
+	// nameAvailable rejects names of saved installations.
+	nameAvailable func(string) error
 }
 
 type setupClusterNameInput struct {
@@ -33,11 +35,11 @@ type setupClusterNameInput struct {
 	resize func()
 }
 
-func newSetupClusterNameInput(value *string) *setupClusterNameInput {
+func newSetupClusterNameInput(value *string, available func(string) error) *setupClusterNameInput {
 	return &setupClusterNameInput{
 		Input: huh.NewInput().Title("Dedicated resource group and cluster name").
 			Placeholder("substrate-dev").Value(value).
-			Validate(func(s string) error { return installer.ValidateInstallationName(strings.TrimSpace(s)) }),
+			Validate(func(s string) error { return validateNewInstallationName(strings.TrimSpace(s), available) }),
 		value: value, width: 80,
 	}
 }
@@ -243,8 +245,18 @@ const (
 
 // installation asks for the name and region and, when reader is non-nil, the
 // optional snapshot inspection grant, all in one form.
+func validateNewInstallationName(name string, available func(string) error) error {
+	if err := installer.ValidateInstallationName(name); err != nil {
+		return err
+	}
+	if available != nil {
+		return available(name)
+	}
+	return nil
+}
+
 func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string, reader *bool) (string, string, error) {
-	nameField := newSetupClusterNameInput(&name)
+	nameField := newSetupClusterNameInput(&name, p.nameAvailable)
 	if p.accessible {
 		fallback := strings.TrimSpace(name)
 		if fallback != "" {
@@ -255,7 +267,7 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			if s == "" {
 				s = fallback
 			}
-			return installer.ValidateInstallationName(s)
+			return validateNewInstallationName(s, p.nameAvailable)
 		})
 		err := p.run(ctx, nameField)
 		if err != nil {

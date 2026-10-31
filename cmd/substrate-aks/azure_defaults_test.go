@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -157,7 +156,7 @@ func TestSubscriptionOverrideDoesNotUseAnotherTenantOrIdentity(t *testing.T) {
 func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "discovered", true: "directory restricted"}[blocked], func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "deploy.json")
+			path := testRecord(t, "substrate-test")
 			runner := defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 				if isRegionList(c) {
 					return []byte(testRegionsJSON), nil
@@ -176,7 +175,7 @@ func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 			}
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, cidr: "203.0.113.8/32", name: "substrate-test", location: "eastus2", discovery: runner,
+				home: recordHome(path), name: recordName(path), cidr: "203.0.113.8/32", location: "eastus2", discovery: runner,
 			}, strings.NewReader(answers), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 				t.Fatal("setup executed a stage after billing was declined")
 				return nil
@@ -202,11 +201,11 @@ func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 }
 
 func TestSetupDiscoveryFailureInAutomationCreatesNoConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	var output bytes.Buffer
 	blocked := errors.New("directory access denied")
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, yes: true, discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
+		home: recordHome(path), name: recordName(path), yes: true, discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 			if c.Args[1] == "account" {
 				return []byte(accountJSON("user")), nil
 			}
@@ -231,7 +230,7 @@ func TestSavedSubscriptionNameLookupFailureDoesNotRetarget(t *testing.T) {
 			}
 			var output bytes.Buffer
 			err = setupForTest(t.Context(), setupOptions{
-				path: path, discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
+				home: recordHome(path), name: recordName(path), discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					if isRegionList(c) {
 						return []byte(testRegionsJSON), nil
 					}
@@ -269,7 +268,7 @@ func TestExistingSetupOnlyLooksUpConfiguredSubscriptionName(t *testing.T) {
 	var output bytes.Buffer
 	calls := 0
 	err = setupForTest(t.Context(), setupOptions{
-		path: path, discovery: defaultsRunner(func(ctx context.Context, c installer.Command) ([]byte, error) {
+		home: recordHome(path), name: recordName(path), discovery: defaultsRunner(func(ctx context.Context, c installer.Command) ([]byte, error) {
 			if !isRegionList(c) {
 				calls++
 			}

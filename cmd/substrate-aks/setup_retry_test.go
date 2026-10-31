@@ -17,7 +17,7 @@ func TestSetupRetriesOnlyFailedStageWithIdenticalFlags(t *testing.T) {
 	var failedArgs []string
 	publications := 0
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, containerEngine: "podman", withDemo: true, verbose: true,
+		home: recordHome(path), name: recordName(path), containerEngine: "podman", withDemo: true, verbose: true,
 		discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader("yes\nyes\nyes\nyes\n"), &output, &output,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -48,7 +48,7 @@ func TestSetupFailureGuidancePreservesOptionsAndCancellationNeverRetries(t *test
 				failure = context.Canceled
 			}
 			err := setupForTest(t.Context(), setupOptions{
-				path: testCLIConfig(t), yes: !cancelled, containerEngine: "podman",
+				home: recordHome(testCLIConfig(t)), name: "substrate-test", yes: !cancelled, containerEngine: "podman",
 				withDemo: true, verbose: true, accessible: true, skipContextHandoff: true,
 				discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader("yes\n"), &output, &output,
@@ -71,7 +71,7 @@ func TestSetupFinalHandoffCancellationRetainsRecoveryGuidance(t *testing.T) {
 	defer cancel()
 	var output bytes.Buffer
 	err := setupForTest(ctx, setupOptions{
-		path: testCLIConfig(t), withDemo: true, discovery: subscriptionDisplayRunner(t),
+		home: recordHome(testCLIConfig(t)), name: "substrate-test", withDemo: true, discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader("yes\nyes\nyes\n"), &output, &output,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
 			if args[0] == "client" {
@@ -82,7 +82,7 @@ func TestSetupFinalHandoffCancellationRetainsRecoveryGuidance(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("final handoff cancellation was lost: %v", err)
 	}
-	for _, want := range []string{"Resources are retained", "Retry failed stage:", " client --config ", "--use-context", "Full reconciliation", "Teardown:"} {
+	for _, want := range []string{"Resources are retained", "Retry failed stage:", " client substrate-test", "--use-context", "Full reconciliation", "Teardown:"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("handoff cancellation lost %q: %v", want, err)
 		}

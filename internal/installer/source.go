@@ -71,7 +71,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 				return "", err
 			}
 			if checksum(data) != want {
-				return "", fmt.Errorf("managed source changed at %s; use a fresh installation.stateDir instead of editing cached source", rel)
+				return "", fmt.Errorf("managed source changed at %s; remove %s to fetch it again instead of editing cached source", rel, dest)
 			}
 		}
 		head, err := a.Runner.Run(ctx, Command{Dir: dest, Args: []string{"git", "rev-parse", "HEAD"}})
@@ -79,7 +79,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 			return "", err
 		}
 		if strings.TrimSpace(string(head)) != a.Config.Substrate.Source.Commit {
-			return "", errors.New("managed source HEAD changed; use a fresh installation.stateDir")
+			return "", fmt.Errorf("managed source HEAD changed; remove %s to fetch it again", dest)
 		}
 		diff, err := a.Runner.Run(ctx, Command{Dir: dest, Args: []string{"git", "diff", "--name-only", "HEAD", "--"}})
 		if err != nil {
@@ -88,7 +88,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 		for _, path := range strings.Split(strings.TrimSpace(string(diff)), "\n") {
 			if path != "" {
 				if _, ok := p.Files[path]; !ok {
-					return "", fmt.Errorf("unexpected tracked source modification at %s; use a fresh installation.stateDir", path)
+					return "", fmt.Errorf("unexpected tracked source modification at %s; remove %s to fetch it again", path, dest)
 				}
 			}
 		}
@@ -99,7 +99,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 		}
 		for _, path := range strings.Split(string(untracked), "\x00") {
 			if path != "" && path != ".substrate-aks-prepared.json" {
-				return "", fmt.Errorf("unexpected untracked source file at %q; use a fresh installation.stateDir", path)
+				return "", fmt.Errorf("unexpected untracked source file at %q; remove %s to fetch it again", path, dest)
 			}
 		}
 		return dest, nil
@@ -107,7 +107,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(dest); err == nil {
-		return "", errors.New("managed source directory exists without a completion marker; use a fresh installation.stateDir")
+		return "", fmt.Errorf("managed source directory %s exists without a completion marker; remove it to fetch it again", dest)
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}

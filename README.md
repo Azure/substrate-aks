@@ -41,11 +41,13 @@ make setup
 ```
 
 `make setup` builds `bin/substrate-aks` and runs `bin/substrate-aks setup`. Pass
-setup flags with `ARGS`, for example `make setup ARGS="--config deploy-dev.json"`.
+setup flags with `ARGS`, for example `make setup ARGS="--accessible"`.
 
 Setup checks your tools and Azure access, asks for a name and region, and
-saves your choices in `deploy.json`. It previews every billable change and waits
-for your approval before creating anything. Press `?` in the workspace for keys.
+saves your choices as a named installation in your user cache directory
+(`~/.cache/substrate-aks` on Linux, `~/Library/Caches/substrate-aks` on macOS).
+It previews every billable change and waits for your approval before creating
+anything. Press `?` in the workspace for keys.
 
 **When setup finishes, run the shell exports it prints.** They point `kubectl`
 at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
@@ -55,12 +57,12 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 
 | Command | Use |
 | --- | --- |
-| `az account set --subscription SUBSCRIPTION_UUID` | Select a different subscription **before** creating the config |
-| `bin/substrate-aks setup --config deploy-dev.json` | Use a separate installation config |
+| `az account set --subscription SUBSCRIPTION_UUID` | Select a different subscription **before** creating an installation |
+| `bin/substrate-aks setup NAME` | Resume or reconcile a saved installation |
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --container-engine=podman` | Force Podman instead of auto-detecting an image builder |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
-| `bin/substrate-aks setup --config deploy.json --yes --with-demo` | Install without prompts using a complete config; accepts billing and selects the kube-context |
+| `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) for
 identity overrides and [operations](docs/operations.md#guided-installation) for
@@ -113,55 +115,63 @@ See [client setup and authentication](docs/operations.md#client-and-counter-demo
 
 ## Manage your installation
 
-All commands use `deploy.json` by default; add `--config PATH` for another config.
+Commands take an installation `NAME`. When you have only one installation, the
+name is optional; `destroy` always requires it.
 
 | Command | Purpose |
 | --- | --- |
-| `bin/substrate-aks init` | Create a config without Azure resources |
+| `bin/substrate-aks list` | List saved installations |
+| `bin/substrate-aks init [NAME]` | Save an installation without creating Azure resources |
 | `bin/substrate-aks doctor` | Check local tools; no Azure resource calls |
 | `bin/substrate-aks plan` | Preview real infrastructure changes using Bicep what-if |
 | `bin/substrate-aks status` | Inspect Substrate pods and persistent volume claims |
 | `bin/substrate-aks client` | Install the matching `kubectl ate` and print shell exports |
 | `bin/substrate-aks setup --verbose` | Show underlying commands and detailed output |
 
-**Retry:** fix the reported error and rerun setup with the same config. Resources
+**Retry:** fix the reported error and rerun `setup NAME`. Resources
 and logs remain after a failure; there is no automatic rollback.
 
 **Keep the target unchanged:** saved settings take precedence over setup flags
-and your active Azure subscription. Use a new config for a different installation.
+and your active Azure subscription. Run setup with a new name for a different
+installation.
 If your public IP changes, edit `aks.apiAuthorizedCidrs`, then run `plan` and
 `provision`.
 
-**Keep local state private:** `.substrate-aks/` contains credentials, kubeconfig,
-logs, and deployment records as well as caches. Deleting it does not delete
-Azure resources. Teardown leaves it and the shared Go-installed client in place.
+**Keep local state private:** each installation's directory under
+`installations/NAME/` in the cache directory contains its saved settings,
+kubeconfig, logs, and deployment records as well as caches. Set
+`SUBSTRATE_AKS_HOME` to use a different location. Deleting this directory, or
+a cache cleaner deleting it, does not delete Azure resources; remove those with
+`az group delete --name RESOURCE_GROUP`.
 
 See [operations](docs/operations.md) for individual lifecycle commands and
 diagnostics, and [configuration](docs/configuration.md) for settings and permissions.
 
 ## Tearing down
 
-Use the exact command printed by setup, or substitute your config and resource
-group below:
+Use the exact command printed by setup, or substitute your installation name
+and resource group below:
 
 ```sh
-bin/substrate-aks destroy --config deploy.json --confirm-delete substrate-dev
+bin/substrate-aks destroy substrate-dev --confirm-delete substrate-dev
 ```
 
 > [!CAUTION]
 > **Deletes the entire owned resource group:** AKS, ACR and its images, database
 > data, snapshots, runtime assets, and identities. There is no automatic recovery.
-> The command waits for Azure deletion; local configuration and diagnostics remain.
+> The command waits for Azure deletion, then removes the installation's local
+> directory. The shared Go-installed client stays in place.
 
-After complete teardown, clear deleted image references before reusing the config:
+If the resource group was deleted outside the installer, clear the deleted image
+references before reusing the saved installation:
 
 ```sh
-bin/substrate-aks images --reset-config --config deploy.json
-bin/substrate-aks setup --config deploy.json
+bin/substrate-aks images substrate-dev --reset-config
+bin/substrate-aks setup substrate-dev
 ```
 
-Reset is refused while the resource group exists. Alternatively, start with a
-fresh config. See [retry and teardown](docs/operations.md#retry-and-teardown).
+Reset is refused while the resource group exists. See
+[retry and teardown](docs/operations.md#retry-and-teardown).
 
 ## Documentation
 

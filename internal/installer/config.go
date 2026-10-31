@@ -26,9 +26,24 @@ type Config struct {
 }
 
 type InstallationConfig struct {
-	ID       string `json:"id"`
-	StateDir string `json:"stateDir"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Ownership Ownership `json:"ownership"`
+	// Dir is the installation's state directory. It is derived from where
+	// the record is stored rather than saved in it.
+	Dir string `json:"-"`
 }
+
+// Ownership records whether the installer created each Azure resource or was
+// given an existing one. Only installer-created resources are supported today;
+// teardown deletes the whole resource group, so reused resources need
+// different provisioning and teardown paths before they can be accepted.
+type Ownership struct {
+	ResourceGroup string `json:"resourceGroup"`
+	Cluster       string `json:"cluster"`
+}
+
+const OwnershipCreated = "created"
 
 type AzureConfig struct {
 	SubscriptionID              string `json:"subscriptionId"`
@@ -82,7 +97,7 @@ type RuntimeConfig struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Installation: InstallationConfig{StateDir: ".substrate-aks"},
+		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
 			WorkerPool:        WorkerPoolConfig{VMSize: "Standard_D4s_v3", Count: 1},
@@ -110,10 +125,9 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, p := range []*string{&c.Installation.StateDir, &c.Substrate.Runtime.AssetsDir} {
-		if *p != "" && !filepath.IsAbs(*p) {
-			*p = filepath.Join(base, *p)
-		}
+	c.Installation.Dir = base
+	if p := &c.Substrate.Runtime.AssetsDir; *p != "" && !filepath.IsAbs(*p) {
+		*p = filepath.Join(base, *p)
 	}
 	return c, nil
 }
@@ -151,6 +165,12 @@ func (c Config) Validate() error {
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
+	if err := ValidateInstallationName(c.Installation.Name); err != nil {
+		return fmt.Errorf("installation.name %w", err)
+	}
+	if c.Installation.Ownership.ResourceGroup != OwnershipCreated || c.Installation.Ownership.Cluster != OwnershipCreated {
+		return errors.New(`installation.ownership must be "created" for both resourceGroup and cluster; existing resource groups and clusters are not supported yet`)
+	}
 	for _, name := range []string{c.Azure.ResourceGroup, c.AKS.ClusterName} {
 		if err := ValidateInstallationName(name); err != nil {
 			return fmt.Errorf("azure.resourceGroup and aks.clusterName %w", err)
@@ -176,9 +196,6 @@ func (c Config) Validate() error {
 		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
 			return fmt.Errorf("invalid or unrestricted AKS API IPv4 CIDR %q", value)
 		}
-	}
-	if c.Installation.StateDir == "" {
-		return errors.New("installation.stateDir must not be empty")
 	}
 	if !uuidPattern.MatchString(c.Azure.AssetPublisherObjectID) {
 		return errors.New("azure.assetPublisherObjectId must be an Entra object UUID for the runtime asset publisher")
@@ -254,5 +271,5 @@ func (c Config) ValidateInstall() error {
 	return nil
 }
 
-func (c Config) workspace() string      { return filepath.Join(c.Installation.StateDir, c.Installation.ID) }
+func (c Config) workspace() string      { return c.Installation.Dir }
 func (c Config) deploymentName() string { return "substrate-" + c.Installation.ID }

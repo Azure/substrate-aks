@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +16,7 @@ func TestLocalFailurePrecedesAzureDiscovery(t *testing.T) {
 	missing := errors.New("missing Azure CLI")
 	var output bytes.Buffer
 	err := setup(t.Context(), setupOptions{
-		path: filepath.Join(t.TempDir(), "deploy.json"), yes: true,
+		home: recordHome(testRecord(t, "substrate-test")), yes: true,
 		local: defaultsRunner(func(ctx context.Context, c installer.Command) ([]byte, error) {
 			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 30*time.Second {
 				t.Fatal("local tool probe has no bounded deadline")
@@ -55,7 +54,7 @@ func TestNewSetupChecksRuntimeToolsBeforeBilling(t *testing.T) {
 	var output bytes.Buffer
 	missing := errors.New("zstd missing")
 	err := setup(t.Context(), setupOptions{
-		path: filepath.Join(t.TempDir(), "deploy.json"), yes: true,
+		home: recordHome(testRecord(t, "substrate-test")), yes: true,
 		name: "substrate-test", location: "eastus2", cidr: "203.0.113.8/32",
 		local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 			if c.Args[0] == "zstd" {

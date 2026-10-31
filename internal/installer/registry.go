@@ -288,7 +288,7 @@ func updateImageConfig(path string, expected Config, update func(*Config) error)
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".deploy-*.json")
+	file, err := os.CreateTemp(filepath.Dir(path), ".installation-*.json")
 	if err != nil {
 		return err
 	}

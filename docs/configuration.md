@@ -12,9 +12,9 @@ az login
 bin/substrate-aks init
 ```
 
-`init` creates `deploy.json` without creating Azure resources or overwriting an
-existing file. You can also create it through
-[guided setup](operations.md#guided-installation).
+`init [NAME]` saves an installation named `substrate-dev` (or `NAME`) without
+creating Azure resources. It never overwrites an existing installation. You can
+also create one through [guided setup](operations.md#guided-installation).
 
 | Setting | Default |
 | --- | --- |
@@ -28,9 +28,11 @@ existing file. You can also create it through
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
 
-Every lifecycle command accepts `--config PATH`. Relative paths in the file
-resolve from its directory. Unknown JSON fields and extra JSON documents are
-rejected.
+Each installation is saved as `installations/NAME/installation.json` in the
+installer's home directory: `~/.cache/substrate-aks` on Linux,
+`~/Library/Caches/substrate-aks` on macOS, or `SUBSTRATE_AKS_HOME` if set.
+Lifecycle commands select it by `NAME`; `bin/substrate-aks list` shows saved
+installations. Unknown JSON fields and extra JSON documents are rejected.
 
 ### Example structure
 
@@ -42,7 +44,11 @@ placeholders are not valid deployment values.
 {
   "installation": {
     "id": "GENERATED_INSTALLATION_UUID",
-    "stateDir": ".substrate-aks"
+    "name": "substrate-dev",
+    "ownership": {
+      "resourceGroup": "created",
+      "cluster": "created"
+    }
   },
   "azure": {
     "subscriptionId": "YOUR_SUBSCRIPTION_UUID",
@@ -86,17 +92,18 @@ placeholders are not valid deployment values.
 Setup uses saved settings, not newly discovered defaults or configuration flags.
 Changing your active Azure account does not retarget an existing installation.
 
-**Keep the installation ID, subscription, resource group, cluster name, and
-location unchanged for retries and teardown.** Use a new config for another
-installation.
+**Keep the installation ID, name, subscription, resource group, cluster name, and
+location unchanged for retries and teardown.** Run setup with a new name for
+another installation. `ownership` records that the installer created the
+resource group and cluster; only `created` is supported today.
 
 Provisioning stops if another resource group has the same installation tag.
 The cluster's own AKS-managed node group is allowed while the tagged main group
 exists. If only a node group remains, wait for teardown to finish or investigate
 the incomplete deletion before retrying.
 
-After teardown, reset references to deleted images before reusing the config.
-See [retry and teardown](operations.md#retry-and-teardown).
+If the resource group is deleted outside the installer, reset references to
+deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
 
 ## Azure identity and permissions
 
@@ -172,7 +179,7 @@ Region names are checked against the subscription's region list. Before
 provisioning the registry, setup also checks the AKS version, VM size
 availability, regional and VM-family CPU quota, and the deployment and
 role-assignment permissions it can discover. On retries, only the additional CPU
-is counted against quota. Run `doctor --azure --config deploy.json` for the same
+is counted against quota. Run `doctor NAME --azure` for the same
 read-only checks.
 
 These checks are a snapshot, not a reservation or a complete authorization proof.
@@ -254,13 +261,15 @@ to the deleted registry.
 
 ## Local workspace
 
-State lives under `installation.stateDir/installation.id`, normally within
-`.substrate-aks/`. It includes source caches, runtime assets, kubeconfig, registry
-credentials, logs, deployment records, and generated infrastructure files.
+Each installation's directory holds its saved settings, source caches, runtime
+assets, kubeconfig, registry credentials, logs, deployment records, and
+generated infrastructure files.
 
 **Keep it private and retain it while the installation exists.** It is not all
-rebuildable cache. Deleting it does not delete Azure resources; teardown leaves
-the local files and shared Go-installed client in place.
+rebuildable cache, even though it lives in the user cache directory. Deleting it,
+or a cache cleaner deleting it, does not delete Azure resources; remove those
+with `az group delete --name RESOURCE_GROUP`. A successful `destroy` removes the
+directory; the shared Go-installed client stays in place.
 
 Installations from the earlier `substrate-azure` prototype cannot be adopted.
 Start with a fresh configuration.

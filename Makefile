@@ -4,7 +4,7 @@ build:
 	go build -o bin/substrate-aks ./cmd/substrate-aks
 
 # Build, then run guided setup; pass flags with ARGS, for example
-# make setup ARGS="--config deploy-dev.json --accessible".
+# make setup ARGS="substrate-dev --accessible".
 setup: build
 	bin/substrate-aks setup $(ARGS)
 

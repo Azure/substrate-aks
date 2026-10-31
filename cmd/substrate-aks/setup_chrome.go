@@ -329,7 +329,7 @@ func (m *setupWorkspace) welcomeView() string {
 	content := lipgloss.PlaceHorizontal(width, lipgloss.Center, brand) + "\n\n" + choices
 	// The claims are a bonus: show them only when they fit above the footer.
 	if m.height >= 24 {
-		claims := []string{"Checks tools and Azure access first", "Previews Azure changes for approval", "Honors saved deploy.json settings"}
+		claims := []string{"Checks tools and Azure access first", "Previews Azure changes for approval", "Resumes saved installations by name"}
 		widest := 0
 		for _, claim := range claims {
 			widest = max(widest, ansi.StringWidth(claim))

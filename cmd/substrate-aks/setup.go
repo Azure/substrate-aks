@@ -16,7 +16,7 @@ import (
 )
 
 type setupOptions struct {
-	path, subscription, publisher, reader, cidr, name, location string
+	home, subscription, publisher, reader, cidr, name, location string
 	yes, withDemo, verbose, configFlags, accessible             bool
 	discovery                                                   installer.Runner
 	unrestrictedAPI                                             bool
@@ -87,12 +87,17 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	}
 	var defaults azureDefaults
 	created := false
-	_, statErr := os.Stat(o.path)
-	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
+	var statErr error
+	if o.name != "" {
+		_, statErr = os.Stat(installer.RecordPath(o.home, o.name))
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	} else {
+		statErr = os.ErrNotExist
 	}
 	if statErr == nil && o.configFlags {
-		return errors.New("setup configuration flags only create a new file; edit the existing deploy.json instead of overriding its settings")
+		return existingSettingsError(o)
 	}
 	local := o.local
 	if local == nil {
@@ -101,7 +106,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	var prior installer.Config
 	if statErr == nil {
 		var err error
-		prior, err = installer.LoadConfig(o.path)
+		prior, err = installer.LoadInstallation(o.home, o.name)
 		if err != nil {
 			return err
 		}
@@ -110,12 +115,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 	}
 	if ui.session != nil {
-		log, err := openSetupPreparationLog(o.path, prior, statErr == nil)
+		log, err := openSetupPreparationLog(o.home, prior, statErr == nil)
 		if err != nil {
 			return fmt.Errorf("creating the setup log: %w", err)
 		}
 		defer log.Close()
-		fmt.Fprintf(log, "[command] setup preparation\n[config] %s\n", o.path)
+		fmt.Fprintf(log, "[command] setup preparation\n[installation] %s\n", o.name)
 		if o.discovery == nil {
 			runner = installer.ExecRunner{Log: log}
 		}
@@ -146,8 +151,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			return err
 		}
 	}
-	if _, err := os.Stat(o.path); errors.Is(err, os.ErrNotExist) {
-		err = ui.check("Azure account / identities", func() error {
+	if statErr != nil {
+		err := ui.check("Azure account / identities", func() error {
+			var err error
 			defaults, err = discoverInstallationDefaults(ctx, o.subscription, o.publisher, o.operatorID, o.operatorType, runner)
 			return err
 		})
@@ -226,6 +232,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			if o.reader == "" {
 				read = new(bool)
 			}
+			prompt.nameAvailable = func(name string) error {
+				if _, err := os.Stat(installer.RecordPath(o.home, name)); err == nil {
+					return fmt.Errorf("installation %s already exists; run setup %s to resume it", name, name)
+				}
+				return nil
+			}
 			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions, read)
 			if err != nil {
 				return err
@@ -238,16 +250,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		if o.publisherType == "" && strings.EqualFold(o.publisher, defaults.signedInObjectID) {
 			o.publisherType = defaults.signedInType
 		}
-		if err := initialize(o.path, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, io.Discard); err != nil {
+		if err := initialize(o.home, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, io.Discard); err != nil {
 			return err
 		}
 		created = true
-	} else if err != nil {
-		return err
-	} else if o.configFlags {
-		return errors.New("setup configuration flags only create a new file; edit the existing deploy.json instead of overriding its settings")
 	}
-	c, err := installer.LoadConfig(o.path)
+	c, err := installer.LoadInstallation(o.home, o.name)
 	if err != nil {
 		return err
 	}
@@ -275,7 +283,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				return err
 			}
 			if _, err := validateAzureRegion(c.Azure.Location, regions); err != nil {
-				return fmt.Errorf("%w; edit azure.location in %s before retrying", err, o.path)
+				return fmt.Errorf("%w; edit azure.location in %s before retrying", err, installer.RecordPath(o.home, o.name))
 			}
 			return nil
 		}); err != nil {
@@ -320,7 +328,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if err := ui.check("Operator identity review", func() error { return warnOperatorIdentity(ctx, c, defaults, runner, ui) }); err != nil {
 		return err
 	}
-	ui.summary(c, defaults, o.path, created, engineLabel)
+	ui.summary(c, defaults, installer.RecordPath(o.home, o.name), created, engineLabel)
 	if !o.yes {
 		accepted, err := prompt.confirm(ctx, "Continue with this billable installation?", false)
 		if err != nil {
@@ -343,7 +351,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	ui.log = nil
 	stages := setupStages(c, o.withDemo)
 	stopped := func(label string, args []string, err error) error {
-		reconcile := []string{"setup", "--config", o.path}
+		reconcile := []string{"setup", o.name}
 		if o.containerEngine != "" {
 			reconcile = append(reconcile, "--container-engine", o.containerEngine)
 		}
@@ -360,7 +368,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 		return fmt.Errorf("setup stopped at %s: %w\n\nResources are retained.\nRetry failed stage: %s\nFull reconciliation (starts from the beginning, reusing configured images): %s\nTeardown:\n%s",
 			label, err, cliCommand(args...), cliCommand(reconcile...),
-			teardownCommand(o.path, c.Azure.ResourceGroup))
+			teardownCommand(o.name, c.Azure.ResourceGroup))
 	}
 	activePhase := ""
 	stage := func(label, command string, flags ...string) error {
@@ -380,7 +388,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		} else {
 			ui.section(label)
 		}
-		args := append([]string{command, "--config", o.path}, flags...)
+		args := append([]string{command, o.name}, flags...)
 		if c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
 			args = append(args, "--container-engine", o.containerEngine)
 		}
@@ -441,11 +449,11 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		}
 	}
 	if o.client == nil || o.client.Kubeconfig == "" || o.client.BinDir == "" || o.client.Context != c.AKS.ClusterName {
-		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", "--config", o.path))
+		return fmt.Errorf("Substrate is installed, but client setup returned incomplete shell configuration.\nRetry: %s", cliCommand("client", o.name))
 	}
 	selected, handoffWarning, err := offerContextSwitch(ctx, o, c, prompt, ui)
 	if err != nil {
-		handoff := []string{"client", "--config", o.path, "--use-context"}
+		handoff := []string{"client", o.name, "--use-context"}
 		if o.contextFile != "" {
 			handoff = append(handoff, "--context-file", o.contextFile)
 		}
@@ -479,7 +487,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		steps.demo()
 	}
 	steps.section("# Delete all resources and persistent data when finished:")
-	steps.command(teardownCommand(o.path, c.Azure.ResourceGroup))
+	steps.command(teardownCommand(o.name, c.Azure.ResourceGroup))
 	return nil
 }
 
@@ -495,7 +503,7 @@ func checkImageBuilder(ctx context.Context, o *setupOptions, c installer.Config,
 		}
 		defer os.RemoveAll(dir)
 		c = installer.DefaultConfig()
-		c.Installation.StateDir, c.Installation.ID = dir, "probe"
+		c.Installation.Dir, c.Installation.ID = dir, "probe"
 	}
 	var label string
 	err := ui.check("Image builder", func() error {
@@ -557,9 +565,12 @@ func cliCommandArg(arg string) string {
 	return arg
 }
 
-func teardownCommand(path, resourceGroup string) string {
-	return fmt.Sprintf("%s \\\n  --config %s \\\n  --confirm-delete %s",
-		cliCommand("destroy"), cliCommandArg(path), cliCommandArg(resourceGroup))
+func teardownCommand(name, resourceGroup string) string {
+	return cliCommand("destroy", name, "--confirm-delete", resourceGroup)
+}
+
+func existingSettingsError(o setupOptions) error {
+	return fmt.Errorf("installation %s already exists; setup configuration flags only apply to new installations. Edit %s to change its settings", o.name, installer.RecordPath(o.home, o.name))
 }
 
 func printClientSetup(out io.Writer, c installer.ClientSetup) error {
@@ -593,17 +604,12 @@ func printClientSetup(out io.Writer, c installer.ClientSetup) error {
 
 // openSetupPreparationLog records the environment checks that run before any
 // stage command. A saved installation logs with its stages; a new one has no
-// installation ID yet, so it logs under the default state directory beside the
-// configuration.
-func openSetupPreparationLog(path string, prior installer.Config, saved bool) (*os.File, error) {
+// installation directory yet, so it logs under the installer home.
+func openSetupPreparationLog(home string, prior installer.Config, saved bool) (*os.File, error) {
 	if saved {
 		return installer.NewLog(prior)
 	}
-	dir, err := filepath.Abs(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
 	c := installer.DefaultConfig()
-	c.Installation.StateDir = filepath.Join(dir, c.Installation.StateDir)
+	c.Installation.Dir = home
 	return installer.NewLog(c)
 }

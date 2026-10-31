@@ -756,7 +756,7 @@ func (m *setupWorkspace) contextText() string {
 			text := strings.ReplaceAll(ansi.Wrap(row[1], max(1, m.bodyWidth()-12), ""), "\n", "\n"+strings.Repeat(" ", 12))
 			b.WriteString(m.st.key.Width(12).Render(row[0]) + text + "\n")
 		}
-		b.WriteString("\n" + m.st.muted.Render("Letter shortcuts pause while typing text or filtering choices.\nAdvanced guided configuration is planned, not implemented.\nExisting deploy.json configuration remains supported.\nThe logs view tails the private command log; the full file stays on disk."))
+		b.WriteString("\n" + m.st.muted.Render("Letter shortcuts pause while typing text or filtering choices.\nAdvanced guided configuration is planned, not implemented.\nRun setup NAME to resume a saved installation.\nThe logs view tails the private command log; the full file stays on disk."))
 		return b.String()
 	case "activity":
 		if m.logTail == "" {

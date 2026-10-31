@@ -376,9 +376,8 @@ func TestSaveBuildResultPreservesDeploymentAndRejectsConcurrentEdits(t *testing.
 	for _, changed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "save", true: "concurrent edit"}[changed], func(t *testing.T) {
 			c := testConfig(t)
-			c.Installation.StateDir = "state"
 			c.Substrate.Images = ImagesConfig{}
-			path := filepath.Join(t.TempDir(), "deploy.json")
+			path := filepath.Join(c.Installation.Dir, "installation.json")
 			data, err := json.Marshal(c)
 			if err != nil {
 				t.Fatal(err)
@@ -414,6 +413,7 @@ func TestSaveBuildResultPreservesDeploymentAndRejectsConcurrentEdits(t *testing.
 			}
 			c.Substrate.Images = result.Images
 			c.Substrate.Runtime.AssetsDir = result.AssetsDir
+			c.Installation.Dir = ""
 			if !reflect.DeepEqual(saved, c) {
 				t.Fatal("image recording changed installation identity, relative state path or deployment settings")
 			}

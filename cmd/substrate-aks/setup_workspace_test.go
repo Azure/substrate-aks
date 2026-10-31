@@ -235,7 +235,7 @@ func TestWorkspacePreparationFollowsItsOwnLog(t *testing.T) {
 	ctx := context.WithValue(t.Context(), setupSessionKey{}, m.session)
 	path := testCLIConfig(t)
 	stop := errors.New("first stage stopped")
-	err := setupForTest(ctx, setupOptions{path: path, yes: true, skipContextHandoff: true, discovery: subscriptionDisplayRunner(t)},
+	err := setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), yes: true, skipContextHandoff: true, discovery: subscriptionDisplayRunner(t)},
 		strings.NewReader(""), io.Discard, io.Discard, func(context.Context, []string, io.Writer, io.Writer) error { return stop })
 	if !errors.Is(err, stop) {
 		t.Fatalf("setup did not stop at the first stage: %v", err)
@@ -287,7 +287,7 @@ func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.
 	expected := map[string]int{"images": 3 + len(installer.ImageCheckSteps()), "cluster": 3, "substrate": 3, "demo": 1, "connect": 1}
 	seen := map[string]string{}
 	err := setupForTest(ctx, setupOptions{
-		path: testCLIConfig(t), yes: true, withDemo: true, skipContextHandoff: true,
+		home: recordHome(testCLIConfig(t)), name: "substrate-test", yes: true, withDemo: true, skipContextHandoff: true,
 		discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader(""), io.Discard, io.Discard,
 		func(_ context.Context, args []string, _, _ io.Writer) error {

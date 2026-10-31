@@ -11,10 +11,22 @@ import (
 	"github.com/Azure/substrate-aks/internal/installer"
 )
 
+// testRecord isolates the installation store and returns where the named
+// installation's record is (or will be) saved.
+func testRecord(t *testing.T, name string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv(installer.HomeEnv, home)
+	return installer.RecordPath(home, name)
+}
+
+func recordHome(path string) string { return filepath.Dir(filepath.Dir(filepath.Dir(path))) }
+func recordName(path string) string { return filepath.Base(filepath.Dir(path)) }
+
 func testCLIConfig(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "deploy.json")
-	err := initialize(path, "22222222-2222-4222-8222-222222222222",
+	path := testRecord(t, "substrate-test")
+	err := initialize(recordHome(path), "22222222-2222-4222-8222-222222222222",
 		"33333333-3333-4333-8333-333333333333", "", "203.0.113.8/32", "substrate-test", "southcentralus", false, nil, "", "", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +54,7 @@ func TestCLIQuietAndVerboseDiagnostics(t *testing.T) {
 			}
 			fakeTool(t, bin, "kubectl", `printf '{"clientVersion":{"major":"1","minor":"37"},"extra":"kubectl-diagnostic-only"}'`+"\n")
 			t.Setenv("PATH", bin)
-			args := []string{"doctor", "--config", path}
+			args := []string{"doctor", recordName(path)}
 			if verbose {
 				args = append(args, "--verbose")
 			}
@@ -61,7 +73,7 @@ func TestCLIQuietAndVerboseDiagnostics(t *testing.T) {
 					t.Fatalf("incorrect console verbosity for %q: %s", marker, console.String())
 				}
 			}
-			logs, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".substrate-aks", "*", "logs", "*.log"))
+			logs, err := filepath.Glob(filepath.Join(filepath.Dir(path), "logs", "*.log"))
 			if err != nil || len(logs) != 1 {
 				t.Fatalf("missing per-command diagnostic log: %v, %v", logs, err)
 			}
@@ -98,7 +110,7 @@ esac
 `)
 	t.Setenv("PATH", bin)
 	var out, console bytes.Buffer
-	err = run(t.Context(), []string{"plan", "--config", path}, &out, &console)
+	err = run(t.Context(), []string{"plan", recordName(path)}, &out, &console)
 	if err == nil {
 		t.Fatal("unowned resource group was accepted")
 	}

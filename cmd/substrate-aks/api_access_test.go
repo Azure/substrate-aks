@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,11 +89,11 @@ func TestAPILookupPreservesCancellation(t *testing.T) {
 }
 
 func TestSetupIPDiscoveryFailureCannotOpenAccessInAutomation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	blocked := errors.New("IP lookup unavailable")
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, subscription: defaultSubscription, publisher: defaultPublisher, yes: true,
+		home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher, yes: true,
 		ipClient: &http.Client{Transport: ipTransport(func(*http.Request) (*http.Response, error) {
 			return nil, blocked
 		})},
@@ -115,16 +114,16 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 				cidr = "198.51.100.0/24"
 			}
 
-			path := filepath.Join(t.TempDir(), "deploy.json")
+			path := testRecord(t, "substrate-test")
 			answers := "\n\nno\nno\n"
 			if name == "lookup failure" {
 				answers = "203.0.113.8/32\n" + answers
 			}
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, subscription: defaultSubscription, publisher: defaultPublisher,
+				home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher,
 				discovery: subscriptionDisplayRunner(t),
-				cidr:      cidr, name: "substrate-test", location: "eastus2", unrestrictedAPI: name == "unrestricted",
+				cidr:      cidr, location: "eastus2", unrestrictedAPI: name == "unrestricted",
 				ipClient: &http.Client{Transport: ipTransport(func(*http.Request) (*http.Response, error) {
 					if name == "explicit" || name == "unrestricted" {
 						t.Fatal("explicit access triggered discovery")

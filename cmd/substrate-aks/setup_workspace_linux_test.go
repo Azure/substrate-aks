@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +45,7 @@ func TestWorkspacePTYImageBuilderKeepsChecklist(t *testing.T) {
 	go func() {
 		defer close(finished)
 		done <- setupForTest(ctx, setupOptions{
-			path: path, discovery: discovery,
+			home: recordHome(path), name: recordName(path), discovery: discovery,
 			local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 				switch strings.Join(c.Args, " ") {
 				case "docker info --format {{json .ServerVersion}}", "docker buildx version", "podman info --format json":
@@ -102,7 +101,7 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			defer cancel()
 			release := make(chan struct{})
 			want := errors.New("SKU probe failed")
-			base := successfulCloudRunner(path)
+			base := successfulCloudRunner(recordHome(path))
 			cloud := defaultsRunner(func(ctx context.Context, c installer.Command) ([]byte, error) {
 				if strings.Contains(strings.Join(c.Args, " "), "/providers/Microsoft.Compute/skus?") {
 					select {
@@ -119,7 +118,7 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			done := make(chan error, 1)
 			executed := make(chan struct{}, 1)
 			go func() {
-				done <- setupForTest(ctx, setupOptions{path: path, discovery: subscriptionDisplayRunner(t), azure: cloud},
+				done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t), azure: cloud},
 					p.slave, p.slave, p.slave, func(context.Context, []string, io.Writer, io.Writer) error {
 						executed <- struct{}{}
 						return errors.New("test must never provision")
@@ -202,7 +201,7 @@ func testWorkspacePTYRetryAndPersistentHandoff(t *testing.T, noColor string) {
 	attempts := 0
 	go func() {
 		defer close(finished)
-		done <- setupForTest(ctx, setupOptions{path: path, withDemo: true, discovery: subscriptionDisplayRunner(t)},
+		done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t)},
 			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
 				s := setupSessionFrom(ctx)
 				if args[0] == "plan" {
@@ -274,7 +273,7 @@ func TestWorkspacePTYRegistryChecklistPrecedesProgressAndApproval(t *testing.T) 
 	})
 	go func() {
 		defer close(finished)
-		done <- setupForTest(ctx, setupOptions{path: path, withDemo: true, discovery: subscriptionDisplayRunner(t)},
+		done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t)},
 			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
 				if args[0] != "plan" {
 					return errors.New("test must never provision")
@@ -334,7 +333,7 @@ func TestWorkspacePTYCancellationStopsOwnedSubprocess(t *testing.T) {
 	done := make(chan error, 1)
 	stopped := make(chan struct{})
 	go func() {
-		done <- setupForTest(ctx, setupOptions{path: path, withDemo: true, discovery: subscriptionDisplayRunner(t)},
+		done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t)},
 			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
 				if args[0] == "plan" {
 					return nil
@@ -465,7 +464,7 @@ func TestWorkspacePTYInputResizeAndPromptCancellation(t *testing.T) {
 			path := testCLIConfig(t)
 			done := make(chan error, 1)
 			go func() {
-				done <- setupForTest(ctx, setupOptions{path: path, discovery: subscriptionDisplayRunner(t)},
+				done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t)},
 					p.slave, p.slave, p.slave, func(context.Context, []string, io.Writer, io.Writer) error {
 						return errors.New("no provisioning authorized by this test")
 					})
@@ -512,7 +511,7 @@ func TestWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T) {
 
 func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, height int, name string) {
 	p := newSetupPTY(t, width, height)
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	finished := make(chan struct{})
@@ -527,7 +526,7 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	go func() {
 		defer close(finished)
 		done <- setupForTest(ctx, setupOptions{
-			path: path, subscription: defaultSubscription, publisher: defaultPublisher,
+			home: recordHome(path), subscription: defaultSubscription, publisher: defaultPublisher,
 			operatorID: defaultPublisher, cidr: "203.0.113.8/32", name: name, location: "eastus2",
 			discovery: subscriptionDisplayRunner(t),
 		}, p.slave, p.slave, p.slave, func(context.Context, []string, io.Writer, io.Writer) error {
@@ -578,7 +577,7 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	case <-time.After(10 * time.Second):
 		t.Fatal("configuration input cancellation hung")
 	}
-	c, err := installer.LoadConfig(path)
+	c, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited")
 	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
 		c.Azure.SnapshotReaderObjectID != "" {
 		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
@@ -594,7 +593,7 @@ func TestWorkspacePTYDestructiveApprovalRequiresAcknowledgement(t *testing.T) {
 	done := make(chan error, 1)
 	provisioned := make(chan struct{}, 1)
 	go func() {
-		done <- setupForTest(ctx, setupOptions{path: path, withDemo: true, discovery: subscriptionDisplayRunner(t)},
+		done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t)},
 			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
 				if args[0] == "plan" {
 					var changes []installer.ResourceChange

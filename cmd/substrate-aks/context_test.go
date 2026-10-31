@@ -33,7 +33,7 @@ func writeTestClientKubeconfig(c installer.Config) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(c.Installation.StateDir, c.Installation.ID)
+	dir := c.Installation.Dir
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
@@ -61,11 +61,11 @@ func TestSetupWarnsOnHandoffFailuresWithoutChangingCredentials(t *testing.T) {
 			if err := os.WriteFile(destination, before, 0600); err != nil {
 				t.Fatal(err)
 			}
-			privatePath := filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")
+			privatePath := filepath.Join(c.Installation.Dir, "kubeconfig")
 			var privateBefore []byte
 			var output bytes.Buffer
 			err = setupForTest(t.Context(), setupOptions{
-				path: path, yes: tc.yes, withDemo: true,
+				home: recordHome(path), name: recordName(path), yes: tc.yes, withDemo: true,
 				contextFile: destination, discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader("yes\nyes\nyes\nyes\n"), &output, &output,
 				func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -215,7 +215,7 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 			var output bytes.Buffer
 			last := ""
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, yes: automation, withDemo: true, skipContextHandoff: skip,
+				home: recordHome(path), name: recordName(path), yes: automation, withDemo: true, skipContextHandoff: skip,
 				contextFile: contextFile, discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader(answers), &output, &output,
 				func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -245,7 +245,7 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				privatePath := filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")
+				privatePath := filepath.Join(c.Installation.Dir, "kubeconfig")
 				if !strings.Contains(text, "export KUBECONFIG="+shellQuote(privatePath)) {
 					t.Fatal("declined handoff did not print the private kubeconfig export")
 				}
@@ -292,7 +292,7 @@ func TestWorkspaceReceiptRepeatsHandoffWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	var receipt bytes.Buffer
-	err = setupForTest(ctx, setupOptions{path: path, yes: true, contextFile: destination, discovery: subscriptionDisplayRunner(t)},
+	err = setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), yes: true, contextFile: destination, discovery: subscriptionDisplayRunner(t)},
 		strings.NewReader(""), &receipt, io.Discard,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
 			if args[0] == "client" {

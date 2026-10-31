@@ -15,7 +15,8 @@ func testConfig(t *testing.T) Config {
 	t.Setenv("BUILDX_CONFIG", "")
 	return Config{
 		Installation: InstallationConfig{
-			ID: "11111111-1111-4111-8111-111111111111", StateDir: t.TempDir(),
+			ID: "11111111-1111-4111-8111-111111111111", Name: "substrate-test", Dir: t.TempDir(),
+			Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated},
 		},
 		Azure: AzureConfig{
 			SubscriptionID:         "22222222-2222-4222-8222-222222222222",
@@ -125,7 +126,7 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy.json")
 	data := `{
-		"installation":{"id":"11111111-1111-4111-8111-111111111111","stateDir":"state"},
+		"installation":{"id":"11111111-1111-4111-8111-111111111111","name":"substrate-test"},
 		"azure":{
 			"subscriptionId":"22222222-2222-4222-8222-222222222222",
 			"assetPublisherObjectId":"33333333-3333-4333-8333-333333333333",
@@ -153,7 +154,8 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
 		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v3", Count: 1}) ||
 		c.Substrate.Source != (Source{Repository: DefaultRepository, Commit: DefaultCommit}) ||
-		c.Installation.StateDir != filepath.Join(dir, "state") ||
+		c.Installation.Dir != dir ||
+		c.Installation.Ownership != (Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}) ||
 		c.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
 		t.Fatalf("grouped configuration lost settings, defaults or relative paths: %+v", c)
 	}
@@ -162,7 +164,6 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 func TestLoadConfigStrictAndRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	c := testConfig(t)
-	c.Installation.StateDir = "state"
 	c.Substrate.Runtime.AssetsDir = "assets"
 	data, err := json.Marshal(c)
 	if err != nil {
@@ -176,7 +177,7 @@ func TestLoadConfigStrictAndRelativePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Installation.StateDir != filepath.Join(dir, "state") || loaded.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
+	if loaded.Installation.Dir != dir || loaded.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
 		t.Fatalf("relative paths did not resolve against configuration directory: %+v", loaded)
 	}
 	for _, bad := range [][]byte{

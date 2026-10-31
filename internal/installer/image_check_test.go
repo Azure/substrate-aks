@@ -123,7 +123,7 @@ func TestDestroyRecreateAndRecoverSavedImages(t *testing.T) {
 	c := testConfig(t)
 	c.Substrate.Images.Repository = "substratetest123.azurecr.io/substrate"
 	c.Substrate.Images.Plugin = "substratetest123.azurecr.io/plugin@sha256:" + strings.Repeat("a", 64)
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := filepath.Join(c.Installation.Dir, "installation.json")
 	before, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -247,9 +247,8 @@ func TestResetImagesRequiresCompleteTeardown(t *testing.T) {
 	for _, state := range []string{"absent", "owned registry or partial install", "AKS with managed node group", "orphaned managed node group", "foreign", "access failure", "unknown existence", "concurrent edit", "retargeted", "target discovery failure"} {
 		t.Run(state, func(t *testing.T) {
 			c := testConfig(t)
-			c.Installation.StateDir = "relative-state"
 			c.Substrate.Runtime.AssetsDir = "relative-assets"
-			path := filepath.Join(t.TempDir(), "deploy.json")
+			path := filepath.Join(c.Installation.Dir, "installation.json")
 			before, err := json.Marshal(c)
 			if err != nil {
 				t.Fatal(err)
@@ -315,6 +314,7 @@ func TestResetImagesRequiresCompleteTeardown(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.Substrate.Images = ImagesConfig{}
+			c.Installation.Dir = ""
 			if !reflect.DeepEqual(after, c) {
 				t.Fatalf("reset changed identity, source, paths or non-image configuration: %+v", after)
 			}

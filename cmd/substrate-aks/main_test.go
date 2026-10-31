@@ -7,15 +7,36 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 )
 
+// TestMain keeps every test away from the operator's real installation store;
+// tests that need records set their own isolated home with testRecord.
+func TestMain(m *testing.M) {
+	const inherited = "SUBSTRATE_AKS_TEST_HOME"
+	// Re-executed test binaries (signal tests) share the parent's home, which
+	// the parent removes; they may be killed before running cleanup.
+	if home := os.Getenv(inherited); home != "" {
+		os.Setenv(installer.HomeEnv, home)
+		os.Exit(m.Run())
+	}
+	home, err := os.MkdirTemp("", "substrate-aks-test-home-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Setenv(installer.HomeEnv, home)
+	os.Setenv(inherited, home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func TestReportCommandErrorDistinguishesIntentionalCancellation(t *testing.T) {
-	recovery := fmt.Errorf("setup stopped at infrastructure preview: %w\n\nResources are retained.\nRetry failed stage: substrate-aks plan --config deploy.json\nTeardown: substrate-aks destroy --config deploy.json --confirm-delete test-cluster", context.Canceled)
+	recovery := fmt.Errorf("setup stopped at infrastructure preview: %w\n\nResources are retained.\nRetry failed stage: substrate-aks plan substrate-dev\nTeardown: substrate-aks destroy substrate-dev --confirm-delete test-cluster", context.Canceled)
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -45,12 +66,10 @@ func TestReportCommandErrorDistinguishesIntentionalCancellation(t *testing.T) {
 }
 
 func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
+	path := testRecord(t, "substrate-dev")
 	bin := t.TempDir()
 	fakeTool(t, bin, "az", `test "$1" = rest || exit 19; printf '%s' '`+testRegionsJSON+`'`)
 	t.Setenv("PATH", bin)
-	path := filepath.Join(dir, "deploy.json")
 	args := []string{"init",
 		"--subscription", "22222222-2222-4222-8222-222222222222",
 		"--asset-publisher-object-id", "33333333-3333-4333-8333-333333333333",
@@ -87,7 +106,7 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 }
 
 func TestInitUsesAzureContextDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	bin := t.TempDir()
 	fakeTool(t, bin, "az", `
 case "$1 $2" in
@@ -99,7 +118,7 @@ esac
 `)
 	t.Setenv("PATH", bin)
 	var out bytes.Buffer
-	if err := run(t.Context(), []string{"init", "--config", path, "--api-cidr", "203.0.113.8/32"}, &out, &out); err != nil {
+	if err := run(t.Context(), []string{"init", recordName(path), "--api-cidr", "203.0.113.8/32"}, &out, &out); err != nil {
 		t.Fatal(err)
 	}
 	c, err := installer.LoadConfig(path)
@@ -117,9 +136,9 @@ func TestInitAllowsUnrestrictedAPIOnlyExplicitly(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "az", `test "$1" = rest || exit 19; printf '%s' '`+testRegionsJSON+`'`)
 	t.Setenv("PATH", bin)
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	var out bytes.Buffer
-	args := []string{"init", "--config", path, "--subscription", defaultSubscription,
+	args := []string{"init", recordName(path), "--subscription", defaultSubscription,
 		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher, "--allow-unrestricted-api"}
 	if err := run(t.Context(), args, &out, &out); err != nil {
 		t.Fatal(err)
@@ -196,7 +215,7 @@ esac
 `)
 	t.Setenv("PATH", bin)
 	var out bytes.Buffer
-	if err := run(t.Context(), []string{"images", "--reset-config", "--config", path}, &out, &out); err != nil {
+	if err := run(t.Context(), []string{"images", "--reset-config", recordName(path)}, &out, &out); err != nil {
 		t.Fatal(err)
 	}
 	reset, err := installer.LoadConfig(path)
@@ -253,7 +272,7 @@ esac
 			items := setupStageChecks("Verify configured images", "images", []string{"--check"})
 			ui.checklist("Images and assets", items...)
 			err = ui.checkGroup(items, func() error {
-				return run(ctx, []string{"images", "--check", "--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+				return run(ctx, []string{"images", "--check", recordName(path)}, &bytes.Buffer{}, &bytes.Buffer{})
 			})
 			if (err != nil) != (status == "missing") {
 				t.Fatalf("image verification returned %v for %s", err, status)
@@ -271,5 +290,89 @@ esac
 				}
 			}
 		})
+	}
+}
+
+func TestInstallationNameArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		args       []string
+	}{
+		{"name before flags", "installation not found: missing", []string{"status", "missing", "--verbose"}},
+		{"name after flags", "installation not found: missing", []string{"status", "--verbose", "missing"}},
+		{"name flag", "installation not found: missing", []string{"status", "--name", "missing"}},
+		{"flags around name", "unknown container engine", []string{"doctor", "--azure", "missing", "--container-engine", "bogus"}},
+		{"conflicting names", "given twice", []string{"status", "one", "--name", "two"}},
+		{"invalid name", `installation name "Bad_Name"`, []string{"status", "Bad_Name"}},
+		{"extra arguments", "unexpected arguments", []string{"status", "one", "two"}},
+		{"destroy needs a name", "destroy requires the installation NAME", []string{"destroy", "--confirm-delete", "x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testRecord(t, "substrate-test")
+			var out bytes.Buffer
+			if err := run(t.Context(), tc.args, &out, &out); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run(%q) = %v; want error containing %q", tc.args, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
+	path := testCLIConfig(t)
+	home := recordHome(path)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, err := installer.ResolveInstallation(home, ""); err != nil || name != c.Installation.Name {
+		t.Fatalf("single installation was not the default: %q, %v", name, err)
+	}
+	var out bytes.Buffer
+	if err := initialize(home, c.Azure.SubscriptionID, c.Azure.AssetPublisherObjectID, "", "203.0.113.8/32",
+		"substrate-other", "eastus2", false, nil, "", "", &out); err != nil {
+		t.Fatal(err)
+	}
+	err = run(t.Context(), []string{"status"}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "substrate-other, substrate-test") {
+		t.Fatalf("ambiguous command did not list the choices: %v", err)
+	}
+	out.Reset()
+	if err := run(t.Context(), []string{"list"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME") ||
+		!strings.HasPrefix(lines[1], "substrate-other") || !strings.HasPrefix(lines[2], "substrate-test") ||
+		!strings.Contains(lines[2], c.Azure.ResourceGroup) || !strings.Contains(lines[2], c.Azure.Location) {
+		t.Fatalf("list did not show each installation's resource group and region:\n%s", &out)
+	}
+}
+
+func TestDestroyRemovesLocalStateOnlyAfterAzureTeardown(t *testing.T) {
+	path := testCLIConfig(t)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", fmt.Sprintf(`case "$1 $2" in
+"account show") printf '{"id":"%s"}' ;;
+"group exists") printf false ;;
+*) exit 7 ;;
+esac
+`, c.Azure.SubscriptionID))
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"destroy", c.Installation.Name, "--confirm-delete", "wrong"}, &out, &out); err == nil {
+		t.Fatal("destroy accepted the wrong confirmation")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("failed destroy removed local state: %v", err)
+	}
+	if err := run(t.Context(), []string{"destroy", c.Installation.Name, "--confirm-delete", c.Azure.ResourceGroup}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(c.Installation.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroy kept local installation state: %v", err)
 	}
 }

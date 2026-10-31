@@ -113,7 +113,7 @@ esac
 `)
 	t.Setenv("PATH", bin)
 	var result, progress bytes.Buffer
-	if err := run(t.Context(), []string{"plan", "--registry-only", "--config", path}, &result, &progress); err != nil {
+	if err := run(t.Context(), []string{"plan", "--registry-only", recordName(path)}, &result, &progress); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Planned resource changes", "Resource ID", "+ Create",

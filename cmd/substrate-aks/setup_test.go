@@ -39,11 +39,11 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
 	client := installer.ClientSetup{}
 	if o.azure == nil {
-		o.azure = successfulCloudRunner(o.path)
+		o.azure = successfulCloudRunner(o.home)
 	}
 	o.client = &client
 	if o.contextFile == "" && !o.skipContextHandoff {
-		o.contextFile = filepath.Join(filepath.Dir(o.path), "operator-kubeconfig")
+		o.contextFile = filepath.Join(o.home, "operator-kubeconfig")
 	}
 	if o.subscription != "" && o.publisher != "" && o.operatorID == "" {
 		o.operatorID = defaultPublisher
@@ -82,19 +82,19 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 		if args[0] != "client" {
 			return nil
 		}
-		c, err := installer.LoadConfig(o.path)
+		c, err := installer.LoadConfig(installer.RecordPath(o.home, o.name))
 		if err != nil {
 			return err
 		}
 		client = installer.ClientSetup{
-			Kubeconfig: filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig"),
+			Kubeconfig: filepath.Join(c.Installation.Dir, "kubeconfig"),
 			Context:    c.AKS.ClusterName,
-			BinDir:     filepath.Dir(o.path),
+			BinDir:     o.home,
 		}
 		if err := os.WriteFile(filepath.Join(client.BinDir, "kubectl-ate"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 			return err
 		}
-		if _, err := os.Stat(filepath.Join(c.Installation.StateDir, c.Installation.ID, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(c.Installation.Dir, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return writeTestClientKubeconfig(c)
@@ -120,7 +120,7 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 			if loadErr != nil {
 				t.Fatal(loadErr)
 			}
-			wantTeardown := teardownCommand(path, config.Azure.ResourceGroup)
+			wantTeardown := teardownCommand(config.Installation.Name, config.Azure.ResourceGroup)
 			var commands []string
 			publications, imageChecks := 0, 0
 			want := errors.New("publisher failed")
@@ -133,8 +133,8 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 						publications++
 					}
 				}
-				if len(args) < 3 || args[1] != "--config" || args[2] != path {
-					t.Fatalf("stage lost config: %v", args)
+				if len(args) < 2 || args[1] != config.Installation.Name {
+					t.Fatalf("stage lost installation: %v", args)
 				}
 				if args[0] == fail {
 					return want
@@ -142,7 +142,7 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 				return nil
 			}
 			var output bytes.Buffer
-			err := setupForTest(t.Context(), setupOptions{path: path, yes: true, withDemo: true, discovery: subscriptionDisplayRunner(t)},
+			err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, withDemo: true, discovery: subscriptionDisplayRunner(t)},
 				strings.NewReader(""), &output, &output, execute)
 			wantCommands := []string{"plan", "provision", "images", "images", "plan", "provision", "check", "prepare", "install", "status", "demo", "client"}
 			if i := slices.Index(wantCommands, fail); i >= 0 {
@@ -179,7 +179,7 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 func TestSetupForwardsContainerEngineOnlyToBuildPrerequisitesAndImages(t *testing.T) {
 	path := testCLIConfig(t)
 	var output bytes.Buffer
-	err := setupForTest(t.Context(), setupOptions{path: path, yes: true, containerEngine: "podman", discovery: subscriptionDisplayRunner(t)},
+	err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, containerEngine: "podman", discovery: subscriptionDisplayRunner(t)},
 		strings.NewReader(""), &output, &output, func(_ context.Context, args []string, _, _ io.Writer) error {
 			hasEngine := strings.Contains(strings.Join(args, " "), "--container-engine podman")
 			if hasEngine != (args[0] == "doctor" || args[0] == "images") {
@@ -194,7 +194,7 @@ func TestSetupForwardsContainerEngineOnlyToBuildPrerequisitesAndImages(t *testin
 
 func TestContainerEngineRejectsInvalidSelectionBeforeConfigOrCloudAccess(t *testing.T) {
 	var output bytes.Buffer
-	err := run(t.Context(), []string{"setup", "--container-engine", "unknown", "--config", "/missing-config"}, &output, &output)
+	err := run(t.Context(), []string{"setup", "missing", "--container-engine", "unknown"}, &output, &output)
 	if err == nil || !strings.Contains(err.Error(), "unknown container engine") {
 		t.Fatalf("invalid engine selection continued setup: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestSetupShowsEngineBeforeBillingConfirmation(t *testing.T) {
 			path := testCLIConfig(t)
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, containerEngine: tc.requested, discovery: subscriptionDisplayRunner(t),
+				home: recordHome(path), name: recordName(path), containerEngine: tc.requested, discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					if c.Args[0] != tc.available {
 						return nil, errors.New("builder unavailable in this fixture")
@@ -249,7 +249,7 @@ func TestSetupOffersBothEnginesAndPinsInteractiveChoice(t *testing.T) {
 				engine = "docker"
 			}
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, discovery: subscriptionDisplayRunner(t),
+				home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					probes = append(probes, strings.Join(c.Args, " "))
 					return []byte("Status: running\n"), nil
@@ -287,7 +287,7 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 				answers, engine = "", "docker"
 			}
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, yes: yes, containerEngine: requested, discovery: subscriptionDisplayRunner(t),
+				home: recordHome(path), name: recordName(path), yes: yes, containerEngine: requested, discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					probes = append(probes, c.Args[0])
 					return []byte("Status: running\n"), nil
@@ -318,12 +318,12 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 func TestNewInstallationChoosesEngineBeforeAzureDiscovery(t *testing.T) {
 	scratch := t.TempDir()
 	t.Setenv("TMPDIR", scratch)
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	var output bytes.Buffer
 	var calls []string
 	stop := errors.New("stop after discovery")
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, cidr: "203.0.113.8/32",
+		home: recordHome(path), name: recordName(path), cidr: "203.0.113.8/32",
 		discovery: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
 			calls = append(calls, "azure")
 			return nil, stop
@@ -357,7 +357,7 @@ func TestSetupEnginePickerEOFStopsBeforeConfirmationAndStages(t *testing.T) {
 	path := testCLIConfig(t)
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, discovery: subscriptionDisplayRunner(t),
+		home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t),
 		local: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
 			return []byte("Status: running\n"), nil
 		}),
@@ -375,7 +375,7 @@ func TestSetupPinsAutoDetectedEngineAcrossStages(t *testing.T) {
 	var output bytes.Buffer
 	var probes []string
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, yes: true, discovery: subscriptionDisplayRunner(t),
+		home: recordHome(path), name: recordName(path), yes: true, discovery: subscriptionDisplayRunner(t),
 		local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 			probes = append(probes, c.Args[0])
 			if c.Args[0] == "docker" {
@@ -403,7 +403,7 @@ func TestSetupBuilderFailureStopsBeforeBillingConfirmation(t *testing.T) {
 			var output bytes.Buffer
 			unavailable := errors.New("builder unavailable")
 			err := setupForTest(t.Context(), setupOptions{
-				path: path, discovery: subscriptionDisplayRunner(t),
+				home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t),
 				local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
 					if phase == "selected builder" {
 						switch strings.Join(c.Args, " ") {
@@ -429,7 +429,7 @@ func TestSetupDeclinesBeforeCloudChanges(t *testing.T) {
 	path := testCLIConfig(t)
 	called := false
 	var output bytes.Buffer
-	err := setupForTest(t.Context(), setupOptions{path: path, discovery: subscriptionDisplayRunner(t)}, strings.NewReader("\n"), &output, &output,
+	err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t)}, strings.NewReader("\n"), &output, &output,
 		func(context.Context, []string, io.Writer, io.Writer) error {
 			called = true
 			return nil
@@ -443,9 +443,9 @@ func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
 	path := testCLIConfig(t)
 	t.Setenv("PATH", "")
 	var output bytes.Buffer
-	err := run(t.Context(), []string{"setup", "--config", path, "--yes",
+	err := run(t.Context(), []string{"setup", recordName(path), "--yes",
 		"--identity-object-id", defaultPublisher}, &output, &output)
-	if err == nil || !strings.Contains(err.Error(), "edit the existing") {
+	if err == nil || !strings.Contains(err.Error(), "only apply to new installations") {
 		t.Fatalf("setup silently overrode configuration: %v", err)
 	}
 }
@@ -462,7 +462,7 @@ func TestSetupDeclinesPlannedChanges(t *testing.T) {
 			path := testCLIConfig(t)
 			var commands []string
 			var output bytes.Buffer
-			err := setupForTest(t.Context(), setupOptions{path: path, discovery: subscriptionDisplayRunner(t)}, strings.NewReader(tc.answers),
+			err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t)}, strings.NewReader(tc.answers),
 				&output, &output, func(_ context.Context, args []string, _, _ io.Writer) error {
 					commands = append(commands, args[0])
 					return nil
@@ -486,18 +486,18 @@ func TestCLICommandQuotesOnlyWhenNeeded(t *testing.T) {
 	}{
 		{
 			name: "ordinary destroy command", executable: "bin/substrate-aks",
-			args: []string{"destroy", "--config", "deploy-substrate-20261028-201041.json", "--confirm-delete", "substrate-20261028-201041"},
-			want: "bin/substrate-aks destroy --config deploy-substrate-20261028-201041.json --confirm-delete substrate-20261028-201041",
+			args: []string{"destroy", "substrate-20261028-201041", "--confirm-delete", "substrate-20261028-201041"},
+			want: "bin/substrate-aks destroy substrate-20261028-201041 --confirm-delete substrate-20261028-201041",
 		},
 		{
-			name: "executable and config paths with spaces", executable: "/tmp/substrate cli",
-			args: []string{"setup", "--config", "operator's config.json", "--container-engine=podman"},
-			want: `'/tmp/substrate cli' setup --config 'operator'"'"'s config.json' --container-engine=podman`,
+			name: "executable and arguments with spaces", executable: "/tmp/substrate cli",
+			args: []string{"setup", "operator's install", "--container-engine=podman"},
+			want: `'/tmp/substrate cli' setup 'operator'"'"'s install' --container-engine=podman`,
 		},
 		{
 			name: "shell syntax and empty arguments", executable: "bin/substrate-aks",
-			args: []string{"setup", "--config", "$(printf unsafe);*.json", "--name", ""},
-			want: "bin/substrate-aks setup --config '$(printf unsafe);*.json' --name ''",
+			args: []string{"setup", "$(printf unsafe);*", "--name", ""},
+			want: "bin/substrate-aks setup '$(printf unsafe);*' --name ''",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -511,34 +511,13 @@ func TestCLICommandQuotesOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
-func TestTeardownCommandFormatting(t *testing.T) {
-	for _, tc := range []struct {
-		name, executable, path, group, want string
-	}{
-		{
-			name: "ordinary arguments", executable: "bin/substrate-aks",
-			path: "deploy-substrate-20261029-183726.json", group: "substrate-20261029-183726",
-			want: "bin/substrate-aks destroy \\\n  --config deploy-substrate-20261029-183726.json \\\n  --confirm-delete substrate-20261029-183726",
-		},
-		{
-			name: "paths with spaces and apostrophes", executable: "/tmp/substrate cli",
-			path: "operator's config.json", group: "substrate-test",
-			want: "'/tmp/substrate cli' destroy \\\n  --config 'operator'\"'\"'s config.json' \\\n  --confirm-delete substrate-test",
-		},
-		{
-			name: "shell syntax and empty arguments", executable: "bin/substrate-aks",
-			path: "$(printf unsafe);*.json", group: "",
-			want: "bin/substrate-aks destroy \\\n  --config '$(printf unsafe);*.json' \\\n  --confirm-delete ''",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			original := os.Args
-			os.Args = []string{tc.executable}
-			t.Cleanup(func() { os.Args = original })
-			if got := teardownCommand(tc.path, tc.group); got != tc.want {
-				t.Fatalf("teardown command = %q; want %q", got, tc.want)
-			}
-		})
+func TestTeardownCommandNamesInstallationAndResourceGroup(t *testing.T) {
+	original := os.Args
+	os.Args = []string{"bin/substrate-aks"}
+	t.Cleanup(func() { os.Args = original })
+	want := "bin/substrate-aks destroy substrate-dev --confirm-delete substrate-dev-rg"
+	if got := teardownCommand("substrate-dev", "substrate-dev-rg"); got != want {
+		t.Fatalf("teardown command = %q; want %q", got, want)
 	}
 }
 
@@ -607,7 +586,7 @@ func TestSetupReusesConfiguredImagesOnRetry(t *testing.T) {
 	var commands []string
 	var output bytes.Buffer
 	err = setupForTest(t.Context(), setupOptions{
-		path: path, yes: true, discovery: subscriptionDisplayRunner(t),
+		home: recordHome(path), name: recordName(path), yes: true, discovery: subscriptionDisplayRunner(t),
 		local: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) {
 			t.Fatal("configured image reuse probed a container engine")
 			return nil, nil
@@ -660,7 +639,7 @@ func TestSetupRejectsStaleImagesBeforeProvisioning(t *testing.T) {
 	missing := errors.New("configured image is missing from the recreated empty registry")
 	var commands []string
 	var output bytes.Buffer
-	err = setupForTest(t.Context(), setupOptions{path: path, yes: true, discovery: subscriptionDisplayRunner(t)},
+	err = setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, discovery: subscriptionDisplayRunner(t)},
 		strings.NewReader(""), &output, &output, func(_ context.Context, args []string, _, _ io.Writer) error {
 			commands = append(commands, args[0])
 			if args[0] == "images" && strings.Contains(strings.Join(args, " "), "--check") {
@@ -677,5 +656,33 @@ func TestSetupRejectsStaleImagesBeforeProvisioning(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(after, data) {
 		t.Fatalf("setup silently changed the saved image set: %v", err)
+	}
+}
+
+func TestSetupNamePromptRejectsSavedInstallations(t *testing.T) {
+	path := testCLIConfig(t)
+	home := recordHome(path)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err = setupForTest(t.Context(), setupOptions{
+		home: home, subscription: defaultSubscription, publisher: defaultPublisher,
+		cidr: "203.0.113.8/32", location: "eastus2", accessible: true, skipContextHandoff: true,
+		discovery: subscriptionDisplayRunner(t), azure: successfulCloudRunnerFor(home, "fresh-install"),
+	}, strings.NewReader("substrate-test\nfresh-install\n\n\nno\n"), &output, &output,
+		func(context.Context, []string, io.Writer, io.Writer) error {
+			t.Fatal("declined setup ran a stage")
+			return nil
+		})
+	if err == nil || !strings.Contains(output.String(), "installation substrate-test already exists; run setup substrate-test to resume it") {
+		t.Fatalf("taken name was not rejected: %v\n%s", err, &output)
+	}
+	if _, err := installer.LoadInstallation(home, "fresh-install"); err != nil {
+		t.Fatalf("setup did not save the replacement name: %v\n%s", err, &output)
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("setup changed the existing installation: %v", err)
 	}
 }

@@ -6,16 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 )
 
-func successfulCloudRunner(path string) installer.Runner {
+// successfulCloudRunner answers for the installation saved in home, resolved
+// on each call because setup may create it after the runner is built.
+func successfulCloudRunner(home string) installer.Runner {
+	return successfulCloudRunnerFor(home, "")
+}
+
+func successfulCloudRunnerFor(home, name string) installer.Runner {
 	return defaultsRunner(func(_ context.Context, command installer.Command) ([]byte, error) {
-		c, err := installer.LoadConfig(path)
+		name, err := installer.ResolveInstallation(home, name)
+		if err != nil {
+			return nil, err
+		}
+		c, err := installer.LoadInstallation(home, name)
 		if err != nil {
 			return nil, err
 		}
@@ -45,7 +54,7 @@ func TestSetupCloudFailureStopsBeforeBillingAndDeployment(t *testing.T) {
 	want := errors.New("subscription permissions cannot be verified")
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
-		path: testCLIConfig(t), yes: true, discovery: subscriptionDisplayRunner(t),
+		home: recordHome(testCLIConfig(t)), name: "substrate-test", yes: true, discovery: subscriptionDisplayRunner(t),
 		azure: defaultsRunner(func(context.Context, installer.Command) ([]byte, error) { return nil, want }),
 	}, strings.NewReader(""), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 		t.Fatal("cloud preflight failure executed an installation stage")
@@ -88,16 +97,16 @@ func TestOperatorIdentityWarning(t *testing.T) {
 	}
 }
 
-func TestCloudDoctorRequiresExplicitConfig(t *testing.T) {
+func TestCloudDoctorRequiresInstallationName(t *testing.T) {
 	var output bytes.Buffer
 	err := run(t.Context(), []string{"doctor", "--azure"}, &output, &output)
-	if err == nil || !strings.Contains(err.Error(), "requires --config") {
-		t.Fatalf("cloud doctor did not require a configuration: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires an installation NAME") {
+		t.Fatalf("cloud doctor did not require an installation: %v", err)
 	}
 }
 
 func TestSetupSavesDiscoveredPublisherTypeWithSeparateOperator(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deploy.json")
+	path := testRecord(t, "substrate-test")
 	runner := defaultsRunner(func(_ context.Context, command installer.Command) ([]byte, error) {
 		if isRegionList(command) {
 			return []byte(testRegionsJSON), nil
@@ -109,8 +118,8 @@ func TestSetupSavesDiscoveredPublisherTypeWithSeparateOperator(t *testing.T) {
 	})
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
-		path: path, subscription: defaultSubscription, operatorID: defaultClientID, operatorType: "Group",
-		name: "substrate-test", location: "eastus2", cidr: "203.0.113.8/32", discovery: runner,
+		home: recordHome(path), name: recordName(path), subscription: defaultSubscription, operatorID: defaultClientID, operatorType: "Group",
+		location: "eastus2", cidr: "203.0.113.8/32", discovery: runner,
 	}, strings.NewReader("\n\nno\nno\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 		t.Fatal("declined setup submitted a deployment stage")
 		return nil

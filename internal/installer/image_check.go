@@ -154,7 +154,7 @@ func imageCheckResult(data []byte) error {
 	}
 	switch report.Status {
 	case "missing":
-		return fmt.Errorf("%w: %s; saved references do not prove publication still exists. Restore the exact image set, or fully destroy this installation, run images --reset-config with the same --config, then retry setup", errImagesMissing, report.Image)
+		return fmt.Errorf("%w: %s; saved references do not prove publication still exists. Restore the exact image set, or destroy this installation and run setup again. If its resource group was already deleted outside the installer, run images --reset-config for this installation, then retry setup", errImagesMissing, report.Image)
 	case "authentication":
 		return fmt.Errorf("authentication failed while checking %s; refresh az login for owned ACR or your external registry login, then retry images --check; images were not assumed missing", report.Image)
 	case "authorization":

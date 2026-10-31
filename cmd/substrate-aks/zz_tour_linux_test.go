@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,14 +38,16 @@ func TestTour(t *testing.T) {
 	}
 	o := setupOptions{withDemo: os.Getenv("TOUR_DEMO") != ""}
 	if mode == "fresh" {
-		o.path = filepath.Join(t.TempDir(), "deploy.json")
+		path := testRecord(t, "substrate-test")
+		o.home, o.name = recordHome(path), recordName(path)
 		o.subscription, o.publisher, o.operatorID = defaultSubscription, defaultPublisher, defaultPublisher
 		o.cidr, o.location = "203.0.113.8/32", "eastus2"
 	} else {
-		o.path = testCLIConfig(t)
+		path := testCLIConfig(t)
+		o.home, o.name = recordHome(path), recordName(path)
 	}
 	o.discovery = slowRunner(subscriptionDisplayRunner(t), delay/4)
-	o.azure = slowRunner(successfulCloudRunner(o.path), delay/6)
+	o.azure = slowRunner(successfulCloudRunner(o.home), delay/6)
 	fails := os.Getenv("TOUR_FAIL")
 	attempts := 0
 	err = setupForTest(t.Context(), o, tty, os.Stdout, tty, func(ctx context.Context, args []string, _, _ io.Writer) error {
@@ -67,7 +68,7 @@ func TestTour(t *testing.T) {
 		if s != nil {
 			s.send(setupLogMsg(logFile.Name()))
 		}
-		fmt.Fprintf(logFile, "[command] %s\n[config] %s\n[target] substrate-test / southcentralus\n", args[0], o.path)
+		fmt.Fprintf(logFile, "[command] %s\n[installation] %s\n[target] substrate-test / southcentralus\n", args[0], o.name)
 		for _, step := range steps[args[0]] {
 			if s != nil {
 				s.send(setupStepMsg(step))
