@@ -140,7 +140,7 @@ func TestAzureDatabaseVaultContract(t *testing.T) {
 			}
 			// A separate workspace must recover the same credentials from the vault.
 			retry := a
-			retry.Config.Installation.StateDir = t.TempDir()
+			retry.Config.Installation.Dir = t.TempDir()
 			second, err := retry.databaseCredentials(t.Context(), false)
 			if err != nil || first != second {
 				t.Fatalf("fresh workspace could not reuse vault credentials: %v", err)

@@ -170,9 +170,7 @@ func TestDatabaseCredentialsPersistInVaultWithoutLocalFilesOrRotation(t *testing
 					}
 				}
 			}
-			if _, err := os.Stat(filepath.Join(c.workspace(), "database-credentials.json")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("credentials were persisted to the workstation")
-			}
+			assertNoPersistedCredentials(t, c, first)
 			a.Config.Database.Location = "anotherregion"
 			if _, err := a.databaseCredentials(t.Context(), true); err == nil {
 				t.Fatal("different database reused credentials")
@@ -224,8 +222,8 @@ func TestDatabaseVaultFailuresNeverRegenerateCredentials(t *testing.T) {
 			if _, err := (App{Config: c, Runner: r}).databaseCredentials(t.Context(), tc.create); err == nil {
 				t.Fatal("invalid or unavailable credentials became success")
 			}
-			if _, err := os.Stat(filepath.Join(c.workspace(), "database-credentials.json")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("failure persisted credentials locally")
+			if workspaceHasState(t, c) {
+				t.Fatal("failure wrote local installation state")
 			}
 		})
 	}
@@ -309,49 +307,26 @@ func TestManagedProvisionWaitsForVaultAccessBeforeCredentials(t *testing.T) {
 	}
 }
 
-func TestDatabaseCredentialsMigrateLegacyFileOnlyAfterVaultVerification(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
-		for _, outcome := range []string{"new vault", "matching vault", "conflicting vault", "write failed"} {
-			t.Run(string(backend)+"/"+outcome, func(t *testing.T) {
-				c, _ := managedTestConfig(t, backend)
-				s, err := newDatabaseSecrets(c)
-				if err != nil {
-					t.Fatal(err)
-				}
-				legacy, err := json.Marshal(s)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(c.workspace(), 0700); err != nil {
-					t.Fatal(err)
-				}
-				path := filepath.Join(c.workspace(), "database-credentials.json")
-				if err := os.WriteFile(path, legacy, 0600); err != nil {
-					t.Fatal(err)
-				}
-				r := databaseTestRunner(t, c, outcome == "conflicting vault")
-				var runner Runner = r
-				if outcome == "matching vault" {
-					r.secret = legacy
-				} else if outcome == "write failed" {
-					runner = script(t, reply{contains: "keyvault secret list", output: "[]"},
-						reply{contains: "keyvault secret set", err: errors.New("write failed")})
-				}
-				got, err := (App{Config: c, Runner: runner}).databaseCredentials(t.Context(), true)
-				wantFailure := outcome == "conflicting vault" || outcome == "write failed"
-				if (err != nil) != wantFailure {
-					t.Fatalf("migration error: %v", err)
-				}
-				data, fileErr := os.ReadFile(path)
-				if wantFailure {
-					if fileErr != nil || !bytes.Equal(data, legacy) {
-						t.Fatal("failed migration destroyed the original credentials")
-					}
-				} else if !errors.Is(fileErr, os.ErrNotExist) || got != s {
-					t.Fatal("successful migration left local credentials or changed their values")
-				}
-			})
+// assertNoPersistedCredentials fails if any generated password was written to
+// the installation directory.
+func assertNoPersistedCredentials(t *testing.T, c Config, s databaseSecrets) {
+	t.Helper()
+	if err := filepath.WalkDir(c.workspace(), func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
 		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
+			if bytes.Contains(data, []byte(password)) {
+				t.Fatalf("credential persisted in %s", path)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -410,25 +385,13 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 							t.Fatal("password leaked into a local parameter file or argv")
 						}
 					}
-					if err := filepath.WalkDir(c.workspace(), func(path string, entry os.DirEntry, err error) error {
-						if err != nil || entry.IsDir() {
-							return err
+					assertNoPersistedCredentials(t, c, s)
+				} else {
+					for _, call := range r.calls {
+						if strings.Contains(strings.Join(call.Args, " "), "keyvault") {
+							t.Fatalf("registry bootstrap accessed database credentials: %v", call.Args)
 						}
-						data, err := os.ReadFile(path)
-						if err != nil {
-							return err
-						}
-						for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
-							if bytes.Contains(data, []byte(password)) {
-								t.Fatalf("credential persisted in %s", path)
-							}
-						}
-						return nil
-					}); err != nil {
-						t.Fatal(err)
 					}
-				} else if _, err := os.Stat(filepath.Join(c.workspace(), "database-credentials.json")); !errors.Is(err, os.ErrNotExist) {
-					t.Fatal("registry bootstrap created database credentials")
 				}
 			})
 		}
@@ -493,10 +456,8 @@ func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
 	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"database-credentials.json", "infra/parameters.json"} {
-		if _, err := os.Stat(filepath.Join(c.workspace(), path)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("preview retained a credential-bearing file: %s", path)
-		}
+	if _, err := os.Stat(filepath.Join(c.workspace(), "infra/parameters.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("preview retained a credential-bearing parameter file")
 	}
 	last := r.calls[len(r.calls)-1]
 	if last.SensitiveOutput || !strings.Contains(strings.Join(last.Args, " "), "--parameters @/dev/stdin") ||

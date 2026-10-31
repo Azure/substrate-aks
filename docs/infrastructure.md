@@ -1,7 +1,7 @@
 # Deploying the infrastructure without the installer
 
 The Bicep modules are a public infrastructure interface. They do not require
-`substrate-aks init`, `deploy.json` or Go. Azure CLI with Bicep support, Azure
+`substrate-aks init`, a saved installation, or Go. Azure CLI with Bicep support, Azure
 authentication, regional service capacity and resource/RBAC deployment permissions
 are still required. These deployments create billable resources.
 
@@ -9,7 +9,7 @@ are still required. These deployments create billable resources.
 identities and the selected database. `infra/resources.bicep` is its resource-group
 module; `infra/horizondb.bicep` can also be deployed independently into an existing
 group. These templates do **not** publish images, bootstrap SQL roles/schema,
-install Substrate or create an installer configuration. Standalone installations
+install Substrate or create a saved installer installation. Standalone installations
 are not automatically adopted by the installer.
 
 ## Stable parameters and lifecycle

@@ -105,6 +105,29 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	}
 }
 
+func TestInitSavesDatabaseInInitialRecord(t *testing.T) {
+	path := testRecord(t, "horizon")
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", `
+case "$*" in
+  *Microsoft.HorizonDB/locations/southcentralus/capabilities*) printf '%s' '{"value":[{"location":"southcentralus","clusterCapabilities":{"supportedPostgreSqlVersions":[{"name":"17"}]},"poolCapabilities":{"supportedProcessors":[{"name":"Intel","supportedGenerations":[{"computeGeneration":1,"supportedComputeModels":[{"type":"Provisioned","supportedComputeSizes":[{"vCores":2}]}]}]}]}}]}';;
+  "rest --method"*) printf '%s' '`+testRegionsJSON+`';;
+  *) printf 'unexpected Azure operation: %s\n' "$*" >&2; exit 19;;
+esac
+`)
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"init", recordName(path), "--subscription", defaultSubscription,
+		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+		"--api-cidr", "203.0.113.8/32", "--database", "horizondb", "--database-location", "southcentralus"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	c, err := installer.LoadInstallation(recordHome(path), recordName(path))
+	if err != nil || c.Database != (installer.DatabaseConfig{Backend: installer.DatabaseHorizon, Location: "southcentralus"}) {
+		t.Fatalf("database selection was not saved with the new installation: %+v, %v", c.Database, err)
+	}
+}
+
 func TestNewManagedConfigRejectsUnsupportedRegion(t *testing.T) {
 	bin := t.TempDir()
 	for _, tool := range []string{"git", "go", "kubelogin"} {
@@ -393,6 +416,40 @@ func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
 		!strings.HasPrefix(lines[1], "substrate-other") || !strings.HasPrefix(lines[2], "substrate-test") ||
 		!strings.Contains(lines[2], c.Azure.ResourceGroup) || !strings.Contains(lines[2], c.Azure.Location) {
 		t.Fatalf("list did not show each installation's resource group and region:\n%s", &out)
+	}
+}
+
+func TestDestroyKeepsLocalStateWhenManagedDatabaseBlocksDeletion(t *testing.T) {
+	path := testCLIConfig(t)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Database = installer.DatabaseConfig{Backend: installer.DatabaseHorizon, Location: "eastus"}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", fmt.Sprintf(`case "$1 $2" in
+"account show") printf '{"id":"%s"}' ;;
+"group exists") printf true ;;
+"group show") printf '{"location":"%s","tags":{"substrate-aks-installation":"%s"}}' ;;
+"group delete") echo "ResourceGroupDeletionBlocked: HorizonDB cluster is DroppingInProgress" >&2; exit 1 ;;
+*) exit 7 ;;
+esac
+`, c.Azure.SubscriptionID, c.Azure.Location, c.Installation.ID))
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	err = run(t.Context(), []string{"destroy", c.Installation.Name, "--confirm-delete", c.Azure.ResourceGroup}, &out, &out)
+	if err == nil {
+		t.Fatal("blocked group deletion was reported as success")
+	}
+	if saved, err := os.ReadFile(path); err != nil || !bytes.Equal(saved, data) {
+		t.Fatalf("failed teardown removed or changed the local installation needed for retry: %v", err)
 	}
 }
 
