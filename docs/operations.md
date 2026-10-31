@@ -300,16 +300,15 @@ Upstream receives explicit owner/runtime DSNs through its existing secret
 environment contract on full install and component redeploy. It skips bundled
 PostgreSQL and reconciles the API Secret and rollout hash itself. `status`
 reports the managed endpoint and AKS egress address alongside workload status.
-Keep the original config and installation ID for retries. Provisioning reuses
+Keep the saved installation and its ID for retries. Provisioning reuses
 the credentials in the installer-owned Key Vault rather than rotating them.
-The workspace contains no newly persisted database passwords; a valid legacy
-credential file is migrated during provisioning and removed only after the
-vault copy is verified. Run as the configured Azure identity or grant the
+The installation directory contains no database passwords. Run as the
+configured Azure identity or grant the
 installer equivalent vault access. Provisioning waits up to three minutes for
 recognized vault RBAC/DNS propagation failures instead of aborting on the first
 probe, including Linux and macOS DNS error wording. Metadata-only probes retain
 access diagnostics and never read passwords.
-If access still fails, retry with the original config once permissions are
+If access still fails, retry the same installation once permissions are
 correct; a missing secret after database deployment requires restoring that secret.
 
 Secret-handling Azure, Kubernetes Secret and upstream commands suppress
@@ -579,7 +578,7 @@ go test -tags=integration ./internal/installer \
 
 The separate Azure vault contract requires explicit billable-resource
 authorization. It creates a disposable resource group and Key Vault for each
-managed backend, checks stdin-only secret writes, retry/fresh-workspace reads,
+managed backend, checks stdin-only secret writes, retry/fresh-directory reads,
 ARM secure secret references and local-file/log leakage, then deletes its groups.
 No database or AKS cluster is created. Vaults remain soft-deleted for seven days.
 
@@ -791,8 +790,8 @@ subscription deployment names. Resource discovery uses the latest successful ful
 attempt (or the legacy unsuffixed record), not a failed rerun's missing outputs.
 Provision still returns its actual failure. This does not reconstruct outputs
 already overwritten by an older installer. If no successful outputs remain,
-inspect the installation's subscription deployment history and retry with the
-original configuration; missing outputs alone do not establish that resources
+inspect the installation's subscription deployment history and retry the same
+saved installation; missing outputs alone do not establish that resources
 are absent. Access errors and invalid/mismatched metadata remain errors.
 
 The installed Bicep type catalog emitted missing-preview-type warnings for the

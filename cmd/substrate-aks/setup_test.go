@@ -679,13 +679,27 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 }
 
 func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
-	path := testCLIConfig(t)
-	t.Setenv("PATH", "")
-	var output bytes.Buffer
-	err := run(t.Context(), []string{"setup", recordName(path), "--yes",
-		"--identity-object-id", defaultPublisher}, &output, &output)
-	if err == nil || !strings.Contains(err.Error(), "only apply to new installations") {
-		t.Fatalf("setup silently overrode configuration: %v", err)
+	for _, flags := range [][]string{
+		{"--identity-object-id", defaultPublisher},
+		{"--database", "horizondb"},
+		{"--database-location", "eastus"},
+	} {
+		t.Run(flags[0], func(t *testing.T) {
+			path := testCLIConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", "")
+			var output bytes.Buffer
+			err = run(t.Context(), append([]string{"setup", recordName(path), "--yes"}, flags...), &output, &output)
+			if err == nil || !strings.Contains(err.Error(), "only apply to new installations") {
+				t.Fatalf("setup silently overrode configuration: %v", err)
+			}
+			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("rejected flags changed the saved installation: %v", err)
+			}
+		})
 	}
 }
 

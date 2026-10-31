@@ -281,20 +281,6 @@ func (a App) databaseCredentials(ctx context.Context, create bool) (databaseSecr
 	if err != nil {
 		return databaseSecrets{}, err
 	}
-	legacyPath := filepath.Join(c.workspace(), "database-credentials.json")
-	legacy, legacyErr := os.ReadFile(legacyPath)
-	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
-		return databaseSecrets{}, legacyErr
-	}
-	if legacyErr == nil {
-		info, err := os.Lstat(legacyPath)
-		if err != nil {
-			return databaseSecrets{}, err
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return databaseSecrets{}, errors.New("legacy database credential file must be a private regular file (chmod 600)")
-		}
-	}
 	read := func() (databaseSecrets, error) {
 		data, err := a.databaseSecretCommand(ctx, nil, "show", "--name", databaseSecretName, "--query", "value")
 		if err != nil {
@@ -306,53 +292,29 @@ func (a App) databaseCredentials(ctx context.Context, create bool) (databaseSecr
 		}
 		return decodeDatabaseSecrets(c, []byte(value))
 	}
-	finish := func(s databaseSecrets) (databaseSecrets, error) {
-		if legacyErr == nil {
-			original, err := decodeDatabaseSecrets(c, legacy)
-			if err != nil {
-				return s, err
-			}
-			if original != s {
-				return s, errors.New("local database credentials differ from Key Vault; refusing to remove or replace either copy")
-			}
-			if err := os.Remove(legacyPath); err != nil {
-				return s, fmt.Errorf("removing migrated local database credentials: %w", err)
-			}
-		}
-		return s, nil
-	}
 	if len(ids) != 0 {
-		s, err := read()
-		if err != nil {
-			return s, err
-		}
-		return finish(s)
+		return read()
 	}
 	if !create {
 		return databaseSecrets{}, errors.New("database credentials are missing from Key Vault; restore the original secret before retrying")
 	}
-	var s databaseSecrets
-	if legacyErr == nil {
-		s, err = decodeDatabaseSecrets(c, legacy)
-	} else {
-		// A registry/vault-only deployment may exist before credentials are generated.
-		data, listErr := a.az(ctx, "deployment", "sub", "list", "--query", c.infrastructureDeploymentFilter()+".name")
-		if listErr != nil {
-			return s, listErr
-		}
-		var existing []string
-		if err := json.Unmarshal(data, &existing); err != nil || existing == nil {
-			return s, errors.New("invalid prior database deployment listing; refusing to generate credentials")
-		}
-		if len(existing) != 0 {
-			return s, errors.New("database credentials are missing after a deployment was submitted; restore the original Key Vault secret, do not generate new passwords")
-		}
-		s, err = newDatabaseSecrets(c)
+	// A registry/vault-only deployment may exist before credentials are generated.
+	data, err := a.az(ctx, "deployment", "sub", "list", "--query", c.infrastructureDeploymentFilter()+".name")
+	if err != nil {
+		return databaseSecrets{}, err
 	}
+	var existing []string
+	if err := json.Unmarshal(data, &existing); err != nil || existing == nil {
+		return databaseSecrets{}, errors.New("invalid prior database deployment listing; refusing to generate credentials")
+	}
+	if len(existing) != 0 {
+		return databaseSecrets{}, errors.New("database credentials are missing after a deployment was submitted; restore the original Key Vault secret, do not generate new passwords")
+	}
+	s, err := newDatabaseSecrets(c)
 	if err != nil {
 		return s, err
 	}
-	data, err := json.Marshal(s)
+	data, err = json.Marshal(s)
 	if err != nil {
 		return s, err
 	}
@@ -367,7 +329,7 @@ func (a App) databaseCredentials(ctx context.Context, create bool) (databaseSecr
 	if stored != s {
 		return s, errors.New("Key Vault database credential verification failed; refusing database deployment")
 	}
-	return finish(s)
+	return s, nil
 }
 
 func databaseDSN(db *DatabaseInfrastructure, login, password string) string {

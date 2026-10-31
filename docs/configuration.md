@@ -193,17 +193,26 @@ so memory snapshots can restore on any node; see
 
 ## PostgreSQL backend
 
-Choose during guided setup, or when creating a new configuration:
+Choose during guided setup, or when creating a new installation:
 
 ```sh
-bin/substrate-aks init --database flexible-server --database-location westus3
+bin/substrate-aks init flex --database flexible-server --database-location westus3
 # Alternatively, for HorizonDB preview:
-bin/substrate-aks init --config horizon.json --database horizondb --database-location eastus
+bin/substrate-aks init horizon --database horizondb --database-location eastus
 ```
 
-`setup --yes` accepts the same creation flags only when its config does not
-already exist. Saved configs are authoritative. Old configs without `database`
-continue to use bundled PostgreSQL.
+The selection is saved in the new installation record:
+
+```json
+"database": {
+  "backend": "horizondb",
+  "location": "eastus"
+}
+```
+
+`setup` accepts the same flags only when it creates a new installation;
+`setup NAME` rejects them for a saved installation, whose record is authoritative.
+Records without `database` use bundled PostgreSQL.
 
 | `database.backend` | Initial profile |
 | --- | --- |
@@ -215,7 +224,7 @@ Optional `database.location` defaults to `azure.location` and applies only to
 managed backends. It can differ from AKS, with cross-region latency and transfer
 cost implications. `init` and `setup` check subscription-specific regional
 capabilities for PostgreSQL 17 and the selected backend's fixed compute profile
-before saving a new config or starting setup stages. Full `plan` and `provision`
+before saving a new installation or starting setup stages. Full `plan` and `provision`
 repeat this read-only check; registry-only operations do not require database
 availability. If Azure no longer advertises the profile, an existing installation
 can continue with a warning only after its deployment outputs and actual database
@@ -232,7 +241,7 @@ on API or malformed-response errors; it never falls back to the general region
 catalog. Accessible mode prints the eligible choices. A picked region is not
 checked again immediately; the validation checklist rechecks the saved region
 before billing approval. Regions given by flags are checked before saving.
-Other validation failures stop noninteractive commands and saved configurations;
+Other validation failures stop noninteractive commands and saved installations;
 no region is changed without user selection. Advertised support does **not**
 guarantee quota, live SKU capacity or successful provisioning. Live SQL probes succeeded
 in `westus3` for Flexible Server and `eastus` for HorizonDB; advertised regions
@@ -281,9 +290,10 @@ or production-readiness claim is included.
 The pinned application does not acquire/renew Entra database tokens. Both
 managed options therefore use generated passwords, separate owner/runtime
 logins and least-privilege roles. An installer-owned Standard Key Vault is the
-credential authority for both backends. Credentials are **not** in `deploy.json`
-or persisted to local parameter/state files. The vault name is derived from the
-subscription, group and installation ID; retain that configuration for retries.
+credential authority for both backends. Credentials are **not** in
+`installation.json` or persisted to local parameter/state files. The vault name
+is derived from the subscription, group and installation ID; keep the saved
+installation for retries.
 Provisioning uses an ARM Key Vault secret reference. Bootstrap and application
 installation retrieve secrets into process memory and use the existing temporary
 bootstrap Secret and upstream application Secret/environment integration.
@@ -305,17 +315,18 @@ generating replacement passwords. Do not edit the vault's `database-credentials`
 secret to rotate passwords; database changes and application rollouts must be
 coordinated, and automatic rotation is not implemented.
 
-For workspaces from the earlier local-credential implementation, provisioning
-imports the validated private `database-credentials.json` into the vault without
-changing passwords. The local file is removed only after verifying the vault
-copy. A conflicting vault value or failed write preserves the local file and
-fails explicitly; installation alone does not create/import a missing secret.
-
 **Resource-group teardown deletes the managed database and its retained service
 backups.** This installer provides no restore workflow or automatic recovery.
-The vault and its secrets are soft-deleted with seven-day retention; teardown
-does not purge them. Reusing a deleted installation's vault name can require
-explicit Azure recovery or purge permissions. Prefer a fresh installation ID.
+The database, even in a different region from AKS, and its vault are in the
+installation's resource group, so `destroy` deletes them before removing the
+local installation. If group deletion fails, for example while a preview
+HorizonDB deletion is still in progress, `destroy` reports the error and keeps
+the local installation for a retry. The vault and its secrets are soft-deleted
+with seven-day retention (purge protection is off); teardown does not purge
+them. A new installation gets a new ID and therefore a different vault name,
+even with the same installation name. Reusing a saved installation whose group
+was deleted outside the installer can fail on its soft-deleted vault; recover or
+purge it with the required Azure permissions, or create a new installation.
 
 ## Azure identity and permissions
 
