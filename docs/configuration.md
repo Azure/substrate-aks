@@ -29,8 +29,16 @@ also create one through [guided setup](operations.md#guided-installation).
 | Snapshot inspection | Disabled unless requested |
 
 Each installation is saved as `installations/NAME/installation.json` in the
-installer's home directory: `~/.cache/substrate-aks` on Linux,
-`~/Library/Caches/substrate-aks` on macOS, or `SUBSTRATE_AKS_HOME` if set.
+installer's home directory, a per-user state directory:
+
+| Platform | Location |
+| --- | --- |
+| Linux | `$XDG_STATE_HOME/substrate-aks`, default `~/.local/state/substrate-aks` |
+| macOS | `~/Library/Application Support/substrate-aks` |
+| Override | `SUBSTRATE_AKS_HOME` |
+
+It is not a cache directory because it holds credentials and the only local
+record of billable resources.
 Lifecycle commands select it by `NAME`; `bin/substrate-aks list` shows saved
 installations. Unknown JSON fields and extra JSON documents are rejected.
 
@@ -266,8 +274,7 @@ assets, kubeconfig, registry credentials, logs, deployment records, and
 generated infrastructure files.
 
 **Keep it private and retain it while the installation exists.** It is not all
-rebuildable cache, even though it lives in the user cache directory. Deleting it,
-or a cache cleaner deleting it, does not delete Azure resources; remove those
+rebuildable cache. Deleting it does not delete Azure resources; remove those
 with `az group delete --name RESOURCE_GROUP`. A successful `destroy` removes the
 directory; the shared Go-installed client stays in place.
 

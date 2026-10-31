@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -16,17 +17,32 @@ const HomeEnv = "SUBSTRATE_AKS_HOME"
 const recordFile = "installation.json"
 
 // Home returns the directory holding all installations: $SUBSTRATE_AKS_HOME,
-// or substrate-aks in the user cache directory, following upstream ate-setup's
-// install records.
+// or the platform's per-user state directory. Installations hold credentials
+// and the only local link to billable resources, so they must not live in a
+// cache directory that cleaners treat as disposable.
 func Home() (string, error) {
 	if home := os.Getenv(HomeEnv); home != "" {
 		return filepath.Abs(home)
 	}
-	cache, err := os.UserCacheDir()
+	user, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("locating the cache directory for installation state (set %s to choose one): %w", HomeEnv, err)
+		return "", fmt.Errorf("locating the home directory for installation state (set %s to choose one): %w", HomeEnv, err)
 	}
-	return filepath.Join(cache, "substrate-aks"), nil
+	return defaultHome(runtime.GOOS, os.Getenv, user), nil
+}
+
+// defaultHome returns the per-user state directory for goos.
+func defaultHome(goos string, getenv func(string) string, user string) string {
+	switch goos {
+	case "darwin":
+		return filepath.Join(user, "Library", "Application Support", "substrate-aks")
+	default:
+		// XDG Base Directory spec: ignore relative values.
+		if dir := getenv("XDG_STATE_HOME"); filepath.IsAbs(dir) {
+			return filepath.Join(dir, "substrate-aks")
+		}
+		return filepath.Join(user, ".local", "state", "substrate-aks")
+	}
 }
 
 // RecordPath returns where an installation's record is stored.

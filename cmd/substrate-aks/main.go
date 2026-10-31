@@ -20,8 +20,9 @@ const usage = `substrate-aks <command> [NAME] [flags]
 An AKS packaging layer for Agent Substrate.
 Azure infrastructure, declarative deployment configuration, and a guided installer.
 
-Installations are saved by name in the user cache directory: ~/.cache/substrate-aks
-on Linux, ~/Library/Caches/substrate-aks on macOS, or SUBSTRATE_AKS_HOME if set.
+Installations are saved by name in a per-user state directory:
+~/.local/state/substrate-aks on Linux ($XDG_STATE_HOME), ~/Library/Application
+Support/substrate-aks on macOS, or SUBSTRATE_AKS_HOME if set.
 NAME may be omitted when exactly one installation exists, except for destroy.
 
 Commands:

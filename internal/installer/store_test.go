@@ -95,3 +95,24 @@ func TestOwnershipOnlyAcceptsCreatedResources(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultHomePerPlatform(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
+	}
+	for _, tc := range []struct {
+		goos string
+		vars map[string]string
+		want string
+	}{
+		{"linux", nil, "/home/u/.local/state/substrate-aks"},
+		{"linux", map[string]string{"XDG_STATE_HOME": "/xdg/state"}, "/xdg/state/substrate-aks"},
+		{"linux", map[string]string{"XDG_STATE_HOME": "relative"}, "/home/u/.local/state/substrate-aks"},
+		{"darwin", map[string]string{"XDG_STATE_HOME": "/xdg/state"}, "/home/u/Library/Application Support/substrate-aks"},
+	} {
+		got := defaultHome(tc.goos, env(tc.vars), "/home/u")
+		if got != filepath.FromSlash(tc.want) {
+			t.Errorf("defaultHome(%s, %v) = %q; want %q", tc.goos, tc.vars, got, tc.want)
+		}
+	}
+}

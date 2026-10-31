@@ -5,7 +5,7 @@
 Run commands from the repository root. Each command takes an installation
 `NAME` (as an argument or `--name`); it is optional when only one installation
 is saved, except for `destroy`. Run `bin/substrate-aks list` to see saved
-installations. Settings are stored in the user cache directory; see
+installations. Settings are stored in a per-user state directory; see
 [configuration](configuration.md#create-a-configuration).
 
 - [Guided installation](#guided-installation)

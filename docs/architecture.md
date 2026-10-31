@@ -80,7 +80,7 @@ configuration, local state, and resource tags; it is not an access credential.
 
 Existing-cluster installation, application-only uninstall, and recovery from a
 fresh workstation are not implemented. Each installation's settings and local
-state are saved by name in the user cache directory; keep them while the
+state are saved by name in the user state directory; keep them while the
 installation exists, because they contain more than disposable build cache.
 
 See [configuration](configuration.md) for permissions and network exposure, and

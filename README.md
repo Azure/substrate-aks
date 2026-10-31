@@ -44,8 +44,9 @@ make setup
 setup flags with `ARGS`, for example `make setup ARGS="--accessible"`.
 
 Setup checks your tools and Azure access, asks for a name and region, and
-saves your choices as a named installation in your user cache directory
-(`~/.cache/substrate-aks` on Linux, `~/Library/Caches/substrate-aks` on macOS).
+saves your choices as a named installation in your user state directory
+(`~/.local/state/substrate-aks` on Linux, `~/Library/Application Support/substrate-aks`
+on macOS).
 It previews every billable change and waits for your approval before creating
 anything. Press `?` in the workspace for keys.
 
@@ -138,10 +139,10 @@ If your public IP changes, edit `aks.apiAuthorizedCidrs`, then run `plan` and
 `provision`.
 
 **Keep local state private:** each installation's directory under
-`installations/NAME/` in the cache directory contains its saved settings,
+`installations/NAME/` in the state directory contains its saved settings,
 kubeconfig, logs, and deployment records as well as caches. Set
-`SUBSTRATE_AKS_HOME` to use a different location. Deleting this directory, or
-a cache cleaner deleting it, does not delete Azure resources; remove those with
+`SUBSTRATE_AKS_HOME` to use a different location. Deleting this directory does
+not delete Azure resources; remove those with
 `az group delete --name RESOURCE_GROUP`.
 
 See [operations](docs/operations.md) for individual lifecycle commands and
