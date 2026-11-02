@@ -503,7 +503,7 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.body = m.planView(event.changes, m.planCheck != "")
 		m.step, m.steps = "", nil
-		m.details = safeSetupText(fullSetupPlan(event.subscription, event.changes))
+		m.details = m.planDetails(event.subscription, event.changes)
 		m.scroll = 0
 		m.reviewRequired, m.reviewed = false, false
 		m.scrollToCurrentCheck()
@@ -975,20 +975,6 @@ func setupPhaseTitle(phase string) string {
 	default:
 		return "Prepare"
 	}
-}
-
-func fullSetupPlan(subscription string, changes []installer.ResourceChange) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Scope: /subscriptions/%s\n\n", subscription)
-	for _, change := range changes {
-		label, _ := planChange(change.ChangeType)
-		fmt.Fprintf(&b, "%s\n%s\n\n", label, change.ResourceID)
-	}
-	if len(changes) == 0 {
-		b.WriteString("No resource changes.\n")
-	}
-	b.WriteString("Property-level diagnostics are in the private command log.")
-	return b.String()
 }
 
 func safeSetupText(text string) string {

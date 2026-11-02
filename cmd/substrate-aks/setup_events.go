@@ -178,6 +178,183 @@ func commandProgress(ctx context.Context, out, log io.Writer, stage string, anim
 		started: time.Now(), done: make(chan struct{}), stopped: stopped, session: s}
 }
 
+var setupPlanActions = []struct{ name, heading, label, color string }{
+	{"Create", "to create", "create", "2"}, {"Modify", "to update", "update", "3"},
+	{"Delete", "to delete", "delete", "1"}, {"Deploy", "to deploy", "deploy", setupAccent},
+	{"Unknown", "unrecognized", "unrecognized", "3"},
+}
+
+var setupResourceNames = map[string]string{
+	"Microsoft.Authorization/roleAssignments":          "Role assignments",
+	"Microsoft.ContainerRegistry/registries":           "Container registry",
+	"Microsoft.ContainerService/managedClusters":       "AKS cluster",
+	"Microsoft.Storage/storageAccounts":                "Storage account",
+	"Microsoft.ManagedIdentity/userAssignedIdentities": "Managed identity",
+	"Microsoft.Network/virtualNetworks":                "Virtual network",
+	"Microsoft.Network/privateEndpoints":               "Private endpoint",
+	"Microsoft.Network/privateDnsZones":                "Private DNS zone",
+}
+
+var setupChildNames = map[string]string{
+	"blobServices":                 "Blob service",
+	"blobServices/containers":      "Blob containers",
+	"federatedIdentityCredentials": "Federated credentials",
+	"agentPools":                   "Node pools",
+}
+
+// setupResource is a readable view of an ARM resource ID: its top-level kind,
+// an optional child kind, its resource group, and the names along its path.
+type setupResource struct {
+	kind, child, group string
+	// scope names the resource an extension such as a role assignment is on.
+	scope string
+	names []string
+}
+
+func parseSetupResource(id string) setupResource {
+	parts := strings.Split(strings.Trim(safeSetupText(id), "/"), "/")
+	ref := setupResource{kind: "Other resources"}
+	for i, part := range parts {
+		if strings.EqualFold(part, "resourceGroups") && i+1 < len(parts) && ref.group == "" {
+			ref.group = parts[i+1]
+		}
+		if strings.EqualFold(part, "providers") && i+2 < len(parts) {
+			// Provider paths alternate type and name after the namespace.
+			var types, names []string
+			for j := i + 2; j < len(parts) && !strings.EqualFold(parts[j], "providers"); j += 2 {
+				types = append(types, parts[j])
+				if j+1 < len(parts) {
+					names = append(names, parts[j+1])
+				}
+			}
+			if len(ref.names) > 0 {
+				ref.scope = ref.names[len(ref.names)-1]
+			}
+			ref.kind, ref.child, ref.names = parts[i+1]+"/"+types[0], strings.Join(types[1:], "/"), names
+		}
+	}
+	if ref.kind == "Other resources" && len(parts) == 4 && strings.EqualFold(parts[2], "resourceGroups") {
+		ref.kind, ref.names = "Resource group", []string{parts[3]}
+	}
+	if name, ok := setupResourceNames[ref.kind]; ok {
+		ref.kind = name
+	}
+	if name, ok := setupChildNames[ref.child]; ok {
+		ref.child = name
+	}
+	return ref
+}
+
+// planDetails lists every change in a preview, grouped by action, for the
+// details view. Full IDs are kept only where a reviewer must verify them.
+func (m *setupWorkspace) planDetails(subscription string, changes []installer.ResourceChange) string {
+	st, width := m.st, m.bodyWidth()
+	subscription = safeSetupText(subscription)
+	groups := map[string]int{}
+	for _, change := range changes {
+		if group := parseSetupResource(change.ResourceID).group; group != "" {
+			groups[group]++
+		}
+	}
+	primary := ""
+	for group, count := range groups {
+		if count > groups[primary] || count == groups[primary] && group < primary {
+			primary = group
+		}
+	}
+	lines := []string{st.bold.Render("Planned resource changes"), st.muted.Render("Subscription    ") + subscription}
+	if primary != "" {
+		lines = append(lines, st.muted.Render("Resource group  ")+primary)
+	}
+	byAction := map[string][]installer.ResourceChange{}
+	unchanged := 0
+	for _, change := range changes {
+		action := change.ChangeType
+		switch action {
+		case "NoChange":
+			unchanged++
+			continue
+		case "Create", "Modify", "Delete", "Deploy":
+		default:
+			action = "Unknown"
+		}
+		byAction[action] = append(byAction[action], change)
+	}
+	kindWidth := min(24, max(12, width/3))
+	for _, action := range setupPlanActions {
+		list := byAction[action.name]
+		if len(list) == 0 {
+			continue
+		}
+		color := m.renderer.NewStyle().Foreground(lipgloss.Color(action.color))
+		heading := fmt.Sprintf("%d %s ", len(list), action.heading)
+		lines = append(lines, "", color.Bold(true).Render(heading)+st.muted.Render(strings.Repeat("─", max(0, width-ansi.StringWidth(heading)))))
+		refs := make([]setupResource, len(list))
+		for i, change := range list {
+			refs[i] = parseSetupResource(change.ResourceID)
+		}
+		order := make([]int, len(list))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool {
+			x, y := refs[order[a]], refs[order[b]]
+			if x.kind != y.kind {
+				if x.kind == "Resource group" || y.kind == "Resource group" {
+					return x.kind == "Resource group"
+				}
+				return x.kind < y.kind
+			}
+			if x.child != y.child {
+				return x.child < y.child
+			}
+			return strings.Join(x.names, "/") < strings.Join(y.names, "/")
+		})
+		symbol, _ := planChange(action.name)
+		for _, i := range order {
+			ref, change := refs[i], list[i]
+			id := relativeResourceID(subscription, safeSetupText(change.ResourceID))
+			kind, kindStyle := ref.kind, m.renderer.NewStyle()
+			if ref.child != "" {
+				kind, kindStyle = "  "+ref.child, st.muted
+			}
+			name := strings.Join(ref.names, " › ")
+			if name == "" {
+				name = id
+			}
+			showID := (action.name == "Delete" || action.name == "Unknown") && name != id
+			if ref.scope != "" {
+				name += st.muted.Render("  on " + ref.scope)
+			}
+			switch {
+			case ref.group != "" && ref.group != primary:
+				name += st.muted.Render("  in " + ref.group)
+			case ref.group == "" && len(ref.names) > 0:
+				name += st.muted.Render("  subscription scope")
+			}
+			if action.name == "Unknown" {
+				name += m.renderer.NewStyle().Foreground(lipgloss.Color(setupWarn)).Render("  (" + safeSetupText(change.ChangeType) + ")")
+			}
+			nameWidth := max(1, width-kindWidth-3)
+			lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
+				color.Render(symbol[:1])+" ",
+				kindStyle.Width(kindWidth).Render(ansi.Truncate(kind, kindWidth-1, "…")), " ",
+				m.renderer.NewStyle().Width(nameWidth).Render(ansi.Wrap(name, nameWidth, "/-"))))
+			if showID {
+				lines = append(lines, st.muted.Render(ansi.Hardwrap("  "+id, width, true)))
+			}
+		}
+	}
+	if len(byAction) == 0 {
+		lines = append(lines, "", st.bold.Render("No resource changes"))
+	}
+	if unchanged > 0 {
+		lines = append(lines, "", st.muted.Render(fmt.Sprintf("%d unchanged", unchanged)))
+	}
+	lines = append(lines, "", st.muted.Render(ansi.Wrap("Preview only. Nothing has been applied. Property-level changes are in the diagnostic log (press l).", width, "")))
+	return strings.Join(lines, "\n")
+}
+
 // planView summarizes a preview. Inline previews sit in the checklist callout,
 // which supplies its own frame and is four columns narrower than the body.
 func (m *setupWorkspace) planView(changes []installer.ResourceChange, inline bool) string {
@@ -195,11 +372,7 @@ func (m *setupWorkspace) planView(changes []installer.ResourceChange, inline boo
 	for _, change := range changes {
 		counts[change.ChangeType]++
 	}
-	actions := []struct{ name, heading, label, color string }{
-		{"Create", "to create", "create", "2"}, {"Modify", "to update", "update", "3"},
-		{"Delete", "to delete", "delete", "1"}, {"Deploy", "to deploy", "deploy", setupAccent},
-		{"Unknown", "unrecognized", "unrecognized", "3"},
-	}
+	actions := setupPlanActions
 	counts["Unknown"] = len(changes) - counts["Create"] - counts["Modify"] - counts["Delete"] - counts["Deploy"] - counts["NoChange"]
 	var totals []string
 	for _, kind := range actions {
@@ -217,47 +390,12 @@ func (m *setupWorkspace) planView(changes []installer.ResourceChange, inline boo
 	// credentials) get their own indented rows so parent counts stay literal.
 	type row struct{ kind, child string }
 	resources := map[row]map[string]int{}
-	names := map[string]string{
-		"Microsoft.Authorization/roleAssignments":          "Role assignments",
-		"Microsoft.ContainerRegistry/registries":           "Container registry",
-		"Microsoft.ContainerService/managedClusters":       "AKS cluster",
-		"Microsoft.Storage/storageAccounts":                "Storage account",
-		"Microsoft.ManagedIdentity/userAssignedIdentities": "Managed identity",
-		"Microsoft.Network/virtualNetworks":                "Virtual network",
-		"Microsoft.Network/privateEndpoints":               "Private endpoint",
-		"Microsoft.Network/privateDnsZones":                "Private DNS zone",
-	}
-	childNames := map[string]string{
-		"blobServices":                 "Blob service",
-		"blobServices/containers":      "Blob containers",
-		"federatedIdentityCredentials": "Federated credentials",
-		"agentPools":                   "Node pools",
-	}
 	for _, change := range changes {
 		if change.ChangeType == "NoChange" {
 			continue
 		}
-		parts := strings.Split(strings.Trim(safeSetupText(change.ResourceID), "/"), "/")
-		key := row{kind: "Other resources"}
-		for i, part := range parts {
-			if strings.EqualFold(part, "providers") && i+2 < len(parts) {
-				// Provider paths alternate type and name after the namespace.
-				var types []string
-				for j := i + 2; j < len(parts); j += 2 {
-					types = append(types, parts[j])
-				}
-				key = row{kind: parts[i+1] + "/" + types[0], child: strings.Join(types[1:], "/")}
-			}
-		}
-		if key.kind == "Other resources" && len(parts) == 4 && strings.EqualFold(parts[2], "resourceGroups") {
-			key.kind = "Resource group"
-		}
-		if name, ok := names[key.kind]; ok {
-			key.kind = name
-		}
-		if name, ok := childNames[key.child]; ok {
-			key.child = name
-		}
+		ref := parseSetupResource(change.ResourceID)
+		key := row{kind: ref.kind, child: ref.child}
 		if resources[key] == nil {
 			resources[key] = map[string]int{}
 		}

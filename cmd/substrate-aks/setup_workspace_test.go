@@ -869,6 +869,38 @@ func TestWorkspaceFrameStaysStableAcrossPreparationAndApprovals(t *testing.T) {
 	}
 }
 
+func TestWorkspacePlanDetailsGroupChangesReadably(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
+	rg := "/subscriptions/sub/resourceGroups/install"
+	acr := rg + "/providers/Microsoft.ContainerRegistry/registries/acr1"
+	dns := "/subscriptions/sub/resourceGroups/elsewhere/providers/Microsoft.Network/privateDnsZones/old.zone"
+	m.Update(setupPlanMsg{"sub", []installer.ResourceChange{
+		{ChangeType: "Create", ResourceID: acr},
+		{ChangeType: "Create", ResourceID: acr + "/providers/Microsoft.Authorization/roleAssignments/guid-1"},
+		{ChangeType: "Create", ResourceID: rg},
+		{ChangeType: "Delete", ResourceID: dns},
+		{ChangeType: "NoChange", ResourceID: rg + "/providers/Microsoft.Network/virtualNetworks/vnet"},
+	}})
+	m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	view := ansi.Strip(m.View().Content)
+	ordered := []string{"Resource group  install", "3 to create", "+ Resource group", "+ Container registry", "acr1",
+		"+ Role assignments", "guid-1  on acr1", "1 to delete", "- Private DNS zone", "old.zone  in elsewhere",
+		"/resourceGroups/elsewhere/providers/Microsoft.Network/privateDnsZones/old.zone", "1 unchanged", "Preview only"}
+	rest := view
+	for _, want := range ordered {
+		i := strings.Index(rest, want)
+		if i < 0 {
+			t.Fatalf("plan details lack %q in order:\n%s", want, view)
+		}
+		rest = rest[i+len(want):]
+	}
+	if strings.Contains(view, acr) || strings.Contains(view, "/subscriptions/sub/") {
+		t.Fatalf("plan details repeated full IDs for changes that only need names:\n%s", view)
+	}
+}
+
 func TestWorkspaceDetailsShowTheReviewOnce(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false
