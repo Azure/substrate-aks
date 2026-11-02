@@ -38,7 +38,7 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 				"Substrate on AKS",
 				"Installation summary", "Configuration saved: deploy.json", "No Azure resources have been created.",
 				"Development (" + c.Azure.SubscriptionID + ")", "Azure identity", c.Azure.AssetPublisherObjectID,
-				"Resource group", "Region", "1 system + 1 microVM", "API access",
+				"Resource group", "Region", "1 system + 1 microVM", "API server access",
 				"Snapshot inspection", "No new operator access", "Existing operator grants are not revoked.",
 				"WARNING: This creates billable ACR, AKS, and storage resources.",
 				"Teardown deletes all installation data.",
@@ -300,7 +300,7 @@ func TestSetupSummaryFitsNarrowTerminalsWithoutLosingIdentifiers(t *testing.T) {
 			}
 			compact := strings.Join(strings.Fields(output.String()), "")
 			for _, want := range []string{c.Azure.SubscriptionID, c.Azure.SnapshotReaderObjectID, path,
-				"Read-onlyaccesstothesnapshotscontainer."} {
+				"snapshotreader"} {
 				if !strings.Contains(compact, want) {
 					t.Fatalf("narrow summary truncated %q:\n%s", want, &output)
 				}

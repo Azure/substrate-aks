@@ -241,10 +241,12 @@ func (p *setupPrompt) region(ctx context.Context, fallback string, regions []str
 const (
 	setupSnapshotQuestion = "Grant this Azure identity read-only snapshot inspection?"
 	setupSnapshotWarning  = "Optional; runtime access is automatic. Snapshots can contain actor memory, files, and secrets."
+
+	setupAPIQuestion   = "AKS API server access"
+	setupAPIRestricted = "Recommended. If your IP changes, edit aks.apiAuthorizedCidrs and run provision."
+	setupAPIOpen       = "Reachable from the internet; Kubernetes sign-in is still required. Often fine for experiments."
 )
 
-// installation asks for the name and region and, when reader is non-nil, the
-// optional snapshot inspection grant, all in one form.
 func validateNewInstallationName(name string, available func(string) error) error {
 	if err := installer.ValidateInstallationName(name); err != nil {
 		return err
@@ -255,7 +257,10 @@ func validateNewInstallationName(name string, available func(string) error) erro
 	return nil
 }
 
-func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string, reader *bool) (string, string, error) {
+// installation asks for the name and region in one form. When open is non-nil
+// it also asks whether the API server is limited to cidr or open to the
+// internet, and when reader is non-nil, whether to grant snapshot inspection.
+func (p *setupPrompt) installation(ctx context.Context, name, location string, regions []string, cidr string, open, reader *bool) (string, string, error) {
 	nameField := newSetupClusterNameInput(&name, p.nameAvailable)
 	if p.accessible {
 		fallback := strings.TrimSpace(name)
@@ -278,8 +283,21 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			name = fallback
 		}
 		location, err := p.region(ctx, location, regions)
-		if err != nil || reader == nil {
+		if err != nil {
 			return name, location, err
+		}
+		if open != nil {
+			p.ui.note(setupAPIRestricted)
+			restricted, err := p.confirm(ctx, "Allow AKS API server access only from "+cidr+"?", !*open)
+			if err != nil {
+				return name, location, err
+			}
+			if *open = !restricted; *open {
+				p.ui.warning(setupAPIOpen)
+			}
+		}
+		if reader == nil {
+			return name, location, nil
 		}
 		p.ui.warning(setupSnapshotWarning)
 		*reader, err = p.confirm(ctx, setupSnapshotQuestion, *reader)
@@ -287,7 +305,18 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 	}
 	region := newRegionSelector(&location, regions)
 	fields := []huh.Field{nameField, region}
-	var snapshot huh.Field
+	var api, snapshot huh.Field
+	if open != nil {
+		api = huh.NewSelect[bool]().Title(setupAPIQuestion).
+			Options(huh.NewOption("Only my IP address ("+cidr+")", false), huh.NewOption("Anyone on the internet", true)).
+			Description(setupAPIRestricted).DescriptionFunc(func() string {
+			if *open {
+				return "⚠ " + setupAPIOpen
+			}
+			return setupAPIRestricted
+		}, open).Value(open)
+		fields = append(fields, api)
+	}
 	if reader != nil {
 		snapshot = huh.NewConfirm().Title(setupSnapshotQuestion).
 			Description(setupSnapshotWarning).Value(reader)
@@ -299,8 +328,10 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			return
 		}
 		rest := lipgloss.Height(nameField.View()) + 1
-		if snapshot != nil {
-			rest += lipgloss.Height(snapshot.View()) + 1
+		for _, field := range []huh.Field{api, snapshot} {
+			if field != nil {
+				rest += lipgloss.Height(field.View()) + 1
+			}
 		}
 		region.WithHeight(max(4, formHeight-rest))
 	}

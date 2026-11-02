@@ -107,7 +107,7 @@ func TestSetupIPDiscoveryFailureCannotOpenAccessInAutomation(t *testing.T) {
 }
 
 func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
-	for _, name := range []string{"detected", "explicit", "unrestricted", "lookup failure"} {
+	for _, name := range []string{"detected", "chose open", "explicit", "unrestricted", "lookup failure"} {
 		t.Run(name, func(t *testing.T) {
 			cidr := ""
 			if name == "explicit" {
@@ -116,7 +116,12 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 
 			path := testRecord(t, "substrate-test")
 			answers := "\n\nno\nno\n"
-			if name == "lookup failure" {
+			switch name {
+			case "detected":
+				answers = "\n\nyes\nno\nno\n"
+			case "chose open":
+				answers = "\n\nno\nno\nno\n"
+			case "lookup failure":
 				answers = "203.0.113.8/32\n" + answers
 			}
 			var output bytes.Buffer
@@ -144,7 +149,7 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if name == "unrestricted" {
+			if name == "unrestricted" || name == "chose open" {
 				if !c.AKS.AllowUnrestrictedAPI || len(c.AKS.APIAuthorizedCIDRs) != 0 ||
 					!strings.Contains(strings.Join(strings.Fields(output.String()), " "), "WARNING: "+unrestrictedAPIWarning) {
 					t.Fatalf("unrestricted access lost explicit intent or warning: %+v\n%s", c.AKS, &output)
@@ -157,6 +162,12 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 				if c.AKS.AllowUnrestrictedAPI || len(c.AKS.APIAuthorizedCIDRs) != 1 || c.AKS.APIAuthorizedCIDRs[0] != want {
 					t.Fatalf("setup did not preserve safe API access: %+v", c.AKS)
 				}
+			}
+			asked := name == "detected" || name == "chose open"
+			flat := strings.Join(strings.Fields(output.String()), " ")
+			if strings.Contains(flat, "API server access only from 203.0.113.8/32?") != asked ||
+				strings.Contains(flat, setupAPIOpen) != (name == "chose open") {
+				t.Fatalf("setup offered the API access choice when it should not, or hid its warning:\n%s", &output)
 			}
 			if strings.Contains(output.String(), "Client public IPv4 CIDR allowed") != (name == "lookup failure") {
 				t.Fatalf("setup asked for a known CIDR or failed to ask after lookup failure:\n%s", &output)

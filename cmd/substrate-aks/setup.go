@@ -179,6 +179,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				return err
 			})
 		}
+		// Only a detected address is offered as a choice; an explicit flag
+		// already decided API access.
+		askAPI := o.cidr == "" && !o.unrestrictedAPI
 		err = ui.check("API access address", func() error {
 			o.cidr, err = resolveAPICIDR(ctx, o.cidr, o.unrestrictedAPI, o.ipClient)
 			return err
@@ -187,6 +190,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			if o.yes || ctx.Err() != nil || o.unrestrictedAPI {
 				return err
 			}
+			askAPI = false
 			ui.warning(fmt.Sprintf("Public IPv4 could not be detected: %v", err))
 			ui.note("Enter an allowed API CIDR below; access will not be opened automatically.")
 		}
@@ -238,9 +242,16 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				}
 				return nil
 			}
-			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions, read)
+			var open *bool
+			if askAPI {
+				open = new(bool)
+			}
+			o.name, o.location, err = prompt.installation(ctx, o.name, o.location, regions, o.cidr, open, read)
 			if err != nil {
 				return err
+			}
+			if open != nil && *open {
+				o.cidr, o.unrestrictedAPI = "", true
 			}
 			if read != nil && *read {
 				o.reader = o.publisher

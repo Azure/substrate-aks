@@ -65,7 +65,7 @@ func TestSetupClusterNameInputFeedbackFollowsEdits(t *testing.T) {
 func TestSetupPromptsKeepAnswersAndDefaults(t *testing.T) {
 	var out bytes.Buffer
 	p := newSetupPrompt(strings.NewReader("Bad_Name\n\nsouthcen\nsouthcentralus\nno\nyes\n"), newSetupUI(&out), true)
-	name, region, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"}, nil)
+	name, region, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"}, "", nil, nil)
 	if err != nil || name != "substrate-dev" {
 		t.Fatalf("resource name default lost: %q, %v", name, err)
 	}
@@ -90,7 +90,7 @@ func TestAccessibleInstallationFormRejectsIncompleteAnswers(t *testing.T) {
 	for _, answer := range []string{"", "\n", "\nsouthcen\n", "\nsouthcentralus"} {
 		var out bytes.Buffer
 		p := newSetupPrompt(strings.NewReader(answer), newSetupUI(&out), true)
-		if _, _, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"}, nil); !errors.Is(err, io.EOF) {
+		if _, _, err := p.installation(t.Context(), "substrate-dev", "eastus2", []string{"eastus2", "southcentralus"}, "", nil, nil); !errors.Is(err, io.EOF) {
 			t.Fatalf("incomplete installation form accepted: %q, %v", answer, err)
 		}
 	}

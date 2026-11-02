@@ -572,11 +572,13 @@ func TestWorkspaceReviewGroupsRowsUnderHeadings(t *testing.T) {
 		if find("Dev subscription")+1 != find(c.Azure.SubscriptionID[:13]) || strings.Contains(m.body, "Dev subscription (") {
 			t.Fatalf("width %d: subscription ID is not on its own line under the name", width)
 		}
-		if azure, cluster, access := find("Azure ─"), find("Cluster ─"), find("Access ─"); !(azure < find("Resource group") && find("Resource group") < cluster && cluster < find("API access") && find("API access") < access && access < find("Snapshot inspection")) {
+		if azure, cluster, access := find("Azure ─"), find("Cluster ─"), find("Access ─"); !(azure < find("Resource group") && find("Resource group") < cluster && cluster < find("API server access") && find("API server access") < access && access < find("Snapshot inspection")) {
 			t.Fatalf("width %d: rows are not under their headings", width)
 		}
-		if admin := find("Cluster admin"); width > 60 && (!strings.Contains(lines[admin], "Pat Publisher") || admin+1 != find("· User")) {
-			t.Fatalf("width %d: cluster admin is not shown by name with its ID beneath", width)
+		// The operator is the Azure identity, so it is a role, not a second row.
+		if strings.Contains(m.body, "Cluster admin ") || !strings.Contains(strings.Join(strings.Fields(ansi.Strip(m.body)), " "), "cluster admin") ||
+			strings.Count(m.body, c.Azure.AssetPublisherObjectID[:13]) != 1 {
+			t.Fatalf("width %d: the Azure identity is repeated instead of listing its roles", width)
 		}
 		if find("Snapshot inspection") >= find("Existing operator") || find("Before you continue") >= find("⚠ "+unrestrictedAPIWarning[:20]) {
 			t.Fatalf("width %d: explanation or warning moved away from its row or box", width)
@@ -694,7 +696,7 @@ func TestWorkspaceInstallationFormKeepsAllFieldsVisible(t *testing.T) {
 	})
 	go func() {
 		defer close(finished)
-		_, _, _ = prompt.installation(m.session.ctx, "prefilled-cluster", "eastus2", regions, new(bool))
+		_, _, _ = prompt.installation(m.session.ctx, "prefilled-cluster", "eastus2", regions, "203.0.113.8/32", new(bool), new(bool))
 	}()
 	select {
 	case event := <-m.session.events:
@@ -717,7 +719,8 @@ func TestWorkspaceInstallationFormKeepsAllFieldsVisible(t *testing.T) {
 			want = append(want, "eastus2")
 		}
 		if size[1] >= 24 {
-			want = append(want, "Grant this Azure identity", "Snapshots can contain")
+			want = append(want, "AKS API server access", "Only my IP address (203.0.113.8/32)", "Anyone on the internet",
+				"Grant this Azure identity", "Snapshots can contain")
 		}
 		for _, text := range want {
 			if !strings.Contains(view, text) {
@@ -750,8 +753,8 @@ func TestWorkspaceInstallationFormKeepsAllFieldsVisible(t *testing.T) {
 		if nameLine-titleLine != gap {
 			t.Fatalf("%dx%d reserved empty context above the form:\n%s", size[0], size[1], view)
 		}
-		// The snapshot question below the list takes five rows.
-		if size[1] >= 24 && visibleRegions < size[1]-19 {
+		// The API and snapshot questions below the list take ten rows.
+		if size[1] >= 24 && visibleRegions < size[1]-24 {
 			t.Fatalf("%dx%d left the region list too short (%d visible):\n%s", size[0], size[1], visibleRegions, view)
 		}
 	}

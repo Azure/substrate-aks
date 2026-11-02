@@ -289,13 +289,17 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	} else {
 		u.note("Using saved configuration: " + path)
 	}
-	// Operator and reader IDs are usually the signed-in identity; show its
-	// name rather than a bare GUID when they match.
-	nameOf := func(id string) string {
-		if strings.EqualFold(id, c.Azure.AssetPublisherObjectID) {
-			return defaults.publisherName
-		}
-		return ""
+	publisher := c.Azure.AssetPublisherObjectID
+	same := func(id string) bool { return strings.EqualFold(id, publisher) }
+	operator, reader := c.AKS.Operator, c.Azure.SnapshotReaderObjectID
+	// The operator and snapshot reader default to the Azure identity; list
+	// them as its roles instead of repeating the same principal.
+	roles := []string{"publishes images and assets"}
+	if operator != nil && same(operator.ObjectID) {
+		roles = append(roles, "cluster admin")
+	}
+	if reader != "" && same(reader) {
+		roles = append(roles, "snapshot reader")
 	}
 
 	warnings := []string{"This creates billable ACR, AKS, and storage resources."}
@@ -303,7 +307,8 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.identity("Subscription", defaults.subscriptionName, c.Azure.SubscriptionID)
 	u.row("Resource group", c.Azure.ResourceGroup)
 	u.row("Region", c.Azure.Location)
-	u.identity("Azure identity", defaults.publisherName, c.Azure.AssetPublisherObjectID)
+	u.principal("Azure identity", defaults.publisherName, publisher, c.Azure.AssetPublisherPrincipalType,
+		"Roles: "+strings.Join(roles, ", "))
 
 	u.group("Cluster")
 	u.row("Cluster", c.AKS.ClusterName)
@@ -311,26 +316,31 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.row("Nodes", fmt.Sprintf("1 system + %d microVM", c.AKS.WorkerPool.Count))
 	u.row("Node size", c.AKS.WorkerPool.VMSize)
 	if c.AKS.AllowUnrestrictedAPI {
-		u.row("API access", "Unrestricted (internet-reachable)")
+		u.row("API server access", "Anyone on the internet")
 		warnings = append(warnings, unrestrictedAPIWarning)
 	} else {
-		u.row("API access", strings.Join(c.AKS.APIAuthorizedCIDRs, ", "))
+		u.row("API server access", "Only "+strings.Join(c.AKS.APIAuthorizedCIDRs, ", "))
+	}
+	if operator != nil {
+		u.row("Sign-in", "Entra ID and Azure RBAC via kubelogin; no local accounts")
+	} else {
+		u.rowDetail("Sign-in", "Legacy configuration (unchanged)",
+			"This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
 	}
 	u.row("Image builder", engine)
 
-	u.group("Access")
-	if operator := c.AKS.Operator; operator != nil {
-		u.principal("Cluster admin", nameOf(operator.ObjectID), operator.ObjectID, operator.PrincipalType,
-			"Entra ID and Azure RBAC; no local accounts. Uses your az login via kubelogin.")
-	} else {
-		u.rowDetail("Cluster admin", "Legacy configuration (unchanged)",
-			"This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
+	access := operator != nil && !same(operator.ObjectID) || !same(reader)
+	if access {
+		u.group("Access")
 	}
-	if reader := c.Azure.SnapshotReaderObjectID; reader == "" {
+	if operator != nil && !same(operator.ObjectID) {
+		u.principal("Cluster admin", "", operator.ObjectID, operator.PrincipalType, "")
+	}
+	if reader == "" {
 		u.rowDetail("Snapshot inspection", "No new operator access",
 			"Runtime identities receive access. Existing operator grants are not revoked.")
-	} else {
-		u.principal("Snapshot inspection", nameOf(reader), reader, "", "Read-only access to the snapshots container.")
+	} else if !same(reader) {
+		u.principal("Snapshot reader", "", reader, "", "Read-only access to the snapshots container.")
 	}
 	u.callout("Before you continue", warnings, "Failed runs retain resources for retry. Teardown deletes all installation data.")
 }

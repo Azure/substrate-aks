@@ -197,6 +197,8 @@ disqualify a pool without zones.
 
 By default, setup gets your public IPv4 address from `api.ipify.org` over HTTPS
 and restricts API access to that address. No Azure credentials are sent.
+Interactive setup shows the detected address and asks whether to keep that
+restriction (the default) or allow anyone on the internet.
 
 | Option | Behavior |
 | --- | --- |
