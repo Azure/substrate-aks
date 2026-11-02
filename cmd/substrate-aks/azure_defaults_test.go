@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -169,18 +168,15 @@ func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 				}
 				return []byte(`{"id":"` + defaultPublisher + `","displayName":"Publisher"}`), nil
 			})
-			answers := "\n\nno\nno\n"
+			answers := "\n\nno\nyes\nno\n"
 			if blocked {
 				answers = defaultPublisher + "\n" + defaultPublisher + "\n" + answers
 			}
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
 				home: recordHome(path), name: recordName(path), cidr: "203.0.113.8/32", location: "eastus2", discovery: runner,
-			}, strings.NewReader(answers), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
-				t.Fatal("setup executed a stage after billing was declined")
-				return nil
-			})
-			if err == nil || !strings.Contains(err.Error(), "before provisioning") {
+			}, strings.NewReader(answers), &output, &output, stopAtFirstStage)
+			if !errors.Is(err, errFirstStage) {
 				t.Fatalf("setup failed before displaying discovered target: %v\n%s", err, &output)
 			}
 			c, err := installer.LoadConfig(path)

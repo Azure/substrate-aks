@@ -342,10 +342,18 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	ui.summary(c, defaults, installer.RecordPath(o.home, o.name), created, engineLabel)
 	if !o.yes {
 		accepted, err := prompt.confirm(ctx, "Continue with this billable installation?", false)
-		if err != nil {
-			return err
-		}
-		if !accepted {
+		if err != nil || !accepted {
+			// Nothing exists in Azure yet, so an installation saved by this
+			// run would only be a stale entry in list.
+			if created {
+				err = errors.Join(err, installer.RemoveInstallation(c))
+			}
+			if err != nil {
+				return err
+			}
+			if created {
+				return errors.New("setup cancelled before provisioning; no Azure resources were created and the new installation was discarded")
+			}
 			return errors.New("setup cancelled before provisioning; no Azure resources were changed")
 		}
 		if !o.withDemo {

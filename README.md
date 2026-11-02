@@ -134,7 +134,8 @@ and logs remain after a failure; there is no automatic rollback.
 
 **Keep the target unchanged:** saved settings take precedence over setup flags
 and your active Azure subscription. Run setup with a new name for a different
-installation.
+installation. Declining the billing confirmation for a new installation
+discards it; nothing is left in `list`.
 If your public IP changes, kubectl loses access to the cluster. Put the new
 address in `aks.apiAuthorizedCidrs` in the installation's `installation.json`,
 then run `substrate-aks plan NAME` and `substrate-aks provision NAME`.

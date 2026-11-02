@@ -124,6 +124,8 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 			case "lookup failure":
 				answers = "203.0.113.8/32\n" + answers
 			}
+			// Approve billing and decline the demo.
+			answers = strings.TrimSuffix(answers, "no\n") + "yes\nno\n"
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
 				home: recordHome(path), name: recordName(path), subscription: defaultSubscription, publisher: defaultPublisher,
@@ -138,11 +140,8 @@ func TestSetupAPIAccessDefaultsAndFallback(t *testing.T) {
 					}
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("203.0.113.8"))}, nil
 				})},
-			}, strings.NewReader(answers), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
-				t.Fatal("setup continued after billing was declined")
-				return nil
-			})
-			if err == nil || !strings.Contains(err.Error(), "before provisioning") {
+			}, strings.NewReader(answers), &output, &output, stopAtFirstStage)
+			if !errors.Is(err, errFirstStage) {
 				t.Fatalf("setup did not reach the target confirmation: %v\n%s", err, &output)
 			}
 			c, err := installer.LoadConfig(path)

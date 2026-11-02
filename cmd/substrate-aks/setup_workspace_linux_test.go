@@ -568,6 +568,11 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	}
 	p.send(t, "n\r")
 	p.until(t, "Continue with this billable")
+	c, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited")
+	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
+		c.Azure.SnapshotReaderObjectID != "" {
+		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
+	}
 	p.send(t, "\x03\x03")
 	select {
 	case err := <-done:
@@ -577,10 +582,9 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	case <-time.After(10 * time.Second):
 		t.Fatal("configuration input cancellation hung")
 	}
-	c, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited")
-	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
-		c.Azure.SnapshotReaderObjectID != "" {
-		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
+	// Stopping at the billing prompt discards the installation this run saved.
+	if _, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited"); err == nil {
+		t.Fatal("stopping before provisioning kept the new installation")
 	}
 }
 

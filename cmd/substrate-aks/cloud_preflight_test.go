@@ -120,11 +120,8 @@ func TestSetupSavesDiscoveredPublisherTypeWithSeparateOperator(t *testing.T) {
 	err := setupForTest(t.Context(), setupOptions{
 		home: recordHome(path), name: recordName(path), subscription: defaultSubscription, operatorID: defaultClientID, operatorType: "Group",
 		location: "eastus2", cidr: "203.0.113.8/32", discovery: runner,
-	}, strings.NewReader("\n\nno\nno\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
-		t.Fatal("declined setup submitted a deployment stage")
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "setup cancelled before provisioning") {
+	}, strings.NewReader("\n\nno\nyes\nno\n"), &output, &output, stopAtFirstStage)
+	if !errors.Is(err, errFirstStage) {
 		t.Fatalf("setup did not reach billing confirmation: %v\n%s", err, &output)
 	}
 	c, err := installer.LoadConfig(path)

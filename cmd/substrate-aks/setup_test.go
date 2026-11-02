@@ -36,6 +36,12 @@ func subscriptionDisplayRunner(t *testing.T) installer.Runner {
 	})
 }
 
+// errFirstStage ends an approved setup at its first stage so a test can
+// inspect the installation it saved; a declined setup discards a new one.
+var errFirstStage = errors.New("stopped at the first stage")
+
+func stopAtFirstStage(context.Context, []string, io.Writer, io.Writer) error { return errFirstStage }
+
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
 	client := installer.ClientSetup{}
 	if o.azure == nil {
@@ -302,6 +308,9 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 				})
 			if yes && err != nil || !yes && (err == nil || !strings.Contains(err.Error(), "before provisioning")) {
 				t.Fatalf("unexpected setup result: %v", err)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("declining a resumed installation removed its saved record: %v", err)
 			}
 			if strings.Contains(output.String(), "Image builder: docker or podman") {
 				t.Fatal("setup prompted despite automation or explicit selection")
@@ -679,8 +688,12 @@ func TestSetupNamePromptRejectsSavedInstallations(t *testing.T) {
 	if err == nil || !strings.Contains(output.String(), "installation substrate-test already exists; run setup substrate-test to resume it") {
 		t.Fatalf("taken name was not rejected: %v\n%s", err, &output)
 	}
-	if _, err := installer.LoadInstallation(home, "fresh-install"); err != nil {
-		t.Fatalf("setup did not save the replacement name: %v\n%s", err, &output)
+	if !strings.Contains(strings.Join(strings.Fields(output.String()), ""), "installations/fresh-install/installation.json") {
+		t.Fatalf("setup did not review the replacement name:\n%s", &output)
+	}
+	// Declining billing discards the installation this run created.
+	if _, err := os.Stat(filepath.Join(home, "installations", "fresh-install")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("declined setup left the new installation behind: %v", err)
 	}
 	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("setup changed the existing installation: %v", err)
