@@ -869,6 +869,25 @@ func TestWorkspaceFrameStaysStableAcrossPreparationAndApprovals(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRailProgressHatchesTheRunningStage(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	bar := func() string { return strings.TrimSpace(strings.Split(ansi.Strip(m.rail()), "\n")[1]) }
+	barWidth, total := setupRailWidth-2, len(m.phases)
+	for i, phase := range m.phases {
+		m.Update(setupPhaseMsg(phase))
+		done, hatched := barWidth*i/total, barWidth*(i+1)/total-barWidth*i/total
+		if want := strings.Repeat("━", done) + strings.Repeat("╍", hatched) + strings.Repeat("─", barWidth-done-hatched); bar() != want {
+			t.Fatalf("stage %d of %d bar = %q, want finished stages solid and the running stage hatched: %q", i+1, total, bar(), want)
+		}
+	}
+	m.Update(setupFinishedMsg{})
+	if want := strings.Repeat("━", barWidth); bar() != want {
+		t.Fatalf("completed installation bar = %q, want %q", bar(), want)
+	}
+}
+
 func TestWorkspaceRailReservesMarkersForEveryPhaseState(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false

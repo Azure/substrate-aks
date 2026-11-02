@@ -385,12 +385,21 @@ func (m *setupWorkspace) rail() string {
 	}
 	barWidth := setupRailWidth - 2
 	filled := barWidth * done / max(1, total)
-	bar := st.active
+	// The current stage's share is hatched, so "STAGE 3 OF 6" reaches
+	// halfway while showing that the third stage is still underway.
+	current := filled
+	if !succeeded && !m.completed[m.phase] && slices.Contains(m.phases, m.phase) {
+		current = barWidth * (done + 1) / max(1, total)
+	}
+	bar, hatch := st.active, st.active
 	if succeeded {
 		bar = st.ok
+	} else if failed {
+		hatch = st.fail
 	}
 	header := st.muted.Render(label) + "\n" + bar.Render(strings.Repeat("━", filled)) +
-		st.muted.Render(strings.Repeat("─", barWidth-filled))
+		hatch.Render(strings.Repeat("╍", current-filled)) +
+		st.muted.Render(strings.Repeat("─", barWidth-current))
 	var lines []string
 	for _, phase := range m.phases {
 		mark, markStyle, titleStyle, timerStyle := "○", st.muted, st.muted, st.muted
