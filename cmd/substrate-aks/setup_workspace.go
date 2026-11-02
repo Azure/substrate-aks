@@ -801,6 +801,13 @@ func (m *setupWorkspace) contextText() string {
 		if m.details != "" {
 			return m.details
 		}
+		// On the review screen the body is the review itself; show it once.
+		if m.body == m.review || strings.TrimSpace(m.body) == "" {
+			return m.review
+		}
+		if m.review == "" {
+			return m.body
+		}
 		return m.review + "\n\n" + m.body
 	default:
 		if m.plan {

@@ -869,6 +869,17 @@ func TestWorkspaceFrameStaysStableAcrossPreparationAndApprovals(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDetailsShowTheReviewOnce(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.Update(setupReviewMsg{{kind: "row", label: "Resource group", text: "review-marker"}})
+	m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	if m.view != "details" || strings.Count(ansi.Strip(m.View().Content), "review-marker") != 1 {
+		t.Fatalf("details repeated the installation review:\n%s", ansi.Strip(m.View().Content))
+	}
+}
+
 func TestWorkspaceRailProgressHatchesTheRunningStage(t *testing.T) {
 	m := testWorkspace(t)
 	m.welcome = false
