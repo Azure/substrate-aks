@@ -300,7 +300,7 @@ func TestSetupSummaryFitsNarrowTerminalsWithoutLosingIdentifiers(t *testing.T) {
 			}
 			compact := strings.Join(strings.Fields(output.String()), "")
 			for _, want := range []string{c.Azure.SubscriptionID, c.Azure.SnapshotReaderObjectID, path,
-				"Read-only,snapshotscontaineronly"} {
+				"Read-onlyaccesstothesnapshotscontainer."} {
 				if !strings.Contains(compact, want) {
 					t.Fatalf("narrow summary truncated %q:\n%s", want, &output)
 				}

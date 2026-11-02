@@ -49,7 +49,7 @@ type setupNoteMsg struct {
 	warning bool
 }
 type setupReviewEntry struct {
-	kind, label, text string
+	kind, label, text, detail string
 }
 type setupReviewMsg []setupReviewEntry
 type setupTargetMsg struct {

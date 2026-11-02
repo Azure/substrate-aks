@@ -543,6 +543,75 @@ func TestSetupChecklistReportsOperationErrors(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReviewGroupsRowsUnderHeadings(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
+	c := installer.DefaultConfig()
+	c.AKS.ClusterName = "review-cluster"
+	c.AKS.AllowUnrestrictedAPI = true
+	c.Azure.SubscriptionID = "22222222-2222-4222-8222-222222222222"
+	c.Azure.AssetPublisherObjectID = "33333333-3333-4333-8333-333333333333"
+	c.AKS.Operator = &installer.OperatorConfig{ObjectID: c.Azure.AssetPublisherObjectID, PrincipalType: "User"}
+	for _, width := range []int{140, 36} {
+		m := testWorkspace(t)
+		m.welcome = false
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 60})
+		ui := newSetupUI(io.Discard)
+		ui.session = m.session
+		ui.summary(c, azureDefaults{subscriptionName: "Dev subscription", publisherName: "Pat Publisher"}, "/home/tester/.local/state/substrate-aks/installations/x/installation.json", true, "docker")
+		m.Update(<-m.session.events)
+		lines := strings.Split(ansi.Strip(m.body), "\n")
+		find := func(text string) int {
+			for i, line := range lines {
+				if strings.Contains(line, text) {
+					return i
+				}
+			}
+			t.Fatalf("width %d: review lost %q:\n%s", width, text, strings.Join(lines, "\n"))
+			return -1
+		}
+		if find("Dev subscription")+1 != find(c.Azure.SubscriptionID[:13]) || strings.Contains(m.body, "Dev subscription (") {
+			t.Fatalf("width %d: subscription ID is not on its own line under the name", width)
+		}
+		if azure, cluster, access := find("Azure ─"), find("Cluster ─"), find("Access ─"); !(azure < find("Resource group") && find("Resource group") < cluster && cluster < find("API access") && find("API access") < access && access < find("Snapshot inspection")) {
+			t.Fatalf("width %d: rows are not under their headings", width)
+		}
+		if admin := find("Cluster admin"); width > 60 && (!strings.Contains(lines[admin], "Pat Publisher") || admin+1 != find("· User")) {
+			t.Fatalf("width %d: cluster admin is not shown by name with its ID beneath", width)
+		}
+		if find("Snapshot inspection") >= find("Existing operator") || find("Before you continue") >= find("⚠ "+unrestrictedAPIWarning[:20]) {
+			t.Fatalf("width %d: explanation or warning moved away from its row or box", width)
+		}
+		if width > 60 {
+			find("~/.local/state/substrate-aks/installations/x/installation.json")
+		}
+		if boxed := strings.Contains(m.body, "╭"); boxed != (width > 60) {
+			t.Fatalf("width %d: callout boxed=%v", width, boxed)
+		}
+	}
+}
+
+func TestWorkspaceArrowsScrollReviewWhileConfirmIsFocused(t *testing.T) {
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m.Update(setupReviewMsg{{kind: "note", text: strings.Repeat("review line\n", 40)}})
+	value := false
+	m.Update(setupFormMsg{form: huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().Title("Continue?").Value(&value))), done: make(chan error, 1)})
+	if !strings.Contains(ansi.Strip(m.View().Content), "↑↓ to scroll") {
+		t.Fatalf("scroll hint does not name usable keys:\n%s", ansi.Strip(m.View().Content))
+	}
+	workspaceKey(m, tea.KeyDown)
+	workspaceKey(m, 'j')
+	if m.scroll != 2 || value {
+		t.Fatalf("arrows did not scroll the review (scroll=%d, value=%v)", m.scroll, value)
+	}
+	workspaceKey(m, tea.KeyUp)
+	if m.scroll != 1 {
+		t.Fatalf("up did not scroll back: %d", m.scroll)
+	}
+}
+
 func TestWorkspaceReviewAndPromptColorsRespectOutputProfile(t *testing.T) {
 	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.Ascii} {
 		m := testWorkspace(t)
@@ -555,7 +624,7 @@ func TestWorkspaceReviewAndPromptColorsRespectOutputProfile(t *testing.T) {
 		ui.summary(c, azureDefaults{}, "deploy.json", true, "docker")
 		m.Update(<-m.session.events)
 		if !strings.Contains(ansi.Strip(m.body), "review-cluster") ||
-			!strings.Contains(ansi.Strip(m.body), "WARNING:") || strings.Contains(m.body, "\x1b]") {
+			!strings.Contains(ansi.Strip(m.body), "⚠ This creates billable") || strings.Contains(m.body, "\x1b]") {
 			t.Fatalf("review lost content or allowed terminal control: %q", m.body)
 		}
 		value := false

@@ -99,9 +99,13 @@ func (m *setupWorkspace) panelView(bodyHeight int) string {
 	if hasContext {
 		panel += gap + vp.View()
 		if vp.TotalLineCount() > height {
-			hint := fmt.Sprintf("▾ %d%% read · pgup/pgdn to scroll", int(vp.ScrollPercent()*100))
+			keys, back := "pgup/pgdn", "pgup"
+			if m.view == "" && m.arrowsScroll() {
+				keys, back = "↑↓", "↑"
+			}
+			hint := fmt.Sprintf("▾ %d%% read · %s to scroll", int(vp.ScrollPercent()*100), keys)
 			if vp.AtBottom() {
-				hint = "▴ end · pgup to scroll back"
+				hint = "▴ end · " + back + " to scroll back"
 			}
 			panel += "\n" + st.muted.Render(hint)
 		} else {
@@ -232,11 +236,19 @@ func (m *setupWorkspace) footerView() string {
 	case m.view != "":
 		hints = []setupKeyHint{{"esc", "return"}, {"↑↓", "scroll"}, {"pgup/pgdn", "page"}}
 	case m.reviewRequired && !m.reviewed:
-		hints = []setupKeyHint{{"pgdn", "read"}, {"a", "acknowledge summary"}, {"d", "details"}, {"l", "logs"}}
+		read := "pgdn"
+		if m.arrowsScroll() {
+			read = "↓/pgdn"
+		}
+		hints = []setupKeyHint{{read, "read"}, {"a", "acknowledge summary"}, {"d", "details"}, {"l", "logs"}}
 	case m.formAcceptsText():
 		hints = []setupKeyHint{{"enter", "continue"}}
 	default:
-		hints = []setupKeyHint{{"d", "details"}, {"l", "logs"}, {"?", "help"}, {"pgup/pgdn", "scroll"}}
+		scroll := "pgup/pgdn"
+		if m.arrowsScroll() {
+			scroll = "↑↓"
+		}
+		hints = []setupKeyHint{{"d", "details"}, {"l", "logs"}, {"?", "help"}, {scroll, "scroll"}}
 	}
 	return setupKeys(m.st, m.width, hints, trailing)
 }

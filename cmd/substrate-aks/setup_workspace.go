@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -599,6 +601,16 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollBy(-max(1, m.contextHeight()-1))
 			return m, nil
 		}
+		if m.view == "" && m.arrowsScroll() {
+			switch key {
+			case "down", "j":
+				m.scrollBy(1)
+				return m, nil
+			case "up", "k":
+				m.scrollBy(-1)
+				return m, nil
+			}
+		}
 		if m.view != "" {
 			switch key {
 			case "esc":
@@ -692,6 +704,16 @@ func (m *setupWorkspace) formAcceptsText() bool {
 	return !confirmation
 }
 
+// arrowsScroll reports whether up/down are free to scroll the main pane:
+// a yes/no confirmation only uses left/right, unlike selects and inputs.
+func (m *setupWorkspace) arrowsScroll() bool {
+	if m.form == nil {
+		return false
+	}
+	_, confirmation := m.form.GetFocusedField().(*huh.Confirm)
+	return confirmation
+}
+
 func (m *setupWorkspace) scrollBy(delta int) {
 	vp := m.contextViewport()
 	m.scroll = max(0, vp.YOffset()+delta)
@@ -727,7 +749,17 @@ func (m *setupWorkspace) formView() string {
 	if m.form == nil || m.view != "" || m.stopping {
 		return ""
 	}
-	return m.form.View()
+	view := m.form.View()
+	if m.arrowsScroll() {
+		// huh pads every form to its fixed height; a one-line confirmation
+		// gives that space back to the summary above it.
+		lines := strings.Split(view, "\n")
+		for len(lines) > 1 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		view = strings.Join(lines, "\n")
+	}
+	return view
 }
 
 func (m *setupWorkspace) contextViewport() viewport.Model {
@@ -749,6 +781,7 @@ func (m *setupWorkspace) contextText() string {
 			{"?", "help"},
 			{"a", "acknowledge a destructive/unknown summary after reading it through"},
 			{"PgUp/PgDn", "scroll reviews or logs"},
+			{"↑/↓", "scroll a review while a yes/no prompt is focused"},
 			{"Esc", "close details/logs; never skips an approval"},
 			{"Ctrl-C", "stop owned work after confirming (twice stops now); resources are retained"},
 		} {
@@ -834,31 +867,88 @@ func (m *setupWorkspace) scrollToCurrentCheck() {
 	}
 }
 
+// reviewView lays the installation summary out as titled groups of aligned
+// label/value rows, with each row's explanation under its value and the
+// billing warnings in a closing box next to the approval prompt.
 func (m *setupWorkspace) reviewView(entries []setupReviewEntry) string {
 	var lines []string
-	width := m.bodyWidth()
-	muted := m.renderer.NewStyle().Foreground(lipgloss.Color("8"))
+	width := min(m.bodyWidth(), 100)
+	st := m.st
+	stacked := width < 64
+	const labelWidth = 22
+	valueWidth := max(1, width-labelWidth)
 	for _, entry := range entries {
-		text, label := safeSetupText(entry.text), safeSetupText(entry.label)
+		text, label, detail := safeSetupText(entry.text), safeSetupText(entry.label), safeSetupText(entry.detail)
 		switch entry.kind {
 		case "heading":
-			lines = append(lines, "", m.renderer.NewStyle().Bold(true).Foreground(lipgloss.Color(setupAccent)).Width(width).Render(text))
+			lines = append(lines, "", st.accentBold.Width(width).Render(text))
+		case "group":
+			rule := ""
+			if fill := width - lipgloss.Width(text) - 1; fill > 0 {
+				rule = " " + st.muted.Render(strings.Repeat("─", fill))
+			}
+			lines = append(lines, "", st.accentBold.Render(text)+rule)
 		case "warning":
-			lines = append(lines, m.renderer.NewStyle().Foreground(lipgloss.Color("3")).Width(width).Render("WARNING: "+text))
+			lines = append(lines, st.warn.Width(width).Render("WARNING: "+text))
 		case "success":
-			lines = append(lines, m.renderer.NewStyle().Foreground(lipgloss.Color("2")).Width(width).Render(text))
+			lines = append(lines, st.ok.Bold(true).Render("✓ "+text))
+			if detail != "" {
+				lines = append(lines, st.muted.PaddingLeft(2).Width(width).Render(setupDisplayPath(detail)))
+			}
 		case "row":
-			if width < 64 {
-				lines = append(lines, muted.Render(label), m.renderer.NewStyle().PaddingLeft(2).Width(width).Render(text))
+			value := text
+			if detail != "" {
+				value += "\n" + st.muted.Render(detail)
+			}
+			if stacked {
+				lines = append(lines, st.muted.Render(label), m.renderer.NewStyle().PaddingLeft(2).Width(width).Render(value))
 			} else {
 				lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
-					muted.Width(20).Render(label), m.renderer.NewStyle().Width(width-20).Render(text)))
+					st.muted.Width(labelWidth).Render(label), m.renderer.NewStyle().Width(valueWidth).Render(value)))
 			}
+		case "callout":
+			lines = append(lines, "", m.reviewCallout(label, strings.Split(text, "\n"), detail, width))
 		default:
-			lines = append(lines, muted.Width(width).Render(text))
+			lines = append(lines, st.muted.Width(width).Render(text))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *setupWorkspace) reviewCallout(title string, warnings []string, note string, width int) string {
+	st := m.st
+	boxed := width >= 40
+	inner := width
+	if boxed {
+		inner -= 4
+	}
+	content := []string{st.bold.Render(title)}
+	for _, warning := range warnings {
+		if warning != "" {
+			content = append(content, st.warn.Width(inner).Render("⚠ "+warning))
+		}
+	}
+	if note != "" {
+		content = append(content, st.muted.Width(inner).Render(note))
+	}
+	body := strings.Join(content, "\n")
+	if !boxed {
+		return body
+	}
+	return m.renderer.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(setupWarn)).
+		Padding(0, 1).Width(width - 2).Render(body)
+}
+
+// setupDisplayPath abbreviates the home directory so long state paths fit.
+func setupDisplayPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return path
+	}
+	if path == home || strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
 }
 
 func setupPhaseTitle(phase string) string {

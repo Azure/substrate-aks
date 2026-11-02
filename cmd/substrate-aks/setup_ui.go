@@ -206,8 +206,65 @@ func (u *setupUI) row(label, value string) {
 		left.Width(20).Render(label), right.Width(u.width-20).Render(value)))
 }
 
+// identity shows a display name with its object ID; the review screen
+// puts the ID on its own muted line so names stay scannable.
 func (u *setupUI) identity(label, name, id string) {
-	u.row(label, formatAzureID(name, id))
+	u.principal(label, name, id, "", "")
+}
+
+// principal shows an Entra principal by name when known, its object ID and
+// type as supporting detail, and an optional explanation.
+func (u *setupUI) principal(label, name, id, kind, explanation string) {
+	if kind != "" {
+		id += " · " + kind
+	}
+	if u.review == nil {
+		u.row(label, formatAzureID(name, id))
+		if explanation != "" {
+			u.note(explanation)
+		}
+		return
+	}
+	value, details := id, []string{}
+	if name != "" {
+		value, details = name, append(details, id)
+	}
+	if explanation != "" {
+		details = append(details, explanation)
+	}
+	u.rowDetail(label, value, strings.Join(details, "\n"))
+}
+
+// group starts a titled block of summary rows.
+func (u *setupUI) group(title string) {
+	if u.review != nil {
+		*u.review = append(*u.review, setupReviewEntry{kind: "group", text: title})
+		return
+	}
+	u.section(title)
+}
+
+// rowDetail is a summary row with a short explanation under its value.
+func (u *setupUI) rowDetail(label, value, detail string) {
+	if u.review != nil {
+		*u.review = append(*u.review, setupReviewEntry{kind: "row", label: label, text: value, detail: detail})
+		return
+	}
+	u.row(label, value)
+	u.note(detail)
+}
+
+// callout closes the summary with the warnings to read before approving.
+func (u *setupUI) callout(title string, warnings []string, note string) {
+	if u.review != nil {
+		*u.review = append(*u.review, setupReviewEntry{kind: "callout", label: title, text: strings.Join(warnings, "\n"), detail: note})
+		return
+	}
+	u.section(title)
+	for _, warning := range warnings {
+		u.warning(warning)
+	}
+	u.note(note)
 }
 
 func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path string, created bool, engine string) {
@@ -219,53 +276,63 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 		u.session.send(setupReviewMsg(entries))
 		return
 	}
-	u.section("Installation summary")
+	if u.review == nil {
+		u.section("Installation summary")
+	}
 	if created {
-		message := "Configuration saved: " + path
 		if u.review != nil {
-			*u.review = append(*u.review, setupReviewEntry{kind: "success", text: message})
+			*u.review = append(*u.review, setupReviewEntry{kind: "success", text: "Configuration saved · nothing has been created in Azure yet", detail: path})
 		} else {
-			fmt.Fprintln(u.out, u.renderer.NewStyle().Foreground(lipgloss.Color("2")).Width(u.width).Render(message))
+			fmt.Fprintln(u.out, u.renderer.NewStyle().Foreground(lipgloss.Color("2")).Width(u.width).Render("Configuration saved: "+path))
+			u.note("No Azure resources have been created.")
 		}
-		u.note("No Azure resources have been created.")
 	} else {
 		u.note("Using saved configuration: " + path)
 	}
-
-	fmt.Fprintln(u.out)
-	u.row("Resource group", c.Azure.ResourceGroup)
-	u.row("Cluster", c.AKS.ClusterName)
-	u.row("Region", c.Azure.Location)
-	u.identity("Subscription", defaults.subscriptionName, c.Azure.SubscriptionID)
-	u.identity("Azure identity", defaults.publisherName, c.Azure.AssetPublisherObjectID)
-	if operator := c.AKS.Operator; operator != nil {
-		u.row("Operator auth", "Managed Entra / Azure RBAC; local accounts disabled")
-		u.row("AKS operator", operator.ObjectID+" ("+operator.PrincipalType+")")
-		u.note("Cluster-scoped AKS RBAC Cluster Admin, including credential-fetch access. Uses your current az login through kubelogin.")
-	} else {
-		u.row("Operator auth", "Legacy configuration (unchanged)")
-		u.note("This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
+	// Operator and reader IDs are usually the signed-in identity; show its
+	// name rather than a bare GUID when they match.
+	nameOf := func(id string) string {
+		if strings.EqualFold(id, c.Azure.AssetPublisherObjectID) {
+			return defaults.publisherName
+		}
+		return ""
 	}
+
+	warnings := []string{"This creates billable ACR, AKS, and storage resources."}
+	u.group("Azure")
+	u.identity("Subscription", defaults.subscriptionName, c.Azure.SubscriptionID)
+	u.row("Resource group", c.Azure.ResourceGroup)
+	u.row("Region", c.Azure.Location)
+	u.identity("Azure identity", defaults.publisherName, c.Azure.AssetPublisherObjectID)
+
+	u.group("Cluster")
+	u.row("Cluster", c.AKS.ClusterName)
 	u.row("AKS version", c.AKS.KubernetesVersion)
 	u.row("Nodes", fmt.Sprintf("1 system + %d microVM", c.AKS.WorkerPool.Count))
 	u.row("Node size", c.AKS.WorkerPool.VMSize)
-	u.row("Image builder", engine)
 	if c.AKS.AllowUnrestrictedAPI {
 		u.row("API access", "Unrestricted (internet-reachable)")
-		u.warning(unrestrictedAPIWarning)
+		warnings = append(warnings, unrestrictedAPIWarning)
 	} else {
 		u.row("API access", strings.Join(c.AKS.APIAuthorizedCIDRs, ", "))
 	}
-	if c.Azure.SnapshotReaderObjectID == "" {
-		u.row("Snapshot inspection", "No new operator access")
-		u.note("Runtime identities receive access. Existing operator grants are not revoked.")
+	u.row("Image builder", engine)
+
+	u.group("Access")
+	if operator := c.AKS.Operator; operator != nil {
+		u.principal("Cluster admin", nameOf(operator.ObjectID), operator.ObjectID, operator.PrincipalType,
+			"Entra ID and Azure RBAC; no local accounts. Uses your az login via kubelogin.")
 	} else {
-		u.row("Snapshot inspection", "Read-only, snapshots container only")
-		u.row("Reader object ID", c.Azure.SnapshotReaderObjectID)
+		u.rowDetail("Cluster admin", "Legacy configuration (unchanged)",
+			"This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
 	}
-	u.section("Before you continue")
-	u.warning("This creates billable ACR, AKS, and storage resources.")
-	u.note("Failed runs retain resources for retry. Teardown deletes all installation data.")
+	if reader := c.Azure.SnapshotReaderObjectID; reader == "" {
+		u.rowDetail("Snapshot inspection", "No new operator access",
+			"Runtime identities receive access. Existing operator grants are not revoked.")
+	} else {
+		u.principal("Snapshot inspection", nameOf(reader), reader, "", "Read-only access to the snapshots container.")
+	}
+	u.callout("Before you continue", warnings, "Failed runs retain resources for retry. Teardown deletes all installation data.")
 }
 
 func (u *setupUI) step(text string) {
