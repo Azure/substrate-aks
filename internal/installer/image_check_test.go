@@ -133,7 +133,7 @@ func TestDestroyRecreateAndRecoverSavedImages(t *testing.T) {
 	}
 	destroy := func() {
 		t.Helper()
-		r := script(t, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c),
+		r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"}, ownerReply(c),
 			reply{contains: "group delete"})
 		if err := (App{Config: c, Runner: r}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
 			t.Fatal(err)

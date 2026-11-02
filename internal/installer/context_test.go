@@ -257,6 +257,30 @@ func TestContextImportRejectsPrivateFileAliases(t *testing.T) {
 	}
 }
 
+func TestContextImportRejectsAnotherInstallationsPrivateKubeconfig(t *testing.T) {
+	a := contextApp(t)
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, recordFile), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(other, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{other, alias} {
+		selection, err := PlanContextSwitch(filepath.Join(dir, "kubeconfig"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.SelectContext(t.Context(), selection); err == nil {
+			t.Fatalf("context selection wrote into another installation's directory via %s", dir)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(other, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected import created a file: %v", err)
+	}
+}
+
 func TestContextImportRejectsRelativePrivateCredentialPaths(t *testing.T) {
 	a := contextApp(t)
 	config, err := decodeContextFile(kubeconfigFixture(a.Config.AKS.ClusterName))

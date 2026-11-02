@@ -397,6 +397,11 @@ func (a App) Destroy(ctx context.Context, confirmation string) error {
 	if err := a.account(ctx); err != nil {
 		return err
 	}
+	// The CLI deletes local state after a successful Destroy, so leftover
+	// installation-tagged groups must fail here rather than be orphaned.
+	if err := a.guardTarget(ctx); err != nil {
+		return err
+	}
 	if err := a.ownedGroup(ctx, true); err != nil {
 		if errors.Is(err, errGroupAbsent) {
 			a.progress("Resource group is already absent; nothing to delete")

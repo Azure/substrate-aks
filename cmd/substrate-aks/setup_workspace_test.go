@@ -1342,7 +1342,7 @@ func TestWorkspaceLogsViewFollowsTheDiagnosticLog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("[command] plan\n$ \"az\" \"group\" \"show\" \"--name\" \"my rg\"\n{\"id\": \"x\"}\x1b]0;title\x07\x1b[31mred\x1b[0m\r\n")
+	write("[command] plan\n$ \"az\" \"group\" \"show\" \"--name\" \"my rg\"\n{\"id\": \"x\"}\x1b]0;title\x07\x1b[31mred\x1b[0m\r\n$ \"az\" \"\\x1bc\"\n")
 	m := testWorkspace(t)
 	m.welcome = false
 	m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
@@ -1350,12 +1350,12 @@ func TestWorkspaceLogsViewFollowsTheDiagnosticLog(t *testing.T) {
 	workspaceKey(m, 'l')
 	view := m.View().Content
 	plain := ansi.Strip(view)
-	for _, want := range []string{"LOGS", "Following", path, `$ az group show --name "my rg"`, `{"id": "x"}`, "red"} {
+	for _, want := range []string{"LOGS", "Following", path, `$ az group show --name "my rg"`, `{"id": "x"}`, "red", `$ az "\x1bc"`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("logs view lost %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(view, "\x1b]0;") || strings.Contains(view, "\x1b[31m") {
+	if strings.Contains(view, "\x1b]0;") || strings.Contains(view, "\x1b[31m") || strings.Contains(view, "\x1bc") {
 		t.Fatalf("logs view passed through subprocess terminal controls: %q", view)
 	}
 	write("\n[step] Creating the registry\n")

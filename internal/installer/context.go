@@ -51,6 +51,18 @@ func PlanContextSwitch(path string) (ContextSwitch, error) {
 	return ContextSwitch{Path: path, Previous: previous, before: data, exists: exists}, nil
 }
 
+// insideInstallation reports whether path's directory, after resolving
+// symlinks, holds an installation record, i.e. whether path would land in
+// state another installation's credentials refresh or destroy would remove.
+func insideInstallation(path string) bool {
+	dir := filepath.Dir(path)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	_, err := os.Stat(filepath.Join(dir, recordFile))
+	return err == nil
+}
+
 func readContextFile(path string) ([]byte, bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -118,6 +130,9 @@ func (a App) SelectContext(ctx context.Context, selection ContextSwitch) (result
 	}
 	if selection.Path == a.kubeconfig() {
 		return errors.New("context destination must differ from the installer's private kubeconfig")
+	}
+	if insideInstallation(selection.Path) {
+		return fmt.Errorf("context destination %s is inside an installation's private directory, which the installer replaces and deletes; choose a different --context-file or unset KUBECONFIG", selection.Path)
 	}
 	if targetInfo, err := os.Stat(selection.Path); err == nil {
 		privateInfo, err := os.Stat(a.kubeconfig())

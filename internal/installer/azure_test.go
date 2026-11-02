@@ -101,7 +101,7 @@ func TestDestroyRequiresConfirmationAndOwnership(t *testing.T) {
 		}
 	})
 	t.Run("cannot delete unowned group", func(t *testing.T) {
-		r := script(t, accountReply(c), reply{contains: "group exists", output: "true"},
+		r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
 			reply{contains: "group show", output: `{"location":"eastus2","tags":{}}`})
 		var steps []string
 		a := App{Config: c, Runner: r, Progress: func(format string, args ...any) {
@@ -116,7 +116,7 @@ func TestDestroyRequiresConfirmationAndOwnership(t *testing.T) {
 	})
 	t.Run("delete failure remains an error", func(t *testing.T) {
 		wantErr := errors.New("Azure deletion failed")
-		r := script(t, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c),
+		r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"}, ownerReply(c),
 			reply{contains: "group delete", err: wantErr})
 		var steps []string
 		a := App{Config: c, Runner: r, Progress: func(format string, args ...any) {
@@ -136,11 +136,23 @@ func TestDestroyRequiresConfirmationAndOwnership(t *testing.T) {
 		}
 	})
 	t.Run("already deleted is safe", func(t *testing.T) {
-		r := script(t, accountReply(c), reply{contains: "group exists", output: "false"})
+		r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"})
 		if err := (App{Config: c, Runner: r}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
 			t.Fatal(err)
 		}
 	})
+	// The CLI removes local state after success, so leftovers must fail.
+	for name, group := range map[string]string{
+		"orphaned node group": managedNodeGroupJSON(c),
+		"retargeted record":   resourceGroupJSON(c, "original-group", ""),
+	} {
+		t.Run(name+" is not reported as deleted", func(t *testing.T) {
+			r := script(t, accountReply(c), reply{contains: "group list --tag", output: "[" + group + "]"})
+			if err := (App{Config: c, Runner: r}).Destroy(t.Context(), c.Azure.ResourceGroup); err == nil {
+				t.Fatal("destroy succeeded while installation-tagged resource groups remain")
+			}
+		})
+	}
 }
 
 func TestStatusDisplaysResultsButNotSetupCommands(t *testing.T) {

@@ -358,6 +358,7 @@ func TestDestroyRemovesLocalStateOnlyAfterAzureTeardown(t *testing.T) {
 	fakeTool(t, bin, "az", fmt.Sprintf(`case "$1 $2" in
 "account show") printf '{"id":"%s"}' ;;
 "group exists") printf false ;;
+"group list") printf '[]' ;;
 *) exit 7 ;;
 esac
 `, c.Azure.SubscriptionID))

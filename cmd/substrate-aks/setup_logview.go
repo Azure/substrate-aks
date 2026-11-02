@@ -88,7 +88,9 @@ func setupShellLine(quoted string) string {
 		if err != nil {
 			return quoted
 		}
-		if arg == "" || strings.ContainsAny(arg, " \t\"'\\$`|&;<>(){}*?[]#~") {
+		// Unquoting can decode escapes such as \x1b into control bytes, so any
+		// argument that strconv.Quote would change stays quoted.
+		if arg == "" || strconv.Quote(arg) != `"`+arg+`"` || strings.ContainsAny(arg, " \t'$`|&;<>(){}*?[]#~") {
 			arg = strconv.Quote(arg)
 		}
 		args = append(args, arg)
