@@ -94,7 +94,7 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 	a.progress("Checking tar can read zstd-compressed archives (GNU or BSD tar)")
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	compressed, err := a.Runner.Run(probeCtx, Command{Args: []string{"zstd", "--compress", "--stdout"}, Input: archive.Bytes()})
+	compressed, err := a.Runner.Run(probeCtx, Command{Args: []string{"zstd", "--compress", "--stdout"}, Input: archive.Bytes(), BinaryOutput: true})
 	if err != nil {
 		return fmt.Errorf("checking zstd archive support: %w", err)
 	}

@@ -113,3 +113,16 @@ func TestRunnerSensitiveOutputIsCapturedButNeverDisplayed(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnerBinaryOutputIsCapturedButNotLogged(t *testing.T) {
+	var log bytes.Buffer
+	data, err := ExecRunner{Log: &log}.Run(t.Context(), Command{
+		Args: []string{"sh", "-c", `printf 'binary-%s\220' marker; printf 'stderr-marker' >&2`}, BinaryOutput: true,
+	})
+	if err != nil || string(data) != "binary-marker\220" {
+		t.Fatalf("binary command lost its output: %q, %v", data, err)
+	}
+	if strings.Contains(log.String(), "binary-marker") || !strings.Contains(log.String(), "stderr-marker") {
+		t.Fatalf("binary stdout must stay out of the log while stderr is kept:\n%q", log.String())
+	}
+}

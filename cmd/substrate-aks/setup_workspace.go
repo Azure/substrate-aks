@@ -985,12 +985,22 @@ func fullSetupPlan(subscription string, changes []installer.ResourceChange) stri
 }
 
 func safeSetupText(text string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
-			return r
+	keep := func(esc bool) func(rune) rune {
+		return func(r rune) rune {
+			if r == '\n' || r == '\t' || esc && r == '\x1b' || !unicode.IsControl(r) {
+				return r
+			}
+			return -1
 		}
-		return -1
-	}, ansi.Strip(text))
+	}
+	// Invalid UTF-8 and 8-bit C1 controls such as DCS can open a sequence the
+	// stripper never sees closed. Drop them first, and strip escapes per line
+	// so an unterminated sequence cannot hide the rest of a log.
+	lines := strings.Split(strings.Map(keep(true), strings.ToValidUTF8(text, "\uFFFD")), "\n")
+	for i, line := range lines {
+		lines[i] = strings.Map(keep(false), ansi.Strip(line))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func boundedSetupText(text string, limit int) string {

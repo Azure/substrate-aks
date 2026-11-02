@@ -18,6 +18,9 @@ type Command struct {
 	Input           []byte
 	ShowOutput      bool
 	SensitiveOutput bool
+	// BinaryOutput keeps non-text stdout out of the logs; stderr is still
+	// logged for diagnostics.
+	BinaryOutput bool
 }
 
 type Runner interface {
@@ -77,6 +80,9 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	if c.SensitiveOutput {
 		stdoutWriters = []io.Writer{&stdout}
 		stderrWriters = []io.Writer{io.Discard}
+	} else if c.BinaryOutput {
+		stdoutWriters = []io.Writer{&stdout}
+		fmt.Fprintln(log, "[binary output not logged]")
 	} else if c.ShowOutput {
 		if r.Stdout != nil {
 			stdoutWriters = append(stdoutWriters, r.Stdout)

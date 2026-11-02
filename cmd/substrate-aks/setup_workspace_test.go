@@ -1475,6 +1475,25 @@ func TestWorkspacePreviewCountsChildResourcesUnderTheirParent(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLogPreviewSurvivesBinaryOutput(t *testing.T) {
+	path := t.TempDir() + "/setup.log"
+	// 0x90 is an 8-bit DCS introducer that never terminates.
+	log := "$ \"zstd\"\nsubstrate\x90\x1b[31m\x9b\x00probe\n[step] Azure deployment readiness\n$ \"az\" \"account\" \"show\"\n"
+	if err := os.WriteFile(path, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testWorkspace(t)
+	m.welcome = false
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 34})
+	m.Update(setupChecklistMsg{"Preparation", []string{"Azure deployment readiness"}})
+	m.Update(setupCheckMsg{name: "Azure deployment readiness"})
+	m.Update(setupLogMsg(path))
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "$ az account show") || !strings.Contains(view, "Azure deployment readiness") {
+		t.Fatalf("binary bytes hid later log lines:\n%s", view)
+	}
+}
+
 func TestWorkspaceRunningChecklistPreviewsTheLogTail(t *testing.T) {
 	path := t.TempDir() + "/setup.log"
 	var log strings.Builder
