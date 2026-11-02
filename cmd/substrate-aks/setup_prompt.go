@@ -243,8 +243,9 @@ const (
 	setupSnapshotWarning  = "Optional; runtime access is automatic. Snapshots can contain actor memory, files, and secrets."
 
 	setupAPIQuestion   = "AKS API server access"
-	setupAPIRestricted = "Recommended. If your IP changes, edit aks.apiAuthorizedCidrs and run provision."
-	setupAPIOpen       = "Reachable from the internet; Kubernetes sign-in is still required. Often fine for experiments."
+	setupAPIRestricted = "Recommended. If your IP changes, kubectl is blocked until you put the new IP in " +
+		"aks.apiAuthorizedCidrs in installation.json and run: substrate-aks provision NAME"
+	setupAPIOpen = "Reachable from the internet; Kubernetes sign-in is still required. Often fine for experiments."
 )
 
 func validateNewInstallationName(name string, available func(string) error) error {
@@ -311,7 +312,7 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			Options(huh.NewOption("Only my IP address ("+cidr+")", false), huh.NewOption("Anyone on the internet", true)).
 			Description(setupAPIRestricted).DescriptionFunc(func() string {
 			if *open {
-				return "⚠ " + setupAPIOpen
+				return lipgloss.NewStyle().Foreground(lipgloss.Color(setupWarn)).Render("⚠ " + setupAPIOpen)
 			}
 			return setupAPIRestricted
 		}, open).Value(open)
@@ -328,10 +329,18 @@ func (p *setupPrompt) installation(ctx context.Context, name, location string, r
 			return
 		}
 		rest := lipgloss.Height(nameField.View()) + 1
-		for _, field := range []huh.Field{api, snapshot} {
-			if field != nil {
-				rest += lipgloss.Height(field.View()) + 1
+		if api != nil {
+			// Size the select to its options; an earlier narrow layout may
+			// have fixed a taller height. Reserve room for the longer of its
+			// two descriptions so changing the answer cannot overflow.
+			api.WithHeight(0)
+			lines := func(text string) int {
+				return lipgloss.Height(ansi.Wrap(text, max(1, nameField.width-2), ",.-; "))
 			}
+			rest += lipgloss.Height(api.View()) + 1 + max(0, lines("⚠ "+setupAPIOpen)-lines(setupAPIRestricted))
+		}
+		if snapshot != nil {
+			rest += lipgloss.Height(snapshot.View()) + 1
 		}
 		region.WithHeight(max(4, formHeight-rest))
 	}

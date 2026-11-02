@@ -210,8 +210,10 @@ Unrestricted access cannot be combined with `--api-cidr`. In JSON, set both
 `aks.allowUnrestrictedApi: true` and `aks.apiAuthorizedCidrs: []`; an empty
 allowlist alone is rejected.
 
-Your saved IP is not refreshed on retries. If it changes, edit
-`aks.apiAuthorizedCidrs`, then run `plan` and `provision`.
+Your saved IP is not refreshed on retries. If it changes, kubectl loses access
+to the cluster: put the new address in `aks.apiAuthorizedCidrs` in the
+installation's `installation.json`, then run `substrate-aks plan NAME` and
+`substrate-aks provision NAME`.
 
 ### Network and authorization boundaries
 
