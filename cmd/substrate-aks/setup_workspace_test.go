@@ -358,8 +358,13 @@ func TestWorkspaceStageChecklistKeepsProgressInlineAndResumesAfterApproval(t *te
 		m.Update(setupNoteMsg{text: "Target: redundant / eastus2"})
 		text := ansi.Strip(m.contextText())
 		lines := strings.Split(text, "\n")
-		if len(lines) != 3 || !strings.Contains(lines[0], items[0]) ||
-			!strings.Contains(lines[2], "○ "+items[1]) || strings.Contains(text, "[work]") ||
+		// A check without step detail leaves no blank row under it.
+		want := 3
+		if detail == "" {
+			want = 2
+		}
+		if len(lines) != want || !strings.Contains(lines[0], items[0]) ||
+			!strings.Contains(lines[want-1], "○ "+items[1]) || strings.Contains(text, "[work]") ||
 			strings.Contains(text, "Target:") || m.checks[0].done {
 			t.Fatalf("progress changed the stable checklist layout or completion state:\n%s", text)
 		}

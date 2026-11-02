@@ -461,7 +461,6 @@ func (m *setupWorkspace) checklistRows(checks []setupCheck) string {
 			}
 			detail = safeSetupText(strings.Join(strings.Fields(detail), " "))
 			if detail == "" {
-				lines = append(lines, "")
 				continue
 			}
 			const prefix = "  └─ "
