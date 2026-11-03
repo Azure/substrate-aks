@@ -142,7 +142,7 @@ func (a App) CloudPreflight(ctx context.Context) error {
 	for _, pool := range []struct {
 		name, size string
 		count      int
-	}{{"system", "Standard_D4s_v3", 1}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
+	}{{"system", SystemVMSize, 1}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
 		count := pool.count
 		if cluster != nil {
 			for _, existing := range cluster.AgentPoolProfiles {
@@ -218,7 +218,7 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		"$filter":     {"location eq '" + strings.ReplaceAll(a.Config.Azure.Location, "'", "''") + "'"},
 	}
 	next := endpoint + "?" + params.Encode()
-	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='Standard_D4s_v3' || name=='%s')],nextLink:nextLink}", a.Config.AKS.WorkerPool.VMSize)
+	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='%s' || name=='%s')],nextLink:nextLink}", SystemVMSize, a.Config.AKS.WorkerPool.VMSize)
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {

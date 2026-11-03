@@ -73,7 +73,7 @@ automation options.
 
 | Component | Default |
 | --- | --- |
-| AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v3` |
+| AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v6` |
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |

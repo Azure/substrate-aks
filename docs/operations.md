@@ -540,6 +540,16 @@ compilation, and read-only Azure preflight, but not by another full cloud instal
 **The same VM size can have different CPU models.** A cold restore onto an
 incompatible CPU lost actor memory, although file and disk state survived. A
 successful restore does not guarantee migration across heterogeneous nodes.
+Older series such as Dsv3 span several CPU generations with different TSC
+rates, and Cloud Hypervisor refuses to restore a memory snapshot across them
+(`SetTscKhz` fails). New installations therefore default to `Standard_D4s_v6`,
+which runs on one CPU generation. Keep that series, or another x86 D/E/F
+`_v6`/`_v7` size, when you run more than one microVM node; see
+[#12](https://github.com/Azure/substrate-aks/issues/12). Dsv6 costs about 5%
+more than Dsv3 (about $0.202/hour versus $0.192/hour per `D4s` node in
+`eastus2`). AKS cannot change an existing pool's VM size, so rerunning
+`provision` fails for installations created with the earlier Dsv3 default;
+destroy and recreate them.
 
 Changing the snapshot reader on an existing installation once needed a manual
 grant. The fix is covered by tests; a clean live update has not been repeated.

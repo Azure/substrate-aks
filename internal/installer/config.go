@@ -16,6 +16,9 @@ import (
 const (
 	DefaultRepository = "https://github.com/aramase/substrate.git"
 	DefaultCommit     = "c3b44aa46312e073a6384f68723a7b14dffd5518"
+	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
+	DefaultWorkerVMSize = "Standard_D4s_v6"
+	SystemVMSize        = "Standard_D4s_v6"
 )
 
 type Config struct {
@@ -100,7 +103,7 @@ func DefaultConfig() Config {
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
-			WorkerPool:        WorkerPoolConfig{VMSize: "Standard_D4s_v3", Count: 1},
+			WorkerPool:        WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1},
 		},
 		Substrate: SubstrateConfig{
 			Source: Source{Repository: DefaultRepository, Commit: DefaultCommit},

@@ -5,7 +5,7 @@ param resourceGroupName string
 param installationId string
 param clusterName string
 param kubernetesVersion string = '1.37'
-param workerVmSize string = 'Standard_D4s_v3'
+param workerVmSize string = 'Standard_D4s_v6'
 @minValue(1)
 param workerCount int = 1
 @description('Allowed AKS API IPv4 CIDRs. An empty array disables the allowlist; the CLI requires explicit unrestricted-access opt-in.')

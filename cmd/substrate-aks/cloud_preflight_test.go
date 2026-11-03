@@ -37,13 +37,13 @@ func successfulCloudRunnerFor(home, name string) installer.Runner {
 		case strings.HasPrefix(args, "az group exists "):
 			return []byte(`false`), nil
 		case strings.Contains(args, "/providers/Microsoft.Compute/skus?"):
-			return []byte(`{"value":[{"name":"Standard_D4s_v3","family":"standardDSv3Family","capabilities":[{"name":"vCPUs","value":"4"}]}]}`), nil
+			return []byte(`{"value":[{"name":"Standard_D4s_v6","family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}]}]}`), nil
 		case strings.HasPrefix(args, "az rest --method get "):
 			return []byte(`{"value":[{"actions":["*"],"notActions":[]}]}`), nil
 		case strings.HasPrefix(args, "az aks get-versions "):
 			return []byte(`{"values":[{"version":"1.37","patchVersions":{"1.37.0":{}}}]}`), nil
 		case strings.HasPrefix(args, "az vm list-usage "):
-			return []byte(`[{"name":{"value":"cores"},"currentValue":"0","limit":"100"},{"name":{"value":"standardDSv3Family"},"currentValue":"0","limit":"100"}]`), nil
+			return []byte(`[{"name":{"value":"cores"},"currentValue":"0","limit":"100"},{"name":{"value":"StandardDsv6Family"},"currentValue":"0","limit":"100"}]`), nil
 		default:
 			return nil, fmt.Errorf("unexpected cloud preflight command: %s", args)
 		}

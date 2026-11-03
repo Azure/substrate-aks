@@ -24,7 +24,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Resource group / cluster | `substrate-dev` (`init` and `setup --yes`; interactive setup asks) |
 | Region | `eastus2` |
 | AKS | Kubernetes 1.37; one system node and one microVM worker |
-| MicroVM worker | `Standard_D4s_v3`, count 1 |
+| Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
 
@@ -74,7 +74,7 @@ placeholders are not valid deployment values.
       "principalType": "User"
     },
     "workerPool": {
-      "vmSize": "Standard_D4s_v3",
+      "vmSize": "Standard_D4s_v6",
       "count": 1
     }
   },

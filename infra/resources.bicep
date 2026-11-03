@@ -87,7 +87,7 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         name: 'system'
         mode: 'System'
         count: 1
-        vmSize: 'Standard_D4s_v3'
+        vmSize: 'Standard_D4s_v6'
         osType: 'Linux'
         osSKU: 'Ubuntu'
         osDiskType: 'Managed'

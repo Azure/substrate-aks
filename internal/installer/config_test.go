@@ -25,7 +25,7 @@ func testConfig(t *testing.T) Config {
 		},
 		AKS: AKSConfig{
 			ClusterName: "substrate-test", KubernetesVersion: "1.37",
-			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v3", Count: 1},
+			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1},
 			APIAuthorizedCIDRs: []string{"203.0.113.8/32"},
 		},
 		Substrate: SubstrateConfig{
@@ -152,7 +152,7 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
-		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v3", Count: 1}) ||
+		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1}) ||
 		c.Substrate.Source != (Source{Repository: DefaultRepository, Commit: DefaultCommit}) ||
 		c.Installation.Dir != dir ||
 		c.Installation.Ownership != (Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}) ||

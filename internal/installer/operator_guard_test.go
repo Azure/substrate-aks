@@ -13,7 +13,7 @@ import (
 func clusterReply(c Config) reply {
 	managed := c.AKS.Operator != nil
 	return reply{contains: "aks list --resource-group " + c.Azure.ResourceGroup, output: fmt.Sprintf(
-		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v3","count":1},{"name":"microvm","vmSize":%q,"count":1}]}]`,
+		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1}]}]`,
 		c.AKS.ClusterName, managed, managed, managed, c.AKS.WorkerPool.VMSize)}
 }
 
