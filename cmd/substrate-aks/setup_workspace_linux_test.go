@@ -98,7 +98,6 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			p := newSetupPTY(t, 110, 30)
 			path := testCLIConfig(t)
 			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
 			release := make(chan struct{})
 			want := errors.New("SKU probe failed")
 			base := successfulCloudRunner(recordHome(path))
@@ -117,7 +116,19 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			})
 			done := make(chan error, 1)
 			executed := make(chan struct{}, 1)
+			finished := make(chan struct{})
+			// Registered after the PTY, so it runs first: the workspace and its
+			// renderer and resize goroutines must stop before the terminal closes.
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(10 * time.Second):
+					t.Error("setup worker did not stop before terminal cleanup")
+				}
+			})
 			go func() {
+				defer close(finished)
 				done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t), azure: cloud},
 					p.slave, p.slave, p.slave, func(context.Context, []string, io.Writer, io.Writer) error {
 						executed <- struct{}{}
@@ -142,8 +153,15 @@ func TestWorkspacePTYStablePreflightChecklist(t *testing.T) {
 			p.until(t, "Validate your deployment")
 			close(release)
 			if fail {
-				p.until(t, "SKU probe failed")
-				if !strings.Contains(p.all, "✗ Azure deployment readiness") || strings.Contains(p.all, "✓ Azure deployment readiness") {
+				// The log preview tails the file directly, so the error can appear
+				// there before the checklist redraws. The stopped callout is drawn
+				// only after the failed check and the finished event are applied.
+				p.until(t, "Setup stopped during")
+				// The renderer may redraw only a row's changed marker; a resize
+				// repaints every cell, so the final row arrives as one run.
+				p.resize(t, 110, 30)
+				p.until(t, "✗ Azure deployment readiness")
+				if strings.Contains(p.all, "✓ Azure deployment readiness") {
 					t.Fatalf("failed preflight lost its truthful result:\n%s", p.all)
 				}
 			} else {
