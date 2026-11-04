@@ -2,6 +2,7 @@ package installer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -108,6 +109,26 @@ func TestConfigNameBoundaries(t *testing.T) {
 			c.AKS.ClusterName, c.Azure.ResourceGroup = tc.name, tc.name
 			if err := c.Validate(); (err == nil) != tc.ok {
 				t.Fatalf("name validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigWorkerPoolBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		size  string
+		count int
+		ok    bool
+	}{
+		{"Standard_D8s_v7", 0, false}, {"Standard_D8s_v7", 1, true}, {"Standard_D8s_v7", 32, true},
+		{"Standard_D8s_v7", MaxWorkerCount, true}, {"Standard_D8s_v7", MaxWorkerCount + 1, false},
+		{"D8s_v7", 1, false}, {"Standard_D8s v7", 1, false},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tc.size, tc.count), func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.WorkerPool = WorkerPoolConfig{VMSize: tc.size, Count: tc.count}
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("worker pool validation: %v", err)
 			}
 		})
 	}

@@ -24,7 +24,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Resource group / cluster | `substrate-dev` (`init` and `setup --yes`; interactive setup asks) |
 | Region | `eastus2` |
 | AKS | Kubernetes 1.37; one system node and one microVM worker |
-| Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1) |
+| Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1); see [microVM worker pool](#microvm-worker-pool) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
 
@@ -112,6 +112,27 @@ the incomplete deletion before retrying.
 
 If the resource group is deleted outside the installer, reset references to
 deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
+
+## MicroVM worker pool
+
+Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
+always one `Standard_D4s_v6` node. Set the worker pool in `installation.json`
+before running `plan` and `provision`:
+
+| Field | Default | Limits |
+| --- | --- | --- |
+| `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization |
+| `aks.workerPool.count` | `1` | 1-100 nodes |
+
+The 100-node limit keeps the cluster within its overlay pod address range
+(`10.244.0.0/16`, one `/24` per node, so 256 nodes in total) with room for
+upgrade surge nodes. AKS itself allows up to 1,000 nodes per pool.
+
+Preflight checks that the size is offered in the region and that regional and
+VM-family vCPU quota covers both pools; request more quota before provisioning
+a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
+so memory snapshots can restore on any node; see
+[live acceptance and limitations](operations.md#live-acceptance-and-limitations).
 
 ## Azure identity and permissions
 

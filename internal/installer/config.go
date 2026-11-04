@@ -19,6 +19,8 @@ const (
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
 	SystemVMSize        = "Standard_D4s_v6"
+	// The overlay pod CIDR (10.244.0.0/16) gives each node a /24, so the cluster holds at most 256 nodes.
+	MaxWorkerCount = 100
 )
 
 type Config struct {
@@ -185,8 +187,11 @@ func (c Config) Validate() error {
 	if c.AKS.KubernetesVersion != "1.37" && !regexp.MustCompile(`^1\.37\.[0-9]+$`).MatchString(c.AKS.KubernetesVersion) {
 		return errors.New("this iteration targets Kubernetes 1.37 only")
 	}
-	if c.AKS.WorkerPool.Count < 1 || c.AKS.WorkerPool.Count > 10 || !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
-		return errors.New("aks.workerPool.count must be 1-10 and aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")
+	if c.AKS.WorkerPool.Count < 1 || c.AKS.WorkerPool.Count > MaxWorkerCount {
+		return fmt.Errorf("aks.workerPool.count must be 1-%d", MaxWorkerCount)
+	}
+	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
+		return errors.New("aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")
 	}
 	if len(c.AKS.APIAuthorizedCIDRs) == 0 && !c.AKS.AllowUnrestrictedAPI {
 		return errors.New("aks.apiAuthorizedCidrs must allow your client/CI IP ranges; only explicit aks.allowUnrestrictedApi=true permits an empty allowlist")

@@ -7,6 +7,7 @@ param clusterName string
 param kubernetesVersion string = '1.37'
 param workerVmSize string = 'Standard_D4s_v6'
 @minValue(1)
+@maxValue(100)
 param workerCount int = 1
 @description('Allowed AKS API IPv4 CIDRs. An empty array disables the allowlist; the CLI requires explicit unrestricted-access opt-in.')
 param apiAuthorizedCidrs array
