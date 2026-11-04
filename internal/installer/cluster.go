@@ -462,11 +462,17 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err := a.recordInstall(ctx, fp, "installing:"+component); err != nil {
 		return err
 	}
+	if err := a.installMetricsCollector(ctx); err != nil {
+		return err
+	}
 	if err := a.upstream(ctx, root, "deploy", component); err != nil {
 		return err
 	}
 	a.progress("Configuring the microVM sandbox")
 	if _, err := a.kubectl(ctx, sandbox, "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if err := a.configureGrafana(ctx, i); err != nil {
 		return err
 	}
 	a.progress("Recording the completed installation")
@@ -507,8 +513,16 @@ func (a App) Status(ctx context.Context) error {
 	if i.Database != nil {
 		a.progress("Managed PostgreSQL: %s, %s, database %s (AKS egress %s)", i.Database.Backend, i.Database.Host, i.Database.Name, i.Database.EgressIP)
 	}
+	if i.Monitoring != nil {
+		a.progress("Grafana: %s/d/substrate-aks-overview", strings.TrimSuffix(i.Monitoring.GrafanaEndpoint, "/"))
+	}
 	if err := a.credentials(ctx); err != nil {
 		return err
+	}
+	if i.Monitoring != nil {
+		if _, err := a.runKubectl(ctx, nil, true, "get", "deployments,podmonitors.azmonitoring.coreos.com", "--namespace=ate-system"); err != nil {
+			return err
+		}
 	}
 	a.progress("Fetching Substrate pods and persistent volumes")
 	_, err = a.runKubectl(ctx, nil, true, "get", "pods,pvc", "--namespace=ate-system", "--output=wide")

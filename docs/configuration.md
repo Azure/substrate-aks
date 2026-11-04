@@ -28,6 +28,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
 | PostgreSQL | `bundled`; managed `flexible-server` and `horizondb` are opt-in |
+| Monitoring | Disabled; `--monitoring` opts in managed Prometheus and Standard Grafana |
 
 Each installation is saved as `installations/NAME/installation.json` in the
 installer's home directory, a per-user state directory:
@@ -137,6 +138,21 @@ VM-family vCPU quota covers both pools; request more quota before provisioning
 a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
 [live acceptance and limitations](operations.md#live-acceptance-and-limitations).
+
+## Managed monitoring
+
+For a new installation, use `init --monitoring` or `setup --monitoring`.
+Optional `--monitoring-location REGION` sets `monitoring.location`; otherwise
+monitoring uses `azure.location`. Saved configuration uses
+`"monitoring": {"enabled": true}`. Omitted settings preserve disabled exporters
+and do not provision monitoring resources.
+
+Choose before provisioning, including registry bootstrap. Mode/region changes
+after provisioning are rejected. Monitoring adds charges and is deleted with the
+installation's resource group. The configured upload identity receives
+instance-scoped Grafana Admin; Grafana reads metrics using its managed identity.
+See [managed metrics and Grafana](monitoring.md) for collection, dashboards,
+permissions, troubleshooting and current limits.
 
 ## PostgreSQL backend
 

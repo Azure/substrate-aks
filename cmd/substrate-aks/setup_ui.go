@@ -301,6 +301,9 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	if reader != "" && same(reader) {
 		roles = append(roles, "snapshot reader")
 	}
+	if c.Monitoring.Enabled {
+		roles = append(roles, "Grafana Admin")
+	}
 
 	warnings := []string{"This creates billable ACR, AKS, and storage resources."}
 	u.group("Azure")
@@ -346,6 +349,15 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 		u.rowDetail("Credentials", "Key Vault in the resource group",
 			"Generated passwords are not stored on this machine. The Azure identity receives vault-scoped Secrets Officer access. Teardown deletes the database and its backups; vault secrets stay soft-deleted for seven days.")
 		warnings = append(warnings, "Managed PostgreSQL adds database compute, storage, and backup charges, a Key Vault, and a static egress IP. Its public endpoint accepts only AKS egress, over verified TLS.")
+	}
+
+	u.group("Monitoring")
+	if c.Monitoring.Enabled {
+		u.rowDetail("Metrics", "Managed Prometheus + Standard Grafana / "+c.MonitoringLocation(),
+			"The configured Azure identity receives Grafana Admin. Metrics only; logs, traces and alert policies are not configured.")
+		warnings = append(warnings, "Monitoring adds Grafana, metrics ingestion/query charges and collector resource usage. Teardown deletes the monitoring workspace and its data.")
+	} else {
+		u.row("Metrics", "Disabled")
 	}
 
 	access := operator != nil && !same(operator.ObjectID) || !same(reader)

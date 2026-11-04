@@ -29,6 +29,19 @@ type Config struct {
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
 	Database     DatabaseConfig     `json:"database"`
+	Monitoring   MonitoringConfig   `json:"monitoring,omitempty"`
+}
+
+type MonitoringConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Location string `json:"location,omitempty"`
+}
+
+func (c Config) MonitoringLocation() string {
+	if c.Monitoring.Location != "" {
+		return c.Monitoring.Location
+	}
+	return c.Azure.Location
 }
 
 type DatabaseBackend string
@@ -193,6 +206,10 @@ func ValidateInstallationName(name string) error {
 }
 
 func (c Config) Validate() error {
+	if c.Monitoring.Location != "" && (!c.Monitoring.Enabled ||
+		!regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.Monitoring.Location)) {
+		return errors.New("monitoring.location requires monitoring.enabled and an Azure region name")
+	}
 	switch c.Database.Backend {
 	case "", DatabaseBundled:
 		if c.Database.Location != "" {

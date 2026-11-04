@@ -90,8 +90,8 @@ func pinnedContractRoot(t *testing.T) string {
 	return root
 }
 
-func TestPinnedUpstreamContract(t *testing.T) {
-	root := pinnedContractRoot(t)
+func copyContractManifests(t *testing.T, root string) string {
+	t.Helper()
 	dest := t.TempDir()
 	for _, subtree := range []string{"manifests", "demos/counter"} {
 		err := filepath.WalkDir(filepath.Join(root, subtree), func(path string, entry fs.DirEntry, walkErr error) error {
@@ -116,11 +116,18 @@ func TestPinnedUpstreamContract(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return dest
+}
+
+func TestPinnedUpstreamContract(t *testing.T) {
+	root := pinnedContractRoot(t)
+	dest := copyContractManifests(t, root)
 	c, i := testConfig(t), testInfrastructure()
 	paths, err := adaptSource(dest, c, i)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !reflect.DeepEqual(paths, []string{
 		"manifests/ate-install/atelet.yaml",
 		"manifests/ate-install/ate-api-server.yaml",

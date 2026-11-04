@@ -65,6 +65,7 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
 | `bin/substrate-aks init flex --database flexible-server --database-location westus3` | Save a new installation that uses Azure PostgreSQL Flexible Server |
 | `bin/substrate-aks init horizon --database horizondb --database-location eastus` | Save a new installation that uses Azure HorizonDB (preview) |
+| `bin/substrate-aks setup --monitoring` | Opt in managed Prometheus and Grafana for a new installation |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) for
@@ -87,6 +88,7 @@ separate steps.
 | Images | Built from the pinned source and stored in a private Azure Container Registry (ACR) |
 | Storage | Azure Blob containers for snapshots and runtime assets |
 | Demo | Optional counter microVM workload |
+| Monitoring | Optional managed Prometheus and Standard Grafana, with Substrate, AKS, Blob and selected PostgreSQL dashboards |
 
 > [!IMPORTANT]
 > **This is not a production or multi-tenant deployment.** The AKS API is public
@@ -106,6 +108,10 @@ before choosing a different region or VM size.
 Managed PostgreSQL uses passwords retained in Key Vault because the pinned client
 cannot renew Entra database tokens. See [database configuration](docs/configuration.md#postgresql-backend)
 for costs, availability, credential retention, and destructive teardown.
+
+[Managed metrics and Grafana](docs/monitoring.md) are opt-in and add ongoing
+charges. Collection is metrics-only; logs, traces and alert policies are not
+configured.
 
 ## Try the demo
 

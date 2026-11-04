@@ -1,4 +1,4 @@
-.PHONY: build setup test test-unit test-contract verify bicep
+.PHONY: build setup test test-unit test-contract test-monitoring verify bicep
 
 build:
 	go build -o bin/substrate-aks ./cmd/substrate-aks
@@ -14,7 +14,10 @@ test-unit:
 	go test -race ./...
 
 test-contract:
-	go test -race -tags=integration ./internal/installer -run '^TestPinned(Upstream|ImagePublisher|ImageCheck|PodmanPublisher)Contract$$' -count=1
+	go test -race -tags=integration ./internal/installer -run '^TestPinned(Upstream|UpstreamMonitoring|ImagePublisher|ImageCheck|PodmanPublisher)Contract$$' -count=1
+
+test-monitoring:
+	go test -race -tags=integration ./deploy -run '^TestMonitoringCollectorPipeline$$' -count=1
 
 verify:
 	test -z "$$(gofmt -l cmd internal infra deploy)"

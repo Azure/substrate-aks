@@ -45,10 +45,12 @@ func stopAtFirstStage(context.Context, []string, io.Writer, io.Writer) error { r
 
 func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
 	client := installer.ClientSetup{}
+	var dashboardURL string
 	if o.azure == nil {
 		o.azure = successfulCloudRunner(o.home)
 	}
 	o.client = &client
+	o.monitoringDashboardURL = &dashboardURL
 	if o.contextFile == "" && !o.skipContextHandoff {
 		o.contextFile = filepath.Join(o.home, "operator-kubeconfig")
 	}
@@ -85,6 +87,15 @@ func setupForTest(ctx context.Context, o setupOptions, in io.Reader, out, stderr
 	return setup(ctx, o, in, out, stderr, func(ctx context.Context, args []string, out, stderr io.Writer) error {
 		if err := execute(ctx, args, out, stderr); err != nil {
 			return err
+		}
+		if args[0] == "install" {
+			c, err := installer.LoadInstallation(o.home, o.name)
+			if err != nil {
+				return err
+			}
+			if c.Monitoring.Enabled {
+				dashboardURL = "https://substrate-test.grafana.azure.com/d/substrate-aks-overview"
+			}
 		}
 		if args[0] != "client" {
 			return nil
@@ -693,6 +704,8 @@ func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
 		{"--identity-object-id", defaultPublisher},
 		{"--database", "horizondb"},
 		{"--database-location", "eastus"},
+		{"--monitoring"},
+		{"--monitoring-location", "eastus2"},
 	} {
 		t.Run(flags[0], func(t *testing.T) {
 			path := testCLIConfig(t)
@@ -708,6 +721,90 @@ func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
 			}
 			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
 				t.Fatalf("rejected flags changed the saved installation: %v", err)
+			}
+		})
+	}
+}
+
+func TestSetupMonitoringWithBundledDatabase(t *testing.T) {
+	for _, invalidRegion := range []bool{false, true} {
+		t.Run(map[bool]string{false: "billing-disclosure", true: "invalid-saved-region"}[invalidRegion], func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Monitoring.Enabled = true
+			if invalidRegion {
+				c.Monitoring.Location = "notaregion"
+			}
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			err = setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t)},
+				strings.NewReader("no\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
+					t.Fatal("invalid or declined monitoring setup reached a deployment stage")
+					return nil
+				})
+			if invalidRegion {
+				if err == nil || !strings.Contains(err.Error(), "monitoring region:") {
+					t.Fatalf("bundled database bypassed saved monitoring-region validation: %v", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), "before provisioning") {
+					t.Fatalf("monitoring setup did not stop at billing confirmation: %v", err)
+				}
+				for _, disclosure := range []string{"Managed Prometheus + Standard Grafana", "Grafana Admin", "Teardown deletes", "ingestion/query charges"} {
+					if !strings.Contains(output.String(), disclosure) {
+						t.Fatalf("monitoring summary omitted %q:\n%s", disclosure, &output)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSetupMonitoringReceipt(t *testing.T) {
+	for _, workspace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "line-output", true: "workspace"}[workspace], func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Monitoring.Enabled = true
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			if workspace {
+				m := testWorkspace(t)
+				m.session.events = make(chan any, 1024)
+				ctx = context.WithValue(ctx, setupSessionKey{}, m.session)
+			}
+			var output bytes.Buffer
+			if err := setupForTest(ctx, setupOptions{
+				home: recordHome(path), name: recordName(path), yes: true, skipContextHandoff: true,
+				discovery: subscriptionDisplayRunner(t),
+			}, strings.NewReader(""), &output, &output, func(_ context.Context, _ []string, out, stderr io.Writer) error {
+				if workspace && (out != io.Discard || stderr != io.Discard) {
+					t.Fatal("workspace stopped suppressing stage output")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "# Open monitoring dashboards:\n# https://substrate-test.grafana.azure.com/d/substrate-aks-overview\n") {
+				t.Fatalf("setup lost the dashboard URL when stage output was absent:\n%s", &output)
 			}
 		})
 	}

@@ -53,7 +53,7 @@ needed. Upstream `ate-setup` handles the base installation and component redeplo
 | Snapshot storage | Blob sidecars with separate node and control-plane identities |
 | Actor image access | Native AKS ACR credential provider using the node's identity |
 | PostgreSQL | Bundled default: one replica with a 32 GiB Azure Disk; optional managed services use upstream's external-database contract |
-| Telemetry | GKE monitoring removed; exporters disabled |
+| Telemetry | GKE monitoring removed; exporters disabled by default, with opt-in Azure OTLP metrics and managed Prometheus/Grafana |
 | Demo workers | Scheduled on the dedicated microVM node pool |
 
 The counter ActorTemplate is a Substrate API document, not a Kubernetes resource.
