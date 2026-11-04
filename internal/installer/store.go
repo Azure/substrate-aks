@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,14 @@ import (
 // HomeEnv overrides where installations are stored.
 const HomeEnv = "SUBSTRATE_AKS_HOME"
 
-const recordFile = "installation.json"
+const (
+	recordFile = "installation.json"
+	lockFile   = "operation.lock"
+)
+
+// ErrInstallationInUse reports that another command holds an installation's
+// lock or, for DiscardNewInstallation, has written to it.
+var ErrInstallationInUse = errors.New("another operation is using this installation")
 
 // Home returns the directory holding all installations: $SUBSTRATE_AKS_HOME,
 // or the platform's per-user state directory. Installations hold credentials
@@ -153,4 +161,33 @@ func RemoveInstallation(c Config) error {
 		return errors.New("refusing to remove local state outside the installation directory")
 	}
 	return os.RemoveAll(c.Installation.Dir)
+}
+
+// DiscardNewInstallation removes an installation this process created but
+// never provisioned. It returns ErrInstallationInUse, keeping the state, when
+// another command holds the installation's lock or has written to it since
+// record was saved, such as a setup run that resumed it.
+func DiscardNewInstallation(c Config, record []byte) error {
+	lock, err := Lock(c)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	entries, err := os.ReadDir(c.workspace())
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != recordFile && entry.Name() != lockFile {
+			return ErrInstallationInUse
+		}
+	}
+	current, err := os.ReadFile(filepath.Join(c.workspace(), recordFile))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, record) {
+		return ErrInstallationInUse
+	}
+	return RemoveInstallation(c)
 }

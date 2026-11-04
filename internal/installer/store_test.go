@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -114,5 +115,71 @@ func TestDefaultHomePerPlatform(t *testing.T) {
 		if got != filepath.FromSlash(tc.want) {
 			t.Errorf("defaultHome(%s, %v) = %q; want %q", tc.goos, tc.vars, got, tc.want)
 		}
+	}
+}
+
+func TestDiscardNewInstallationKeepsResumedState(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resume  func(t *testing.T, c Config, path string)
+		removed bool
+	}{
+		{"untouched", func(*testing.T, Config, string) {}, true},
+		{"another run logged to it", func(t *testing.T, c Config, _ string) {
+			log, err := NewLog(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log.Close()
+		}, false},
+		{"record changed", func(t *testing.T, c Config, path string) {
+			c.Substrate.Images.Tag = "resumed"
+			c.Installation.Dir = ""
+			data, err := json.MarshalIndent(c, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"lock held", func(t *testing.T, c Config, _ string) {
+			lock, err := Lock(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { lock.Close() })
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			path, err := CreateInstallation(home, testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadInstallation(home, testConfig(t).Installation.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.resume(t, c, path)
+			err = DiscardNewInstallation(c, record)
+			_, statErr := os.Stat(c.workspace())
+			if tc.removed {
+				if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("fresh installation was not discarded: %v, %v", err, statErr)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInstallationInUse) || statErr != nil {
+				t.Fatalf("discard removed or misreported a resumed installation: %v, %v", err, statErr)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("resumed installation record removed: %v", err)
+			}
+		})
 	}
 }

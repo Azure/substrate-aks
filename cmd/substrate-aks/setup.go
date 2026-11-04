@@ -87,6 +87,8 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	}
 	var defaults azureDefaults
 	created := false
+	// The record as this run saved it, to recognize a later resume.
+	var createdRecord []byte
 	var statErr error
 	if o.name != "" {
 		_, statErr = os.Stat(installer.RecordPath(o.home, o.name))
@@ -265,6 +267,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			return err
 		}
 		created = true
+		if createdRecord, err = os.ReadFile(installer.RecordPath(o.home, o.name)); err != nil {
+			return err
+		}
 	}
 	c, err := installer.LoadInstallation(o.home, o.name)
 	if err != nil {
@@ -344,12 +349,21 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		accepted, err := prompt.confirm(ctx, "Continue with this billable installation?", false)
 		if err != nil || !accepted {
 			// Nothing exists in Azure yet, so an installation saved by this
-			// run would only be a stale entry in list.
+			// run would only be a stale entry in list, unless another setup
+			// has resumed it meanwhile.
+			kept := false
 			if created {
-				err = errors.Join(err, installer.RemoveInstallation(c))
+				discardErr := installer.DiscardNewInstallation(c, createdRecord)
+				kept = errors.Is(discardErr, installer.ErrInstallationInUse)
+				if !kept {
+					err = errors.Join(err, discardErr)
+				}
 			}
 			if err != nil {
 				return err
+			}
+			if kept {
+				return fmt.Errorf("setup cancelled before provisioning; another command is using installation %s, so it was kept", o.name)
 			}
 			if created {
 				return errors.New("setup cancelled before provisioning; no Azure resources were created and the new installation was discarded")

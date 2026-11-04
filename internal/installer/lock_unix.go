@@ -26,13 +26,13 @@ func Lock(c Config) (*os.File, error) {
 	if err := os.MkdirAll(c.workspace(), 0700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(c.workspace(), "operation.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	f, err := os.OpenFile(filepath.Join(c.workspace(), lockFile), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("another operation is using this installation: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrInstallationInUse, err)
 	}
 	return f, nil
 }
