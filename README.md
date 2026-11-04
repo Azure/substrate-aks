@@ -117,7 +117,9 @@ See [client setup and authentication](docs/operations.md#client-and-counter-demo
 ## Manage your installation
 
 Commands take an installation `NAME`. When you have only one installation, the
-name is optional; `destroy` always requires it.
+name is optional, except for `init`, `setup` and `destroy`: without a name,
+`init` and `setup --yes` create `substrate-dev`, interactive `setup` asks for a
+name, and `destroy` refuses to run.
 
 | Command | Purpose |
 | --- | --- |
