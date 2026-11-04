@@ -377,3 +377,38 @@ esac
 		t.Fatalf("destroy kept local installation state: %v", err)
 	}
 }
+
+func TestDestroyKeepsLocalStateWhenAzureTeardownFails(t *testing.T) {
+	path := testCLIConfig(t)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := fmt.Sprintf(`{"name":"%s","tags":{"substrate-aks-installation":"%s"},"location":"%s"}`, c.Azure.ResourceGroup, c.Installation.ID, c.Azure.Location)
+	for _, tc := range []struct{ name, groups, want string }{
+		{"retargeted installation", fmt.Sprintf(`[{"name":"other-rg","tags":{"substrate-aks-installation":"%s"}}]`, c.Installation.ID), "already owns resource group"},
+		{"group delete failed", "[" + owned + "]", "group delete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			fakeTool(t, bin, "az", fmt.Sprintf(`case "$1 $2" in
+"account show") printf '{"id":"%s"}' ;;
+"group list") printf '%%s' '%s' ;;
+"group exists") printf true ;;
+"group show") printf '%%s' '%s' ;;
+"group delete") echo "group delete failed" >&2; exit 7 ;;
+*) exit 9 ;;
+esac
+`, c.Azure.SubscriptionID, tc.groups, owned))
+			t.Setenv("PATH", bin)
+			var out bytes.Buffer
+			err := run(t.Context(), []string{"destroy", c.Installation.Name, "--confirm-delete", c.Azure.ResourceGroup}, &out, &out)
+			if err == nil || !strings.Contains(err.Error()+out.String(), tc.want) {
+				t.Fatalf("destroy error = %v, want %q:\n%s", err, tc.want, &out)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("failed destroy removed local state: %v", err)
+			}
+		})
+	}
+}

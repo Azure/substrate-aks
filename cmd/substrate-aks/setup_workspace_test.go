@@ -1489,7 +1489,9 @@ func TestWorkspaceLogsViewFollowsTheDiagnosticLog(t *testing.T) {
 	workspaceKey(m, 'l')
 	view := m.View().Content
 	plain := ansi.Strip(view)
-	for _, want := range []string{"LOGS", "Following", path, `$ az group show --name "my rg"`, `{"id": "x"}`, "red", `$ az "\x1bc"`} {
+	// Assert the file name only: long temporary paths, such as macOS
+	// $TMPDIR, wrap at this width.
+	for _, want := range []string{"LOGS", "Following", "setup.log", `$ az group show --name "my rg"`, `{"id": "x"}`, "red", `$ az "\x1bc"`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("logs view lost %q:\n%s", want, plain)
 		}

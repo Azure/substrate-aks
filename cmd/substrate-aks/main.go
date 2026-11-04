@@ -23,7 +23,9 @@ Azure infrastructure, declarative deployment configuration, and a guided install
 Installations are saved by name in a per-user state directory:
 ~/.local/state/substrate-aks on Linux ($XDG_STATE_HOME), ~/Library/Application
 Support/substrate-aks on macOS, or SUBSTRATE_AKS_HOME if set.
-NAME may be omitted when exactly one installation exists, except for destroy.
+NAME may be omitted when exactly one installation exists, except for init,
+setup and destroy. Without NAME, init and setup --yes create substrate-dev,
+interactive setup asks for a name, and destroy refuses to run.
 
 Commands:
   setup      Guide provisioning, installation, and client setup; resumes NAME if it exists
@@ -331,8 +333,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		return err
 	}
 	defer lock.Close()
-	// Another command may have destroyed or updated the installation while
-	// this one waited for the lock.
+	// Another command may have destroyed or updated the installation between
+	// loading it and taking the lock.
 	if c, err = installer.LoadInstallation(home, name); err != nil {
 		return err
 	}
