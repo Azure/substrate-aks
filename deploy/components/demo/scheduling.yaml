@@ -1,0 +1,8 @@
+{{if not .NodeSelectorExists}}
+- op: add
+  path: /spec/template/nodeSelector
+  value: {}
+{{end}}
+- op: add
+  path: /spec/template/nodeSelector/substrate-aks~1runtime
+  value: microvm

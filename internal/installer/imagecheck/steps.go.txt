@@ -1,0 +1,89 @@
+package steps
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"go.ate.dev/substrate/cmd/ate-setup/internal/images"
+)
+
+func CheckReleaseImages(ctx context.Context, repository, tag, plugin, ownedHost, dockerDir string, out io.Writer) error {
+	refs := make([]string, 0, len(images.Components)+2)
+	for _, pkg := range images.Components {
+		refs = append(refs, repository+"/"+images.ImageName(pkg)+":"+tag)
+	}
+	refs = append(refs, repository+"/"+envoyDataplaneImage+":"+tag, plugin)
+	report := struct {
+		Status   string `json:"status"`
+		Image    string `json:"image"`
+		Checked  int    `json:"checked"`
+		Expected int    `json:"expected"`
+	}{Status: "available", Expected: len(refs)}
+	original, set := os.LookupEnv("DOCKER_CONFIG")
+	restore := func() error {
+		if set {
+			return os.Setenv("DOCKER_CONFIG", original)
+		}
+		return os.Unsetenv("DOCKER_CONFIG")
+	}
+	defer restore()
+	for _, ref := range refs {
+		// Lookups are synchronous and isolated to this helper process. External
+		// registries keep the caller's credentials, not the owned ACR login.
+		host, _, _ := strings.Cut(ref, "/")
+		if dockerDir != "" && host == ownedHost {
+			if err := os.Setenv("DOCKER_CONFIG", dockerDir); err != nil {
+				return err
+			}
+		} else if err := restore(); err != nil {
+			return err
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		digest, err := images.RemoteDigest(checkCtx, ref)
+		cancel()
+		report.Checked++
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, expected, pinned := strings.Cut(ref, "@"); err == nil && pinned && digest != expected {
+			err = errors.New("registry returned a different plugin digest")
+		}
+		if err == nil {
+			continue
+		}
+		report.Image = ref
+		report.Status = "registry-error"
+		var remoteErr *transport.Error
+		var networkErr net.Error
+		switch {
+		case errors.As(err, &remoteErr):
+			switch remoteErr.StatusCode {
+			case http.StatusNotFound:
+				parsed, parseErr := name.ParseReference(ref)
+				request := remoteErr.Request
+				if parseErr == nil && request != nil && request.URL != nil && request.Method == http.MethodHead &&
+					request.URL.Path == "/v2/"+parsed.Context().RepositoryStr()+"/manifests/"+parsed.Identifier() {
+					report.Status = "missing"
+				}
+			case http.StatusUnauthorized:
+				report.Status = "authentication"
+			case http.StatusForbidden:
+				report.Status = "authorization"
+			}
+		case errors.As(err, &networkErr), errors.Is(err, context.DeadlineExceeded):
+			report.Status = "network"
+		}
+		break
+	}
+	// Never serialize registry error bodies, token-service URLs or credentials.
+	return json.NewEncoder(out).Encode(report)
+}

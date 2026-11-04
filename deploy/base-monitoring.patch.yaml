@@ -1,0 +1,7 @@
+# This is a Kustomization document, not a cluster resource. Apply this guarded
+# JSON patch directly before upstream ate-setup builds the base.
+- op: test
+  path: /resources/5
+  value: ../atenet-router-monitoring.yaml
+- op: remove
+  path: /resources/5

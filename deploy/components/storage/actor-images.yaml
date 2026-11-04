@@ -1,0 +1,16 @@
+# Guard the pinned positions even when rendered without the installer adapter.
+- op: test
+  path: /spec/template/spec/containers/0/name
+  value: atelet
+- op: test
+  path: /spec/template/spec/containers/0/args/0
+  value: --image-credential-provider-config=/run/image-credential-provider/config.yaml
+- op: test
+  path: /spec/template/spec/containers/0/args/1
+  value: --image-credential-provider-bin-dir=/run/image-credential-provider/bin
+- op: replace
+  path: /spec/template/spec/containers/0/args/0
+  value: --image-credential-provider-config=/run/image-credential-provider/config.yaml
+- op: replace
+  path: /spec/template/spec/containers/0/args/1
+  value: --image-credential-provider-bin-dir=/run/image-credential-provider/bin
