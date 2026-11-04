@@ -51,16 +51,25 @@ func PlanContextSwitch(path string) (ContextSwitch, error) {
 	return ContextSwitch{Path: path, Previous: previous, before: data, exists: exists}, nil
 }
 
-// insideInstallation reports whether path's directory, after resolving
-// symlinks, holds an installation record, i.e. whether path would land in
-// state another installation's credentials refresh or destroy would remove.
+// insideInstallation reports whether path's directory or any ancestor, after
+// resolving symlinks, holds an installation record, i.e. whether path would
+// land in state another installation's credentials refresh or destroy would
+// remove.
 func insideInstallation(path string) bool {
 	dir := filepath.Dir(path)
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
-	_, err := os.Stat(filepath.Join(dir, recordFile))
-	return err == nil
+	for {
+		if _, err := os.Stat(filepath.Join(dir, recordFile)); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 func readContextFile(path string) ([]byte, bool, error) {

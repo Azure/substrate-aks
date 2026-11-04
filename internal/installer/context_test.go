@@ -267,7 +267,10 @@ func TestContextImportRejectsAnotherInstallationsPrivateKubeconfig(t *testing.T)
 	if err := os.Symlink(other, alias); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{other, alias} {
+	if err := os.MkdirAll(filepath.Join(other, "logs", "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{other, alias, filepath.Join(other, "logs", "nested"), filepath.Join(alias, "logs")} {
 		selection, err := PlanContextSwitch(filepath.Join(dir, "kubeconfig"))
 		if err != nil {
 			t.Fatal(err)
@@ -276,8 +279,10 @@ func TestContextImportRejectsAnotherInstallationsPrivateKubeconfig(t *testing.T)
 			t.Fatalf("context selection wrote into another installation's directory via %s", dir)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(other, "kubeconfig")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("rejected import created a file: %v", err)
+	for _, path := range []string{filepath.Join(other, "kubeconfig"), filepath.Join(other, "logs", "kubeconfig"), filepath.Join(other, "logs", "nested", "kubeconfig")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rejected import created a file: %v", err)
+		}
 	}
 }
 
