@@ -34,20 +34,13 @@ func TestDoctorPreservesFailuresAndIncludesRemedies(t *testing.T) {
 
 func TestRuntimePrerequisitesAreModeAware(t *testing.T) {
 	c := testConfig(t)
-	missing := errors.New("zstd missing")
-	r := prerequisiteRunner(func(_ context.Context, cmd Command) ([]byte, error) {
-		if cmd.Args[0] == "zstd" {
-			return nil, missing
-		}
-
-		return nil, nil
-	})
-	if err := (App{Config: c, Runner: r}).RuntimePrerequisites(t.Context()); err == nil {
+	if err := (App{Config: c, Runner: script(t)}).RuntimePrerequisites(t.Context()); err == nil {
 		t.Fatal("prebuilt images accepted missing runtime assets")
 	}
 	c.Substrate.Images = ImagesConfig{}
-	if err := (App{Config: c, Runner: r}).RuntimePrerequisites(t.Context()); !errors.Is(err, missing) {
-		t.Fatalf("assembly tool failure was not surfaced: %v", err)
+	// The pinned source assembles assets in Go, so no shell tools are probed.
+	if err := (App{Config: c, Runner: script(t)}).RuntimePrerequisites(t.Context()); err != nil {
+		t.Fatalf("asset assembly required local tools: %v", err)
 	}
 	c.Substrate.Runtime.AssetsDir = t.TempDir()
 	for _, name := range []string{"cloud-hypervisor", "virtiofsd", "vmlinux", "rootfs.img"} {
@@ -73,29 +66,5 @@ func TestRuntimePrerequisitesAreModeAware(t *testing.T) {
 	}
 	if err := (App{Config: c, Runner: script(t)}).RuntimePrerequisites(t.Context()); err == nil {
 		t.Fatal("symlink supplied asset passed preflight")
-	}
-}
-
-func TestRuntimePrerequisitesCheckArchiveCapability(t *testing.T) {
-	c := testConfig(t)
-	c.Substrate.Images = ImagesConfig{}
-	missing := errors.New("tar does not support --zstd")
-	r := prerequisiteRunner(func(_ context.Context, command Command) ([]byte, error) {
-		if strings.Join(command.Args, " ") == "zstd --compress --stdout" {
-			if len(command.Input) == 0 {
-				t.Fatal("compression probe received no tar archive")
-			}
-			return []byte("compressed probe"), nil
-		}
-		if strings.Join(command.Args, " ") == "tar --zstd -tf -" {
-			if string(command.Input) != "compressed probe" {
-				t.Fatal("tar did not receive the compression probe")
-			}
-			return nil, missing
-		}
-		return nil, nil
-	})
-	if err := (App{Config: c, Runner: r}).RuntimePrerequisites(t.Context()); !errors.Is(err, missing) {
-		t.Fatalf("version-only checks missed incompatible tar: %v", err)
 	}
 }

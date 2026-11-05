@@ -132,7 +132,8 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		ui.log = log
 		ui.session.send(setupLogMsg(log.Name()))
 	}
-	needsBuilder := statErr != nil || prior.Substrate.Images == (installer.ImagesConfig{})
+	// Fresh installations import release images, which need no local builder.
+	needsBuilder := statErr == nil && prior.NeedsImageBuilder()
 	environment := []string{"Local tools"}
 	if needsBuilder {
 		environment = append(environment, "Image builder")
@@ -145,7 +146,10 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if err := ui.check("Local tools", func() error { return preflight.Doctor(ctx) }); err != nil {
 		return fmt.Errorf("local prerequisites failed before Azure discovery or provisioning: %w", err)
 	}
-	engineLabel := "Not needed (reuse configured images)"
+	engineLabel := "Not needed (release images)"
+	if statErr == nil && prior.Substrate.Images != (installer.ImagesConfig{}) {
+		engineLabel = "Not needed (reuse configured images)"
+	}
 	if needsBuilder {
 		var err error
 		engineLabel, err = checkImageBuilder(ctx, &o, prior, statErr != nil, local, prompt, ui)
@@ -422,7 +426,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			ui.section(label)
 		}
 		args := append([]string{command, o.name}, flags...)
-		if c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
+		if o.containerEngine != "" && c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
 			args = append(args, "--container-engine", o.containerEngine)
 		}
 		if o.verbose {

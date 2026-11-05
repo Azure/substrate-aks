@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/Azure/substrate-aks/deploy"
@@ -52,8 +54,8 @@ func named(items any, name string) (object, error) {
 	return nil, fmt.Errorf("upstream manifest: missing named entry %s", name)
 }
 
-// transformYAML is reserved for proto-shaped ActorTemplates and the separate
-// sandbox asset adapter. Kubernetes deployment configuration lives in deploy/.
+// transformYAML is reserved for the sandbox asset adapter. Kubernetes
+// deployment configuration lives in deploy/.
 func transformYAML(data []byte, transform func(object) error) ([]byte, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var out bytes.Buffer
@@ -102,15 +104,94 @@ func inspectYAML(data []byte, inspect func(object) error) error {
 	}
 }
 
-func adaptWorkload(data []byte, c Config, i Infrastructure, node bool) ([]byte, error) {
-	v := deploy.Values{
-		Component: "storage", Name: "ate-api-server", Kind: "Deployment", Mode: "control",
-		PluginImage: c.Substrate.Images.Plugin, ClientID: i.ControlClientID,
-		TenantID: i.TenantID, AccountURL: i.AccountURL,
-		Snapshots: i.SnapshotsContainer, Assets: i.AssetsContainer,
+// The plugin's kustomize Components, relative to its repository root.
+const (
+	pluginComponent       = "config/kustomization.yaml"
+	pluginAssetsComponent = "config/assets/kustomization.yaml"
+)
+
+var pluginValuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9./:@_-]*$`)
+
+type placeholder struct {
+	token, value string
+	count        int
+}
+
+// pluginComponents reads the pinned plugin's own kustomize Components and
+// fills in its documented placeholders with this installation's values. Each
+// placeholder must appear exactly as often as the reviewed plugin uses it, and
+// none may remain, so a plugin layout change fails here rather than deploying
+// half-configured sidecars.
+func pluginComponents(dir string, c Config, i Infrastructure) ([]deploy.External, error) {
+	if err := c.ValidateInstall(); err != nil {
+		return nil, err
 	}
+	for rel, want := range map[string][]string{
+		"config":        {"assets", "kustomization.yaml"},
+		"config/assets": {"kustomization.yaml"},
+	} {
+		entries, err := os.ReadDir(filepath.Join(dir, rel))
+		if err != nil {
+			return nil, err
+		}
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		if !slices.Equal(names, want) {
+			return nil, fmt.Errorf("plugin %s holds %v, not the reviewed self-contained component; update the Azure adapter", rel, names)
+		}
+	}
+	for _, value := range []string{c.Substrate.Images.Plugin, i.AccountURL, i.SnapshotsContainer, i.AssetsContainer, i.ControlClientID, i.NodeClientID, i.TenantID} {
+		// Placeholders are filled textually, so values must stay plain YAML scalars.
+		if !pluginValuePattern.MatchString(value) {
+			return nil, fmt.Errorf("refusing to place %q in the plugin component", value)
+		}
+	}
+	fill := func(rel string, placeholders []placeholder) ([]byte, error) {
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			return nil, err
+		}
+		text := string(data)
+		for _, p := range placeholders {
+			if n := strings.Count(text, p.token); n != p.count {
+				return nil, fmt.Errorf("plugin %s has %d %s placeholders, want %d; update the Azure adapter", rel, n, p.token, p.count)
+			}
+			text = strings.ReplaceAll(text, p.token, p.value)
+		}
+		for _, leftover := range []string{"REPLACE_WITH", "replace-with-"} {
+			if strings.Contains(text, leftover) {
+				return nil, fmt.Errorf("plugin %s has an unfilled %s placeholder; update the Azure adapter", rel, leftover)
+			}
+		}
+		return []byte(text), nil
+	}
+	component, err := fill(pluginComponent, []placeholder{
+		{"example.invalid/replace-with-azure-blob-objectstore-plugin:latest", c.Substrate.Images.Plugin, 2},
+		{"https://REPLACE_WITH_ACCOUNT.blob.core.windows.net", i.AccountURL, 2},
+		{"REPLACE_WITH_CONTAINERS", i.SnapshotsContainer, 2},
+		{"REPLACE_WITH_CONTROL_CLIENT_ID", i.ControlClientID, 1},
+		{"REPLACE_WITH_NODE_CLIENT_ID", i.NodeClientID, 1},
+		{"REPLACE_WITH_TENANT_ID", i.TenantID, 2},
+	})
+	if err != nil {
+		return nil, err
+	}
+	assets, err := fill(pluginAssetsComponent, []placeholder{
+		{"REPLACE_WITH_ASSET_CONTAINERS", i.AssetsContainer, 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []deploy.External{{Path: "plugin", Kustomization: component}, {Path: "plugin/assets", Kustomization: assets}}, nil
+}
+
+func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) ([]byte, error) {
+	kind, name := "Deployment", "ate-api-server"
+	v := deploy.Values{External: plugin}
 	if node {
-		v.Name, v.Kind, v.Mode, v.ClientID = "atelet", "DaemonSet", "node", i.NodeClientID
+		kind, name, v.Component = "DaemonSet", "atelet", "actor-images"
 	}
 	found := false
 	err := inspectYAML(data, func(doc object) error {
@@ -124,7 +205,7 @@ func adaptWorkload(data []byte, c Config, i Infrastructure, node bool) ([]byte, 
 			}
 			v.CredentialConfigExists = true
 		}
-		if doc["kind"] != v.Kind || meta["name"] != v.Name {
+		if doc["kind"] != kind || meta["name"] != name {
 			return nil
 		}
 		if found || meta["namespace"] != "ate-system" {
@@ -135,7 +216,7 @@ func adaptWorkload(data []byte, c Config, i Infrastructure, node bool) ([]byte, 
 		if err != nil {
 			return err
 		}
-		if pod["serviceAccountName"] != v.Name {
+		if pod["serviceAccountName"] != name {
 			return errors.New("upstream service account differs from the federated identity subject")
 		}
 		plugin, err := named(pod["initContainers"], "objectstore-plugin")
@@ -144,6 +225,16 @@ func adaptWorkload(data []byte, c Config, i Infrastructure, node bool) ([]byte, 
 		}
 		if plugin["restartPolicy"] != "Always" {
 			return errors.New("upstream objectstore plugin is no longer a native sidecar")
+		}
+		// The plugin component adds these; upstream copies would merge with them.
+		env, _ := plugin["env"].([]any)
+		for _, entry := range env {
+			if e, ok := entry.(map[string]any); ok && strings.HasPrefix(fmt.Sprint(e["name"]), "AZURE_") {
+				return errors.New("upstream objectstore plugin already sets Azure environment; review the Azure adapter")
+			}
+		}
+		if _, err := named(pod["volumes"], "azure-identity-token"); err == nil {
+			return errors.New("upstream already defines an azure-identity-token volume; review the Azure adapter")
 		}
 		if node {
 			return checkActorImages(pod)
@@ -154,9 +245,32 @@ func adaptWorkload(data []byte, c Config, i Infrastructure, node bool) ([]byte, 
 		return nil, err
 	}
 	if !found {
-		return nil, fmt.Errorf("upstream manifest missing %s/%s", v.Kind, v.Name)
+		return nil, fmt.Errorf("upstream manifest missing %s/%s", kind, name)
 	}
-	return deploy.Render(data, v)
+	rendered, err := deploy.Render(data, v)
+	if err != nil {
+		return nil, err
+	}
+	// The plugin component selects workloads by label; confirm it reached this one.
+	err = inspectYAML(rendered, func(doc object) error {
+		meta, err := child(doc, "metadata")
+		if err != nil || doc["kind"] != kind || meta["name"] != name {
+			return err
+		}
+		pod, err := nested(doc, "spec", "template", "spec")
+		if err != nil {
+			return err
+		}
+		sidecar, err := named(pod["initContainers"], "objectstore-plugin")
+		if err != nil {
+			return err
+		}
+		if sidecar["image"] != c.Substrate.Images.Plugin {
+			return fmt.Errorf("the Azure Blob plugin component did not configure %s/%s", kind, name)
+		}
+		return nil
+	})
+	return rendered, err
 }
 
 func checkActorImages(pod object) error {
@@ -225,7 +339,7 @@ func adaptPostgres(data []byte) ([]byte, error) {
 	return deploy.Render(data, deploy.Values{Component: "postgres"})
 }
 
-func adaptSource(root string, c Config, i Infrastructure) ([]string, error) {
+func adaptSource(root string, c Config, plugin []deploy.External) ([]string, error) {
 	paths := []string{
 		"manifests/ate-install/atelet.yaml",
 		"manifests/ate-install/ate-api-server.yaml",
@@ -233,7 +347,6 @@ func adaptSource(root string, c Config, i Infrastructure) ([]string, error) {
 		"manifests/ate-install/ate-otel-config.yaml",
 		"manifests/ate-install/base/kustomization.yaml",
 		"demos/counter/counter-microvm.yaml.tmpl",
-		"demos/counter/counter-microvm-template.yaml.tmpl",
 	}
 	// Render every surface before writing any of them, so contract failures
 	// cannot leave a checkout containing a mixture of upstream and Azure files.
@@ -245,7 +358,7 @@ func adaptSource(root string, c Config, i Infrastructure) ([]string, error) {
 		}
 		switch n {
 		case 0, 1:
-			data, err = adaptWorkload(data, c, i, n == 0)
+			data, err = adaptWorkload(data, c, plugin, n == 0)
 		case 2:
 			data, err = adaptPostgres(data)
 		case 3:
@@ -254,8 +367,6 @@ func adaptSource(root string, c Config, i Infrastructure) ([]string, error) {
 			data, err = deploy.AdaptBase(data)
 		case 5:
 			data, err = adaptDemo(data)
-		case 6:
-			data, err = adaptDemoActorTemplate(data)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("adapting %s: %w", rel, err)
@@ -301,30 +412,4 @@ func adaptDemo(data []byte) ([]byte, error) {
 		return nil, errors.New("upstream microVM demo WorkerPool missing")
 	}
 	return deploy.Render(data, v)
-}
-
-// ActorTemplate is an ate API protobuf-shaped document, not a Kubernetes
-// resource. Keep its deliberately narrow adaptation outside Kustomize.
-func adaptDemoActorTemplate(data []byte) ([]byte, error) {
-	found := false
-	out, err := transformYAML(data, func(doc object) error {
-		meta, err := child(doc, "metadata")
-		if err != nil || meta["name"] != "counter-microvm" || meta["atespace"] != "ate-demo-counter-microvm" {
-			return errors.New("unexpected microVM demo ActorTemplate")
-		}
-		snapshot, err := child(doc, "snapshotConfig")
-		if err != nil {
-			return err
-		}
-		if snapshot["storageLocation"] != "gs://${BUCKET_NAME}/ate-demo-counter-microvm/" {
-			return errors.New("upstream microVM demo snapshot location changed; review the Azure adapter")
-		}
-		snapshot["storageLocation"] = "azblob://snapshots/ate-demo-counter-microvm/"
-		found = true
-		return nil
-	})
-	if err == nil && !found {
-		return nil, errors.New("upstream microVM demo ActorTemplate missing")
-	}
-	return out, err
 }

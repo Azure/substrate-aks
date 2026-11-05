@@ -142,6 +142,17 @@ func TestACRLoginRejectsInvalidTokenWithoutReplacingCredentials(t *testing.T) {
 	}
 }
 
+// fetchReplies scripts a pinned checkout of s, including the tag check.
+func fetchReplies(s Source) []reply {
+	replies := []reply{{contains: "git init"}, {contains: "git fetch --quiet --depth=1 " + s.Repository}}
+	if s.Tag != "" {
+		replies = append(replies, reply{contains: "git rev-parse --verify refs/tags/" + s.Tag + "^{commit}", output: s.Commit + "\n"})
+	}
+	return append(replies, reply{contains: "git checkout --quiet --detach " + s.Commit}, reply{contains: "git rev-parse HEAD", output: s.Commit})
+}
+
+// imageBuildRunner gives each scripted checkout the files a real pinned
+// source or plugin checkout contains.
 type imageBuildRunner struct {
 	*scriptedRunner
 	assetsDir string
@@ -149,109 +160,223 @@ type imageBuildRunner struct {
 
 func (r imageBuildRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	if strings.Join(c.Args, " ") == "git rev-parse HEAD" {
-		contract := filepath.Join(c.Dir, "internal/plugins/azure-blob/config")
-		if err := os.MkdirAll(contract, 0700); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(contract, "kustomization.yaml"), []byte("resources: []"), 0600); err != nil {
-			r.t.Fatal(err)
-		}
-		writeAssetFixture(r.t, c.Dir, r.assetsDir)
-		startup := filepath.Join(c.Dir, "cmd/ate-setup/internal/cmd")
-		if err := os.MkdirAll(startup, 0700); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Join(c.Dir, "cmd/ate-setup/internal/steps"), 0700); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Join(c.Dir, "cmd/ate-setup/internal/images"), 0700); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(c.Dir, "cmd/ate-setup/internal/steps/publish.go"),
-			[]byte("images.PublishDockerfileImage(ctx, args)\n"), 0600); err != nil {
-			r.t.Fatal(err)
-		}
-		context := filepath.Join(c.Dir, "cmd/dataplane/envoy")
-		if err := os.MkdirAll(context, 0700); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(context, "Dockerfile"),
-			[]byte("FROM rust:bookworm@sha256:synthetic AS builder\nFROM envoyproxy/envoy:v1.39.4@sha256:synthetic\n"), 0600); err != nil {
-			r.t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(startup, "root.go"), []byte("package cmd\nfunc setup() error {\n"+
-			"\t\tif err := cfg.EnsureClusterCredentials(cmd.Context()); err != nil {\n\t\t\treturn err\n\t\t}\n"+
-			"\t\treturn nil\n}\n"), 0600); err != nil {
-			r.t.Fatal(err)
-		}
-	}
-	if strings.Contains(strings.Join(c.Args, " "), "publish release-images") {
-		data, err := os.ReadFile(filepath.Join(c.Dir, "cmd/ate-setup/internal/cmd/root.go"))
-		if err != nil || !strings.Contains(string(data), "env = &steps.Env{Cfg: cfg}") {
-			r.t.Fatalf("build did not adapt the upstream publisher to run without Kubernetes: %s, %v", data, err)
+		if strings.HasPrefix(filepath.Base(c.Dir), "plugin-") {
+			if err := os.CopyFS(c.Dir, os.DirFS("testdata/plugin")); err != nil {
+				r.t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(c.Dir, "cmd/azure-blob-objectstore-plugin"), 0700); err != nil {
+				r.t.Fatal(err)
+			}
+		} else {
+			writeAssetFixture(r.t, c.Dir, r.assetsDir)
+			for _, dir := range []string{"cmd", "steps", "images"} {
+				if err := os.MkdirAll(filepath.Join(c.Dir, "cmd/ate-setup/internal", dir), 0700); err != nil {
+					r.t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(c.Dir, "cmd/ate-setup/internal/steps/publish.go"),
+				[]byte("images.PublishDockerfileImage(ctx, args)\n"), 0600); err != nil {
+				r.t.Fatal(err)
+			}
+			context := filepath.Join(c.Dir, "cmd/dataplane/envoy")
+			if err := os.MkdirAll(context, 0700); err != nil {
+				r.t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(context, "Dockerfile"),
+				[]byte("FROM --platform=$BUILDPLATFORM rust:bookworm@sha256:synthetic AS builder\nFROM envoyproxy/envoy:v1.39.5@sha256:synthetic\n"), 0600); err != nil {
+				r.t.Fatal(err)
+			}
 		}
 	}
 	return r.scriptedRunner.Run(ctx, c)
 }
 
-func TestImagePublisherRejectsChangedStartup(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "cmd/ate-setup/internal/cmd/root.go")
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+const testKo = "/go/bin/ko"
+
+var testReleaseInventory = []releaseImage{
+	{"ateapi", "sha256:" + strings.Repeat("1", 64)},
+	{"atelet", "sha256:" + strings.Repeat("2", 64)},
+	{"envoy-dataplane", "sha256:" + strings.Repeat("3", 64)},
+}
+
+func releaseImportReplies(t *testing.T, c Config, digest func(releaseImage) string) []reply {
+	data, err := json.Marshal(testReleaseInventory)
+	if err != nil {
 		t.Fatal(err)
 	}
-	const source = "package cmd\n// upstream startup changed\n"
-	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+	replies := []reply{{contains: "publish release-inventory " + DefaultReleaseImages + " " + c.Substrate.Source.Tag + " " + c.Substrate.Source.Commit, output: string(data)}}
+	for _, image := range testReleaseInventory {
+		replies = append(replies,
+			reply{contains: "acr import --name substratetest123 --source " + DefaultReleaseImages + "/" + image.Name + "@" + image.Digest +
+				" --image substrate/" + image.Name + ":" + c.Substrate.Source.Tag + " --force"},
+			reply{contains: "acr repository show --name substratetest123 --image substrate/" + image.Name + ":" + c.Substrate.Source.Tag,
+				output: `{"digest":"` + digest(image) + `"}`})
+	}
+	return replies
+}
+
+// extraImageReplies scripts the images every source builds: the demo,
+// which releases omit, and the Azure plugin.
+func extraImageReplies(c Config, tag string) []reply {
+	const registry = "substratetest123.azurecr.io"
+	replies := []reply{
+		{contains: "go tool -n ko", output: testKo + "\n"},
+		{contains: testKo + " build --base-import-paths --tags " + tag + " ./demos/counter"},
+	}
+	replies = append(replies, fetchReplies(c.Substrate.PluginSource)...)
+	return append(replies,
+		reply{contains: testKo + " build --bare --tags " + tag + " ./cmd/azure-blob-objectstore-plugin",
+			output: registry + "/substrate/plugins/objectstore/azure-blob@sha256:" + strings.Repeat("a", 64)},
+		reply{contains: "publish microvm-assets"})
+}
+
+func TestReleaseImagesImportVerifiedDigests(t *testing.T) {
+	c := testConfig(t)
+	c.Substrate.Images = ImagesConfig{}
+	t.Setenv("PATH", "")
+	replies := []reply{accountReply(c), {contains: "group exists", output: "true"}, ownerReply(c), registryReply(c), acrLoginReply()}
+	replies = append(replies, fetchReplies(c.Substrate.Source)...)
+	replies = append(replies, releaseImportReplies(t, c, func(image releaseImage) string { return image.Digest })...)
+	replies = append(replies, extraImageReplies(c, c.Substrate.Source.Tag)...)
+	r := script(t, replies...)
+	assetsDir := filepath.Join(c.workspace(), "assets")
+	result, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}, ContainerEngine: "docker"}).BuildImages(t.Context())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareImagePublisher(root); err == nil || !strings.Contains(err.Error(), "startup changed") {
-		t.Fatalf("publisher accepted an unknown startup contract: %v", err)
+	const registry = "substratetest123.azurecr.io"
+	if result.Images != (ImagesConfig{Repository: registry + "/substrate", Tag: DefaultTag,
+		Plugin: registry + "/substrate/plugins/objectstore/azure-blob@sha256:" + strings.Repeat("a", 64)}) || result.AssetsDir != assetsDir {
+		t.Fatalf("release images were not recorded at the release tag in the owned registry: %+v", result)
 	}
-	after, err := os.ReadFile(path)
-	if err != nil || string(after) != source {
-		t.Fatalf("unsupported upstream source was modified: %s, %v", after, err)
+	for _, call := range r.calls {
+		args := strings.Join(call.Args, " ")
+		env := strings.Join(call.Env, "|")
+		if call.Args[0] == "docker" || call.Args[0] == "podman" {
+			t.Fatalf("release images needed a container engine: %s", args)
+		}
+		if call.Args[0] == "az" && !strings.Contains(args, "--subscription "+c.Azure.SubscriptionID) {
+			t.Fatalf("Azure command lost subscription: %s", args)
+		}
+		if call.Args[0] == testKo && (!strings.Contains(env, "DOCKER_CONFIG="+filepath.Join(c.workspace(), "docker")) ||
+			!strings.Contains(env, "KO_DEFAULTPLATFORMS=linux/amd64")) {
+			t.Fatalf("ko lost the isolated registry login or platform: %s", env)
+		}
+		if strings.Contains(args, "./demos/counter") && !strings.Contains(env, "KO_DOCKER_REPO="+registry+"/substrate") {
+			t.Fatal("demo image was published outside the release image repository")
+		}
+		if strings.Contains(args, "azure-blob-objectstore-plugin") && !strings.Contains(env, "KO_DOCKER_REPO="+registry+"/substrate/plugins/objectstore/azure-blob") {
+			t.Fatal("plugin image was published to the wrong repository")
+		}
+		if strings.Contains(args, "publish microvm-assets") && !strings.Contains(args, sandboxTemplate+" "+assetsDir+" amd64") {
+			t.Fatalf("assets were not assembled from the pinned template: %s", args)
+		}
+	}
+	for _, pattern := range []string{"build-*", "plugin-*"} {
+		temporary, err := filepath.Glob(filepath.Join(c.workspace(), pattern))
+		if err != nil || len(temporary) != 0 {
+			t.Fatalf("temporary checkout retained: %v, %v", temporary, err)
+		}
 	}
 }
 
-func TestImageBuildPinsSourceTargetAndCredentials(t *testing.T) {
+func TestReleaseImagesRejectUnverifiedImports(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replies func(*testing.T, Config) []reply
+	}{
+		{"revision mismatch", func(t *testing.T, c Config) []reply {
+			return []reply{{contains: "publish release-inventory", err: errors.New("built from another commit")}}
+		}},
+		{"invalid inventory", func(t *testing.T, c Config) []reply {
+			return []reply{{contains: "publish release-inventory", output: `[{"name":"../escape","digest":"sha256:` + strings.Repeat("1", 64) + `"},{"name":"b","digest":"x"},{"name":"c","digest":"y"}]`}}
+		}},
+		{"changed digest", func(t *testing.T, c Config) []reply {
+			return releaseImportReplies(t, c, func(releaseImage) string { return "sha256:" + strings.Repeat("f", 64) })[:3]
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.Substrate.Images = ImagesConfig{}
+			replies := []reply{accountReply(c), {contains: "group exists", output: "true"}, ownerReply(c), registryReply(c), acrLoginReply()}
+			replies = append(replies, fetchReplies(c.Substrate.Source)...)
+			replies = append(replies, tc.replies(t, c)...)
+			r := script(t, replies...)
+			result, err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).BuildImages(t.Context())
+			if err == nil || result != (BuildResult{}) {
+				t.Fatalf("unverified release images were accepted: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestReleaseImagesRequireReleaseTag(t *testing.T) {
+	c := testConfig(t)
+	c.Substrate.Images = ImagesConfig{}
+	c.Substrate.Source.Tag = ""
+	_, err := (App{Config: c, Runner: script(t)}).BuildImages(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "substrate.source.tag") {
+		t.Fatalf("release images were imported without a release tag: %v", err)
+	}
+}
+
+func TestSourceTagFetchRejectsMovedTag(t *testing.T) {
+	c := testConfig(t)
+	r := script(t, reply{contains: "git init"}, reply{contains: "git fetch --quiet --depth=1 " + DefaultRepository + " +refs/tags/" + DefaultTag + ":refs/tags/" + DefaultTag},
+		reply{contains: "git rev-parse --verify", output: strings.Repeat("b", 40) + "\n"})
+	err := (App{Config: c, Runner: r}).fetchSource(t.Context(), t.TempDir(), c.Substrate.Source)
+	if err == nil || !strings.Contains(err.Error(), "not the configured commit") {
+		t.Fatalf("accepted a tag that names another commit: %v", err)
+	}
+}
+
+func TestSourceImageBuild(t *testing.T) {
 	for _, failPush := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "push failure"}[failPush], func(t *testing.T) {
 			c := testConfig(t)
 			c.Substrate.Images = ImagesConfig{}
+			c.Substrate.ImageSource = ImageSourceBuild
 			registry := "substratetest123.azurecr.io"
 			replies := []reply{
 				accountReply(c), {contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
 				{contains: "docker info"}, {contains: "docker buildx version"},
 				{contains: "docker buildx inspect --bootstrap", output: readyBuildx}, acrLoginReply(),
-				{contains: "git init"}, {contains: "git fetch"}, {contains: "git checkout"},
-				{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
-				{contains: "publish release-images"},
 			}
+			replies = append(replies, fetchReplies(c.Substrate.Source)...)
+			var tag string
+			replies = append(replies, reply{contains: "publish release-images", effect: func(cmd Command) {
+				for _, entry := range cmd.Env {
+					if v, ok := strings.CutPrefix(entry, "VERSION="); ok {
+						tag = v
+					}
+				}
+			}})
 			wantErr := errors.New("image push failed")
 			if failPush {
-				replies[len(replies)-1].err = wantErr
+				replies[len(replies)-1].effect, replies[len(replies)-1].err = nil, wantErr
 			} else {
-				replies = append(replies,
-					reply{contains: "github.com/google/ko@v0.19.1", output: registry + "/substrate/plugins/objectstore/azure-blob@sha256:" + strings.Repeat("a", 64)},
-					reply{contains: "hack/microvm-assets/assemble.sh"})
+				prefix := DefaultTag + "-azure." + c.Substrate.Source.Commit[:12] + "."
+				extra := extraImageReplies(c, "")
+				extra[1].contains = testKo + " build --base-import-paths --tags " + prefix
+				extra[len(extra)-2].contains = testKo + " build --bare --tags " + prefix
+				replies = append(replies, extra...)
 			}
 			r := script(t, replies...)
 			assetsDir := filepath.Join(c.workspace(), "assets")
-			result, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}}).BuildImages(t.Context())
+			app := App{Config: c, Runner: imageBuildRunner{r, assetsDir}}
+			result, err := app.BuildImages(t.Context())
 			if failPush {
 				if !errors.Is(err, wantErr) || result != (BuildResult{}) {
 					t.Fatalf("push failure returned usable configuration: %+v, %v", result, err)
 				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if result.Images.Repository != registry+"/substrate" ||
-					result.Images.Plugin != registry+"/substrate/plugins/objectstore/azure-blob@sha256:"+strings.Repeat("a", 64) ||
-					!strings.HasPrefix(result.Images.Tag, "azure-"+c.Substrate.Source.Commit[:12]+"-") ||
-					result.AssetsDir != assetsDir {
-					t.Fatalf("build result lost source/registry pinning: %+v", result)
-				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !releasePattern.MatchString(tag) || !strings.HasPrefix(tag, DefaultTag+"-azure."+c.Substrate.Source.Commit[:12]+".") ||
+				result.Images.Tag != tag || result.Images.Repository != registry+"/substrate" || result.AssetsDir != assetsDir {
+				t.Fatalf("source build lost its release-style tag or registry: %q %+v", tag, result)
 			}
 			for _, call := range r.calls {
 				args := strings.Join(call.Args, " ")
@@ -261,27 +386,15 @@ func TestImageBuildPinsSourceTargetAndCredentials(t *testing.T) {
 						!strings.Contains(env, "BUILDX_CONFIG="+filepath.Join(os.Getenv("DOCKER_CONFIG"), "buildx"))) {
 					t.Fatal("Docker preflight did not use the publishing credentials/context environment")
 				}
-				if call.Args[0] == "az" && !strings.Contains(args, "--subscription "+c.Azure.SubscriptionID) {
-					t.Fatalf("Azure command lost subscription: %s", args)
-				}
 				if strings.Contains(args, "publish release-images") &&
-					(!strings.Contains(args, "--no-dev-env") ||
+					(!strings.Contains(args, "--no-dev-env") || !strings.Contains(args, "--ko-docker-repo "+registry+"/substrate") ||
 						!strings.Contains(env, "DOCKER_CONFIG="+filepath.Join(c.workspace(), "docker")) ||
 						!strings.Contains(env, "BUILDX_CONFIG="+filepath.Join(os.Getenv("DOCKER_CONFIG"), "buildx"))) {
 					t.Fatal("publisher lost isolated credentials or environment")
 				}
-				if strings.Contains(args, "git fetch") && !strings.Contains(args, c.Substrate.Source.Commit) {
-					t.Fatal("builder fetched an unpinned source")
+				if strings.Contains(args, "acr import") {
+					t.Fatal("source build imported release images")
 				}
-				if strings.Contains(args, "github.com/google/ko@v0.19.1") &&
-					(!strings.Contains(args, "build --bare --tags ") ||
-						!strings.Contains(env, "KO_DOCKER_REPO="+registry+"/substrate/plugins/objectstore/azure-blob|")) {
-					t.Fatal("plugin publisher would append a command name or publish to the wrong repository")
-				}
-			}
-			temporary, err := filepath.Glob(filepath.Join(c.workspace(), "build-*"))
-			if err != nil || len(temporary) != 0 {
-				t.Fatalf("temporary build checkout retained: %v, %v", temporary, err)
 			}
 		})
 	}
@@ -297,25 +410,27 @@ func TestImagesCannotReplaceConfiguredInstall(t *testing.T) {
 func TestPodmanImageBuildWiring(t *testing.T) {
 	c := testConfig(t)
 	c.Substrate.Images = ImagesConfig{}
-	r := script(t, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
-		reply{contains: "podman info"}, acrLoginReply(),
-		reply{contains: "git init"}, reply{contains: "git fetch"}, reply{contains: "git checkout"},
-		reply{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
-		reply{contains: "publish release-images", effect: func(cmd Command) {
-			data, err := os.ReadFile(filepath.Join(cmd.Dir, "cmd/ate-setup/internal/steps/publish.go"))
-			if err != nil || !strings.Contains(string(data), "images.PublishPodmanImage(") {
-				t.Fatal("Podman selected but publisher still uses Docker")
-			}
-			data, err = os.ReadFile(filepath.Join(cmd.Dir, "cmd/ate-setup/internal/images/azure_podman.go"))
-			if err != nil || !bytes.Equal(data, podmanPublisher) {
-				t.Fatal("Podman helper was not injected into disposable source")
-			}
-			if !strings.Contains(strings.Join(cmd.Env, "|"), "REGISTRY_AUTH_FILE="+filepath.Join(c.workspace(), "docker/config.json")) {
-				t.Fatal("Podman publisher lost isolated registry authentication")
-			}
-		}},
-		reply{contains: "github.com/google/ko@v0.19.1", output: "substratetest123.azurecr.io/substrate/plugins/objectstore/azure-blob@sha256:" + strings.Repeat("a", 64)},
-		reply{contains: "hack/microvm-assets/assemble.sh"})
+	c.Substrate.ImageSource = ImageSourceBuild
+	replies := []reply{accountReply(c), {contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
+		{contains: "podman info"}, acrLoginReply()}
+	replies = append(replies, fetchReplies(c.Substrate.Source)...)
+	replies = append(replies, reply{contains: "publish release-images", effect: func(cmd Command) {
+		data, err := os.ReadFile(filepath.Join(cmd.Dir, "cmd/ate-setup/internal/steps/publish.go"))
+		if err != nil || !strings.Contains(string(data), "images.PublishPodmanImage(") {
+			t.Fatal("Podman selected but publisher still uses Docker")
+		}
+		data, err = os.ReadFile(filepath.Join(cmd.Dir, "cmd/ate-setup/internal/images/azure_podman.go"))
+		if err != nil || !bytes.Equal(data, podmanPublisher) {
+			t.Fatal("Podman helper was not injected into disposable source")
+		}
+		if !strings.Contains(strings.Join(cmd.Env, "|"), "REGISTRY_AUTH_FILE="+filepath.Join(c.workspace(), "docker/config.json")) {
+			t.Fatal("Podman publisher lost isolated registry authentication")
+		}
+	}})
+	extra := extraImageReplies(c, "")
+	extra[1].contains = testKo + " build --base-import-paths --tags v1.0.0-rc.3-azure."
+	extra[len(extra)-2].contains = testKo + " build --bare --tags v1.0.0-rc.3-azure."
+	r := script(t, append(replies, extra...)...)
 	result, err := (App{Config: c, Runner: imageBuildRunner{r, filepath.Join(c.workspace(), "assets")}, ContainerEngine: "podman"}).BuildImages(t.Context())
 	if err != nil || result.Images.Repository != "substratetest123.azurecr.io/substrate" {
 		t.Fatalf("Podman image publication failed: %+v, %v", result, err)

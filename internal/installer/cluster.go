@@ -1,8 +1,6 @@
 package installer
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,36 +69,7 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 	if a.Config.Substrate.Images != (ImagesConfig{}) {
 		return errors.New("prebuilt images require substrate.runtime.assetsDir with the four matching amd64 runtime assets")
 	}
-	for _, args := range [][]string{
-		{"bash", "--version"}, {"curl", "--version"}, {"tar", "--version"},
-		{"zstd", "--version"}, {"readlink", "-f", "."}, {"sha256sum"},
-	} {
-		a.progress("Checking runtime asset assembly prerequisite %s", args[0])
-		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err := a.Runner.Run(probeCtx, Command{Args: args})
-		cancel()
-		if err != nil {
-			return fmt.Errorf("runtime asset assembly requires %s; install the tool or supply substrate.runtime.assetsDir: %w", args[0], err)
-		}
-	}
-	var archive bytes.Buffer
-	writer := tar.NewWriter(&archive)
-	if err := writer.WriteHeader(&tar.Header{Name: "substrate-capability-probe", Mode: 0600}); err != nil {
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
-	a.progress("Checking tar can read zstd-compressed archives (GNU or BSD tar)")
-	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	compressed, err := a.Runner.Run(probeCtx, Command{Args: []string{"zstd", "--compress", "--stdout"}, Input: archive.Bytes(), BinaryOutput: true})
-	if err != nil {
-		return fmt.Errorf("checking zstd archive support: %w", err)
-	}
-	if _, err := a.Runner.Run(probeCtx, Command{Args: []string{"tar", "--zstd", "-tf", "-"}, Input: compressed}); err != nil {
-		return fmt.Errorf("tar must support --zstd archive reading; install a compatible tar or supply substrate.runtime.assetsDir: %w", err)
-	}
+	// The pinned source's ate-setup assembles the assets in Go; Doctor checks Go.
 	return nil
 }
 
@@ -433,7 +402,7 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err != nil {
 		return err
 	}
-	sandbox, err := sandboxManifest(root, a.Config.Substrate.Runtime.AssetsDir, i)
+	sandbox, blobs, err := sandboxManifest(root, a.Config.Substrate.Runtime.AssetsDir, i)
 	if err != nil {
 		return err
 	}
@@ -450,7 +419,7 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err := a.checkKVM(ctx); err != nil {
 		return err
 	}
-	if err := a.uploadAssets(ctx, i); err != nil {
+	if err := a.uploadAssets(ctx, i, blobs); err != nil {
 		return err
 	}
 	a.progress("Recording the installation checkpoint")

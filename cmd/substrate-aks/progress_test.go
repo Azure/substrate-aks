@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,6 +35,29 @@ func testCLIConfig(t *testing.T) string {
 	return path
 }
 
+// testSourceCLIConfig is testCLIConfig set to build images from source, the
+// only image source that needs a local Docker or Podman builder.
+func testSourceCLIConfig(t *testing.T) string {
+	t.Helper()
+	path := testCLIConfig(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	record["substrate"].(map[string]any)["imageSource"] = "source"
+	if data, err = json.Marshal(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func fakeTool(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0700); err != nil {
@@ -49,7 +73,7 @@ func TestCLIQuietAndVerboseDiagnostics(t *testing.T) {
 			fakeTool(t, bin, "az", "printf 'bicep-diagnostic-only\\n'\n")
 			fakeTool(t, bin, "git", "exit 0\n")
 			fakeTool(t, bin, "go", "printf 'go-diagnostic-only\\n'\n")
-			for _, tool := range []string{"bash", "curl", "tar", "zstd", "readlink", "sha256sum", "kubelogin"} {
+			for _, tool := range []string{"kubelogin"} {
 				fakeTool(t, bin, tool, "exit 0")
 			}
 			fakeTool(t, bin, "kubectl", `printf '{"clientVersion":{"major":"1","minor":"37"},"extra":"kubectl-diagnostic-only"}'`+"\n")

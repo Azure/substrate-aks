@@ -80,9 +80,15 @@ placeholders are not valid deployment values.
   },
   "substrate": {
     "source": {
-      "repository": "https://github.com/aramase/substrate.git",
-      "commit": "c3b44aa46312e073a6384f68723a7b14dffd5518"
+      "repository": "https://github.com/agent-substrate/substrate.git",
+      "tag": "v1.0.0-rc.3",
+      "commit": "4ee8f66ac237adfc3303086b12275aefc150fd6f"
     },
+    "pluginSource": {
+      "repository": "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git",
+      "commit": "b21387e82cee399c65f49178a665727534e1c073"
+    },
+    "imageSource": "release",
     "images": {
       "repository": "",
       "tag": "",
@@ -253,32 +259,41 @@ also does not provide personal actor authorization; see
 
 ## Source and image settings
 
-The temporary default source is
-[`aramase/substrate`](https://github.com/aramase/substrate) at
-`c3b44aa46312e073a6384f68723a7b14dffd5518`, for the Azure integration in
-[agent-substrate/substrate#2595](https://github.com/agent-substrate/substrate/pull/2595).
+The installer is reviewed against two pins:
 
-Setup builds matching images into the installation's ACR. There is no default
-prebuilt image set. Do not mix the pinned manifests with arbitrary upstream
-release images.
+| Pin | Default |
+| --- | --- |
+| Substrate | [`v1.0.0-rc.3`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0-rc.3) (`4ee8f66ac237adfc3303086b12275aefc150fd6f`) |
+| Azure Blob object-store plugin | [`agent-substrate-plugins/objectstore-azure-blob`](https://github.com/agent-substrate-plugins/objectstore-azure-blob) at `b21387e82cee399c65f49178a665727534e1c073`, the head of its unmerged [installation stack](https://github.com/agent-substrate-plugins/objectstore-azure-blob/pull/6) |
 
-This fork pin is temporary while the Azure storage plugin moves to its own
-repository; the plan is then to move to a supported upstream revision or
-release. An exact SHA verifies content but cannot guarantee the commit stays
-available if the fork branch is deleted or rewritten.
+Both are exact commits. A configured `tag` must name the configured commit;
+the installer checks this on every fetch and never follows a moved tag.
 
-The source repository and commit are configurable in JSON. `substrate.source.commit`
-must be an exact SHA, not a tag, with compatible images, assets, and client.
+### Image source
 
-To supply compatible artifacts yourself, configure these before `prepare` or
-`install`:
+`substrate.imageSource` selects how `images` fills `substrate.images`:
+
+| Value | Behavior |
+| --- | --- |
+| `release` (default) | Imports the release images upstream publishes for `substrate.source.tag` from `ghcr.io/agent-substrate/substrate` into the installation's ACR, by digest, after checking that each image was built from `substrate.source.commit`. Needs no Docker or Podman. |
+| `source` | Builds the release images from `substrate.source.commit` with the pinned `ate-setup publish release-images`, which needs Docker with buildx or Podman. Tags are `<tag>-azure.<commit>.<timestamp>`, so rebuilds never overwrite earlier images. |
+
+Both build the counter demo image, which releases do not publish, and the Azure
+Blob plugin image from `substrate.pluginSource` with ko into the same ACR.
+Guided setup always uses `release`; to build from source, run `init`, set
+`"imageSource": "source"`, then run `setup` or `images`.
+
+To install images you published yourself, set `substrate.images` directly and
+skip `images`:
 
 | Field | Value |
 | --- | --- |
 | `substrate.source.repository` | HTTPS Git URL |
+| `substrate.source.tag` | Optional release tag naming the commit; required by `release` |
 | `substrate.source.commit` | Exact 40-character commit SHA |
-| `substrate.images.repository` | Compatible Substrate image repository |
-| `substrate.images.tag` | Matching release tag that will not be overwritten |
+| `substrate.pluginSource.repository`, `.commit` | The Azure Blob plugin revision whose kustomize components configure the storage sidecars |
+| `substrate.images.repository` | Repository holding every release image and `counter` under one tag |
+| `substrate.images.tag` | Matching tag that will not be overwritten |
 | `substrate.images.plugin` | Azure plugin reference with `@sha256:...` |
 | `substrate.runtime.assetsDir` | Directory containing `cloud-hypervisor`, `virtiofsd`, `vmlinux`, and `rootfs.img` |
 

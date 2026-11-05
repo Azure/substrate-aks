@@ -3,4 +3,9 @@ kind: Kustomization
 resources:
 - upstream.yaml
 components:
+{{- range .External}}
+- external/{{.Path}}
+{{- end}}
+{{- if .Component}}
 - components/{{.Component}}
+{{- end}}

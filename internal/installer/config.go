@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +14,19 @@ import (
 	"strings"
 )
 
+// The Substrate release and the Azure Blob object-store plugin revision the
+// installer is reviewed against. Bump them together with the contract tests.
 const (
-	DefaultRepository = "https://github.com/aramase/substrate.git"
-	DefaultCommit     = "c3b44aa46312e073a6384f68723a7b14dffd5518"
+	DefaultRepository = "https://github.com/agent-substrate/substrate.git"
+	DefaultTag        = "v1.0.0-rc.3"
+	DefaultCommit     = "4ee8f66ac237adfc3303086b12275aefc150fd6f"
+	// DefaultReleaseImages is where upstream publishes DefaultTag's images.
+	DefaultReleaseImages = "ghcr.io/agent-substrate/substrate"
+
+	// The plugin is pinned to an unreleased pull request head until it is tagged.
+	DefaultPluginRepository = "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git"
+	DefaultPluginCommit     = "b21387e82cee399c65f49178a665727534e1c073"
+
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
 	SystemVMSize        = "Standard_D4s_v6"
@@ -80,14 +91,56 @@ type WorkerPoolConfig struct {
 }
 
 type SubstrateConfig struct {
-	Source  Source        `json:"source"`
-	Images  ImagesConfig  `json:"images"`
-	Runtime RuntimeConfig `json:"runtime"`
+	Source       Source `json:"source"`
+	PluginSource Source `json:"pluginSource"`
+	// ImageSource selects how images bootstraps substrate.images: "release"
+	// (the default) imports the published release images, and "source" builds
+	// them from substrate.source.
+	ImageSource ImageSource   `json:"imageSource,omitempty"`
+	Images      ImagesConfig  `json:"images"`
+	Runtime     RuntimeConfig `json:"runtime"`
 }
 
+type ImageSource string
+
+const (
+	ImageSourceRelease ImageSource = "release"
+	ImageSourceBuild   ImageSource = "source"
+)
+
+// Source pins a Git revision. Tag is optional; when set, the tag must name
+// Commit, and release images are looked up by it.
 type Source struct {
 	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
 	Commit     string `json:"commit"`
+}
+
+// UnmarshalJSON replaces the whole default pin, so a configured commit never
+// inherits the default tag.
+func (s *Source) UnmarshalJSON(data []byte) error {
+	type plain Source
+	var p plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return err
+	}
+	*s = Source(p)
+	return nil
+}
+
+func (c Config) imageSource() ImageSource {
+	if c.Substrate.ImageSource == "" {
+		return ImageSourceRelease
+	}
+	return c.Substrate.ImageSource
+}
+
+// NeedsImageBuilder reports whether images still has to build with Docker or
+// Podman: only source builds do, and only until images are configured.
+func (c Config) NeedsImageBuilder() bool {
+	return c.imageSource() == ImageSourceBuild && c.Substrate.Images == (ImagesConfig{})
 }
 
 type ImagesConfig struct {
@@ -108,7 +161,8 @@ func DefaultConfig() Config {
 			WorkerPool:        WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1},
 		},
 		Substrate: SubstrateConfig{
-			Source: Source{Repository: DefaultRepository, Commit: DefaultCommit},
+			Source:       Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit},
+			PluginSource: Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit},
 		},
 	}
 }
@@ -119,6 +173,9 @@ var (
 	shaPattern    = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}$`)
 	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+	// releasePattern is upstream's release tag form, which ate-setup requires
+	// of published image tags.
+	releasePattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 )
 
 func LoadConfig(path string) (Config, error) {
@@ -232,12 +289,30 @@ func (c Config) Validate() error {
 			return errors.New("aks.operator.principalType must be User, ServicePrincipal, or Group")
 		}
 	}
-	u, err := url.Parse(c.Substrate.Source.Repository)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("substrate.source.repository must be an HTTPS Git repository URL without credentials, query or fragment")
+	if err := c.Substrate.Source.validate("substrate.source"); err != nil {
+		return err
 	}
-	if !shaPattern.MatchString(c.Substrate.Source.Commit) {
-		return errors.New("substrate.source.commit must be an exact lowercase 40-character commit SHA, not a branch")
+	if err := c.Substrate.PluginSource.validate("substrate.pluginSource"); err != nil {
+		return err
+	}
+	switch c.Substrate.ImageSource {
+	case "", ImageSourceRelease, ImageSourceBuild:
+	default:
+		return errors.New(`substrate.imageSource must be "release" or "source"`)
+	}
+	return nil
+}
+
+func (s Source) validate(field string) error {
+	u, err := url.Parse(s.Repository)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s.repository must be an HTTPS Git repository URL without credentials, query or fragment", field)
+	}
+	if !shaPattern.MatchString(s.Commit) {
+		return fmt.Errorf("%s.commit must be an exact lowercase 40-character commit SHA, not a branch", field)
+	}
+	if s.Tag != "" && !releasePattern.MatchString(s.Tag) {
+		return fmt.Errorf("%s.tag must be a release tag such as v1.0.0 or v1.0.0-rc.3, or omitted", field)
 	}
 	return nil
 }

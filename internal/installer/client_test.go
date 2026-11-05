@@ -21,7 +21,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 		t.Fatal(err)
 	}
 	p := prepared{Fingerprint: fp, Files: map[string]string{}}
-	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml", "demo-template.yaml"} {
+	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml"} {
 		data := []byte("prepared " + name)
 		if err := os.WriteFile(filepath.Join(root, name), data, 0600); err != nil {
 			t.Fatal(err)

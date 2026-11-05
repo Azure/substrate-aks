@@ -102,7 +102,7 @@ exports. On failure it prints recovery commands instead.
 | `--yes` | Accept billing and select the new kube-context without prompts |
 | `--with-demo` | Include the counter demo without prompts |
 | `--skip-context-handoff` | Leave your kubeconfig untouched and print exports for the private kubeconfig |
-| `--container-engine=auto\|docker\|podman` | Choose an image builder; `auto` offers a choice when both work |
+| `--container-engine=auto\|docker\|podman` | Choose an image builder for [source builds](configuration.md#image-source); `auto` offers a choice when both work |
 
 For automation, pass a name and flags instead of piping answers into prompts.
 `--yes` uses `substrate-dev` when no name is given:
@@ -124,23 +124,13 @@ bin/substrate-aks setup substrate-dev --yes --skip-context-handoff
 Native builds and race tests need Apple's developer tools. If they are not
 already installed, run `xcode-select --install`.
 
-Runtime asset assembly needs `zstd`, a `tar` that reads `--zstd` archives,
-`readlink -f`, and `sha256sum`. GNU implementations are not required when the
-installed tools support these operations. Install missing tools as needed, for
-example:
+Runtime assets are assembled by the pinned `ate-setup` in Go and need no other
+tools.
 
-```sh
-brew install zstd
-```
-
-If the host lacks `sha256sum` or a compatible `readlink`/`tar`, Homebrew
-`coreutils`/`gnu-tar` are alternatives; expose their unprefixed commands on PATH.
-Preflight checks the required capabilities before provisioning. Supplying
-matching runtime assets skips assembly-tool checks.
-
-Docker Desktop or Podman's machine must be running. Apple Silicon also needs
-working Linux/amd64 builds, including execution of the pinned Rust build.
-An engine responding to `info` does not prove that cross-architecture builds work.
+[Source builds](configuration.md#image-source) need Docker Desktop or Podman's
+machine running. Apple Silicon also needs working Linux/amd64 builds, including
+execution of the pinned Rust build. An engine responding to `info` does not prove
+that cross-architecture builds work.
 
 Go's `-bind_at_load` deprecation warning and Azure CLI's Python invalid-escape
 warnings have been reported. A warning alone does not mean installation failed;
@@ -176,7 +166,7 @@ bin/substrate-aks images
 ```
 
 `doctor` checks local tools without calling Azure. Add an installation `NAME` to
-also check runtime assets or the tools to assemble them, and `--azure` for
+also check supplied runtime assets, and `--azure` for
 read-only checks of VM availability, quota, and permissions in the configured
 region. `plan` runs a Bicep what-if and deploys nothing.
 
@@ -185,17 +175,24 @@ region. `plan` runs a Bicep what-if and deploys nothing.
 > a Basic ACR, and an `AcrPush` grant for the upload identity. It does not create
 > AKS or Blob storage yet.
 
-**Image builder.** Builds target Linux/amd64 with Docker buildx or Podman
-(rootless works on Linux). Setup checks the builder before any Azure calls and
-offers a choice when both work; `--yes` prefers Docker. Checking Docker starts
-the buildx builder, which may download a BuildKit container and has two minutes
-to start. If it is unhealthy, automatic mode falls back to Podman; an explicit
-`--container-engine` never falls back. Reusing configured images needs no builder.
+**Release images.** By default, `images` checks that every image upstream
+published for the pinned release was built from the pinned commit, then imports
+each one into ACR by digest with `az acr import`. It builds the counter demo
+image, which releases do not publish, and the Azure Blob plugin image with ko.
+Neither needs Docker or Podman. Importing needs your Azure login to hold the
+registry's `importImage` action, for example Contributor on the owned registry;
+`AcrPush` alone is not enough. It assembles runtime assets with the pinned
+`ate-setup` unless `assetsDir` is set, in which case it verifies the supplied
+files without overwriting them. Image settings are saved only after the imports,
+builds, and checksum checks succeed.
 
-`images` builds the pinned source and publishes the Substrate, demo, and Azure
-storage-plugin images. It assembles runtime assets unless `assetsDir` is set,
-in which case it verifies the supplied files without overwriting them.
-Image settings are saved only after publication and checksum checks succeed.
+**Source builds.** With `"imageSource": "source"`, `images` builds the release
+images from the pinned commit instead, with Docker buildx or Podman (rootless
+works on Linux). Setup then checks the builder before any Azure calls and offers
+a choice when both work; `--yes` prefers Docker. Checking Docker starts the
+buildx builder, which may download a BuildKit container and has two minutes to
+start. If it is unhealthy, automatic mode falls back to Podman; an explicit
+`--container-engine` never falls back. Reusing configured images needs no builder.
 
 ACR authentication uses your Azure login. Registry credentials stay in the
 private workspace; your Docker credentials, context, and buildx settings are left
@@ -212,8 +209,8 @@ bin/substrate-aks images --check
 are reported separately from missing images; the check never rebuilds images
 or changes your config.
 
-A failed build can leave images in ACR without updating the config; fix the
-error and retry. New role grants can take a few minutes to propagate. The
+A failed import or build can leave images in ACR without updating the config;
+fix the error and retry. New role grants can take a few minutes to propagate. The
 uploader must be the configured upload identity or a member of the configured
 publisher group.
 
@@ -475,18 +472,23 @@ make bicep
 | `make test` | Unit tests and contracts |
 | `make bicep` | Compile the infrastructure template |
 
-Contract tests need Git, Go, `kubectl`, and network access to source and module
-downloads. Missing prerequisites fail the tests rather than skipping them.
+Contract tests need Git, Go, `kubectl`, and network access to the Substrate and
+plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
+GitHub. Missing prerequisites fail the tests rather than skipping them.
 No check above provisions Azure resources.
 
-To use an existing pristine source checkout:
+To use existing pristine checkouts of the pins:
 
 ```sh
 go test -race -tags=integration ./internal/installer \
-  -run 'TestPinned(Upstream|ImagePublisher|ImageCheck|PodmanPublisher)Contract' \
-  -count=1 -args -contract-root /absolute/path/to/pinned/substrate
+  -run 'TestPinned.*Contract' -count=1 -args \
+  -contract-root /absolute/path/to/pinned/substrate \
+  -plugin-contract-root /absolute/path/to/pinned/objectstore-azure-blob
 ```
 
+The contracts render the plugin's own kustomize components into the pinned
+manifests, run the pinned `ate-setup` with every flag the installer passes,
+verify the published release inventory, and assemble the pinned runtime assets.
 The image-check tests use local registries, and publisher tests use controlled
 engine commands. They do not prove live ACR access or real image builds.
 

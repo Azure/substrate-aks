@@ -13,19 +13,27 @@ installer code.
 
 | Layer | Responsibility |
 | --- | --- |
-| Upstream Substrate | Base manifests, CRDs, certificates, and workload deployment |
-| [Azure components](../deploy/README.md) | Blob storage, ACR access, PostgreSQL, and demo scheduling |
+| Upstream Substrate | Base manifests, CRDs, certificates, release images, and workload deployment |
+| [Azure Blob plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob) | Object-store sidecars, their workload identity, and their kustomize components |
+| [Azure components](../deploy/README.md) | ACR access, PostgreSQL, telemetry, and demo scheduling |
 | [Bicep](../infra) | AKS, ACR, Blob containers, identities, and permissions |
 | Installer CLI | Configuration, approval, validation, sequencing, and diagnostics |
 
 ## Implemented today versus target architecture
 
-Today, the installer needs an exact upstream source revision. It renders the
-Azure components into a private copy of that source and invokes its `ate-setup`.
-Images, runtime assets, and the client must match that revision.
+Today, the installer needs an exact upstream release and plugin revision. It
+renders the plugin's components and the Azure components into a private copy of
+the release source and invokes its `ate-setup`. It imports that release's
+published images; runtime assets and the client must match the same revision.
 
-The longer-term goal is to consume compatible upstream release artifacts
-without rewriting a source checkout.
+`ate-setup` still assumes Google Cloud Storage on any cluster other than kind,
+so the installer applies the microVM SandboxConfig itself and passes
+placeholder values for the GCS snapshot transfer account, which only the
+replaced in-tree sidecar would read. Upstream
+[agent-substrate/substrate#3651](https://github.com/agent-substrate/substrate/pull/3651)
+proposes `--storage-backend=external` and `--component` for out-of-tree
+providers; the installer should move to them once released, without rewriting a
+source checkout.
 
 > [!IMPORTANT]
 > There is no supported standalone Kustomize, Helm, or GitOps installation yet.
@@ -34,7 +42,7 @@ without rewriting a source checkout.
 ## Current deployment flow
 
 ```text
-Pinned upstream manifests + Azure components + deployment settings
+Pinned upstream manifests + plugin components + Azure components + settings
                               |
                      In-memory rendering
                               |
@@ -50,14 +58,15 @@ needed. Upstream `ate-setup` handles the base installation and component redeplo
 
 | Azure setting | Result |
 | --- | --- |
-| Snapshot storage | Blob sidecars with separate node and control-plane identities |
+| Snapshot storage | The plugin's Blob sidecars with separate node and control-plane identities |
+| MicroVM assets | Content-addressed blobs in the assets container, served by the node sidecar |
 | Actor image access | Native AKS ACR credential provider using the node's identity |
 | PostgreSQL | One replica with a 32 GiB Azure Disk; no backups or HA |
 | Telemetry | GKE monitoring removed; exporters disabled |
 | Demo workers | Scheduled on the dedicated microVM node pool |
 
-The counter ActorTemplate is a Substrate API document, not a Kubernetes resource.
-Its snapshot URL and the sandbox runtime assets are adapted separately in Go.
+The sandbox runtime assets are adapted separately in Go. The counter demo
+stores snapshots under ate-api-server's cluster-wide snapshot location.
 Renderer inputs and compatibility checks live in
 [`deploy/render.go`](../deploy/render.go) and
 [`internal/installer/manifests.go`](../internal/installer/manifests.go).

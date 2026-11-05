@@ -30,7 +30,8 @@ func testConfig(t *testing.T) Config {
 			APIAuthorizedCIDRs: []string{"203.0.113.8/32"},
 		},
 		Substrate: SubstrateConfig{
-			Source: Source{Repository: DefaultRepository, Commit: DefaultCommit},
+			Source:       DefaultConfig().Substrate.Source,
+			PluginSource: DefaultConfig().Substrate.PluginSource,
 			Images: ImagesConfig{
 				Repository: "example.invalid/substrate", Tag: "experimental",
 				Plugin: "example.invalid/azure-plugin@sha256:" + strings.Repeat("a", 64),
@@ -56,6 +57,12 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 		change func(*Config)
 	}{
 		{"branch instead of SHA", func(c *Config) { c.Substrate.Source.Commit = "main" }},
+		{"plugin branch instead of SHA", func(c *Config) { c.Substrate.PluginSource.Commit = "main" }},
+		{"plugin repository with credentials", func(c *Config) {
+			c.Substrate.PluginSource.Repository = "https://user:token@github.com/example/plugin.git"
+		}},
+		{"non-release source tag", func(c *Config) { c.Substrate.Source.Tag = "main" }},
+		{"unknown image source", func(c *Config) { c.Substrate.ImageSource = "ghcr" }},
 		{"unrestricted API", func(c *Config) { c.AKS.APIAuthorizedCIDRs = []string{"0.0.0.0/0"} }},
 		{"missing API ranges", func(c *Config) { c.AKS.APIAuthorizedCIDRs = nil }},
 		{"contradictory API access", func(c *Config) { c.AKS.AllowUnrestrictedAPI = true }},
@@ -174,11 +181,34 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 	}
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
 		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1}) ||
-		c.Substrate.Source != (Source{Repository: DefaultRepository, Commit: DefaultCommit}) ||
+		c.Substrate.Source != (Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit}) ||
+		c.Substrate.PluginSource != (Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit}) ||
+		c.Substrate.ImageSource != "" ||
 		c.Installation.Dir != dir ||
 		c.Installation.Ownership != (Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}) ||
 		c.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
 		t.Fatalf("grouped configuration lost settings, defaults or relative paths: %+v", c)
+	}
+}
+
+func TestConfiguredSourceDoesNotInheritDefaultTag(t *testing.T) {
+	c := testConfig(t)
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := strings.Repeat("c", 40)
+	data = []byte(strings.Replace(string(data), `"tag":"`+DefaultTag+`","commit":"`+DefaultCommit+`"`, `"commit":"`+other+`"`, 1))
+	path := filepath.Join(t.TempDir(), "installation.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Substrate.Source != (Source{Repository: DefaultRepository, Commit: other}) {
+		t.Fatalf("a configured commit inherited the default release tag: %+v", loaded.Substrate.Source)
 	}
 }
 

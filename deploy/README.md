@@ -6,10 +6,15 @@ them, fills in values from your deployment, and passes the result to upstream
 
 | Component | Purpose |
 | --- | --- |
-| `storage` | Store snapshots in Azure Blob and pull actor images from ACR |
+| `actor-images` | Pull private actor images from ACR with the node's identity |
 | `postgres` | Run PostgreSQL on a 32 GiB Azure Disk |
 | `telemetry` | Disable the GKE-specific monitoring configuration |
 | `demo` | Place microVM workers on the dedicated node pool |
+
+The object-store sidecars are configured by the
+[Azure Blob plugin's own components](https://github.com/agent-substrate-plugins/objectstore-azure-blob#deployment),
+which the installer fetches at its pinned commit, fills with the installation's
+identities, account and containers, and renders before these.
 
 **This is not a standalone installation package.** The templates need the
 [pinned upstream source](../docs/configuration.md#source-and-image-settings) and

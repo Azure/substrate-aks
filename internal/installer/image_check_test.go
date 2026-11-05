@@ -17,10 +17,8 @@ func imageCheckReplies(c Config, result string) []reply {
 		replies = append(replies, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
 			acrLoginReply())
 	}
-	return append(replies,
-		reply{contains: "git init"}, reply{contains: "git fetch"}, reply{contains: "git checkout"},
-		reply{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
-		reply{contains: "publish check-images", output: result})
+	replies = append(replies, fetchReplies(c.Substrate.Source)...)
+	return append(replies, reply{contains: "publish check-images", output: result})
 }
 
 func TestSavedImagesInRecreatedRegistry(t *testing.T) {

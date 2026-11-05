@@ -2,6 +2,8 @@ package installer
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,6 +34,17 @@ func manifestObject(t *testing.T, data []byte, kind, name string) object {
 		t.Fatalf("missing %s/%s", kind, name)
 	}
 	return found
+}
+
+// testPlugin fills the vendored copy of the pinned plugin's components;
+// the contract tests keep that copy identical to the pin.
+func testPlugin(t *testing.T, c Config, i Infrastructure) []deploy.External {
+	t.Helper()
+	plugin, err := pluginComponents("testdata/plugin", c, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plugin
 }
 
 func assertAzureWorkload(t *testing.T, data []byte, c Config, i Infrastructure, node bool) {
@@ -85,8 +98,29 @@ func assertAzureWorkload(t *testing.T, data []byte, c Config, i Infrastructure, 
 	if !reflect.DeepEqual(probe["command"], wantCommand) {
 		t.Fatalf("sidecar healthcheck does not use the Azure binary and matching socket: %v", probe)
 	}
+	wantArgs := []any{mode, "--socket=/run/objectstore-plugin/" + mode + ".sock"}
+	if node {
+		wantArgs = append(wantArgs, "--root=/var/lib/ate")
+	}
+	wantArgs = append(wantArgs, "--account-url="+i.AccountURL, "--containers="+i.SnapshotsContainer, "--prefix=substrate")
+	if node {
+		wantArgs = append(wantArgs, "--asset-staging-dir=/var/lib/objectstore-plugin/asset-staging", "--asset-staging-capacity=8Gi")
+	}
+	if !reflect.DeepEqual(plugin["args"], wantArgs) {
+		t.Fatalf("sidecar arguments are not the Azure plugin's: %v", plugin["args"])
+	}
+	if _, err := named(plugin["env"], "ATE_STORAGE_BACKEND"); err == nil {
+		t.Fatal("in-tree storage backend setting remains")
+	}
 	if !node {
+		if _, err := named(plugin["env"], "AZURE_STORAGE_ASSET_CONTAINERS"); err == nil {
+			t.Fatal("control sidecar serves sandbox assets")
+		}
 		return
+	}
+	assets, err := named(plugin["env"], "AZURE_STORAGE_ASSET_CONTAINERS")
+	if err != nil || assets["value"] != i.AssetsContainer {
+		t.Fatalf("node sidecar does not serve assets from the asset container: %v: %v", assets, err)
 	}
 	for volumeName, wantSource := range map[string]object{
 		"image-credential-provider-bin": {"path": "/var/lib/kubelet/credential-provider", "type": "Directory"},
@@ -146,6 +180,8 @@ kind: %s
 metadata:
   name: %s
   namespace: ate-system
+  labels:
+    app: %s
 spec:
   template:
     spec:
@@ -186,14 +222,14 @@ spec:
       - name: image-credential-provider-bin
         hostPath:
           path: /gke/bin
-`, name, kind, name, name))
+`, name, kind, name, name, name))
 }
 
 func TestAzureWorkloadAdaptation(t *testing.T) {
 	for _, node := range []bool{false, true} {
 		t.Run(fmt.Sprintf("node=%t", node), func(t *testing.T) {
 			c, i := testConfig(t), testInfrastructure()
-			got, err := adaptWorkload(workloadFixture(node), c, i, node)
+			got, err := adaptWorkload(workloadFixture(node), c, testPlugin(t, c, i), node)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -210,7 +246,7 @@ func TestAzureWorkloadAdaptation(t *testing.T) {
 			client := i.ControlClientID
 			if node {
 				client = i.NodeClientID
-				if strings.Contains(s, "/gke/") || !strings.Contains(s, "--asset-containers=assets") || !strings.Contains(s, "--grpc-server-cred-bundle=") {
+				if strings.Contains(s, "/gke/") || !strings.Contains(s, "--grpc-server-cred-bundle=") {
 					t.Fatalf("atelet provider isolation, assets or mTLS configuration incorrect:\n%s", s)
 				}
 				for _, want := range []string{"acr-credential-provider", "/var/lib/kubelet/credential-provider", "/etc/kubernetes/azure.json", "subPath: config.yaml", "--image-credential-provider-bin-dir="} {
@@ -221,10 +257,6 @@ func TestAzureWorkloadAdaptation(t *testing.T) {
 			}
 			if !strings.Contains(s, client) {
 				t.Fatal("wrong federated identity")
-			}
-			repeated, err := adaptWorkload(got, c, i, node)
-			if err != nil || string(repeated) != s {
-				t.Fatalf("adaptation is not idempotent: %v", err)
 			}
 		})
 	}
@@ -241,9 +273,12 @@ func TestAzureAdaptationRejectsChangedUpstream(t *testing.T) {
 		{"--image-credential-provider-config=/run/image-credential-provider/config.yaml", "--unrelated-flag=true"},
 		{"--grpc-server-cred-bundle=", "--image-credential-provider-extra="},
 		{"mountPath: /run/image-credential-provider/config.yaml", "mountPath: /changed/config"},
+		{"        - name: ATE_STORAGE_BACKEND", "        - name: AZURE_CLIENT_ID\n          value: upstream\n        - name: ATE_STORAGE_BACKEND"},
+		{"      - name: host-dev\n        hostPath:", "      - name: azure-identity-token\n        emptyDir: {}\n      - name: host-dev\n        hostPath:"},
 	} {
 		data := strings.ReplaceAll(string(workloadFixture(true)), tc.old, tc.new)
-		if _, err := adaptWorkload([]byte(data), testConfig(t), testInfrastructure(), true); err == nil {
+		c := testConfig(t)
+		if _, err := adaptWorkload([]byte(data), c, testPlugin(t, c, testInfrastructure()), true); err == nil {
 			t.Fatalf("silently accepted upstream change %s", tc.new)
 		}
 	}
@@ -258,10 +293,7 @@ func TestDeclarativeNodePatchRejectsArgumentDrift(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Bypass adaptWorkload to exercise the declarative guard itself.
-			_, err := deploy.Render([]byte(strings.Replace(source, tc.old, tc.replacement, 1)), deploy.Values{
-				Component: "storage", Name: "atelet", Kind: "DaemonSet", Mode: "node",
-				PluginImage: testConfig(t).Substrate.Images.Plugin,
-			})
+			_, err := deploy.Render([]byte(strings.Replace(source, tc.old, tc.replacement, 1)), deploy.Values{Component: "actor-images"})
 			if err == nil {
 				t.Fatal("declarative positional patch accepted a changed upstream target")
 			}
@@ -271,10 +303,11 @@ func TestDeclarativeNodePatchRejectsArgumentDrift(t *testing.T) {
 
 func TestAzureWorkloadsRenderFromEmbeddedAssets(t *testing.T) {
 	c, i := testConfig(t), testInfrastructure()
+	plugin := testPlugin(t, c, i)
 	t.Chdir(t.TempDir())
 	t.Setenv("PATH", "")
 	for _, node := range []bool{false, true} {
-		got, err := adaptWorkload(workloadFixture(node), c, i, node)
+		got, err := adaptWorkload(workloadFixture(node), c, plugin, node)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,44 +350,52 @@ spec:
 	}
 }
 
-func TestAzurePatchesReplaceStaleIdentityValues(t *testing.T) {
+func TestPluginComponentValuesCannotInjectYAML(t *testing.T) {
 	c, i := testConfig(t), testInfrastructure()
-	data := strings.Replace(string(workloadFixture(true)), "        - name: ATE_STORAGE_BACKEND", `        - name: UNRELATED
-          value: retained
-        - name: AZURE_CLIENT_ID
-          valueFrom:
-            secretKeyRef:
-              name: stale-identity
-              key: client
-        - name: ATE_STORAGE_BACKEND`, 1)
-	got, err := adaptWorkload([]byte(data), c, i, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertAzureWorkload(t, got, c, i, true)
-	if strings.Contains(string(got), "stale-identity") || !strings.Contains(string(got), "retained") {
-		t.Fatalf("owned environment values were not replaced while preserving unrelated settings:\n%s", got)
+	i.AccountURL = "https://example.invalid/#fragment\n---\nkind: Secret"
+	if _, err := pluginComponents("testdata/plugin", c, i); err == nil {
+		t.Fatal("placed a value that is not a plain YAML scalar into the plugin component")
 	}
 }
 
-func TestAzureRuntimeValuesCannotInjectYAML(t *testing.T) {
+func TestPluginComponentsRequireReviewedPlaceholders(t *testing.T) {
 	c, i := testConfig(t), testInfrastructure()
-	i.AccountURL = "https://example.invalid/#fragment\n---\nkind: Secret"
-	got, err := adaptWorkload(workloadFixture(false), c, i, false)
-	if err != nil {
+	for _, tc := range []struct{ name, file, old, new string }{
+		{"missing image", "config/kustomization.yaml", "example.invalid/replace-with-azure-blob-objectstore-plugin:latest", "registry.example/fixed:latest"},
+		{"new placeholder", "config/kustomization.yaml", "--prefix=substrate", "--prefix=REPLACE_WITH_PREFIX"},
+		{"missing asset containers", "config/assets/kustomization.yaml", "REPLACE_WITH_ASSET_CONTAINERS", "assets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, rel := range []string{pluginComponent, pluginAssetsComponent} {
+				data, err := os.ReadFile(filepath.Join("testdata/plugin", rel))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rel == tc.file {
+					data = []byte(strings.Replace(string(data), tc.old, tc.new, 1))
+				}
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, rel), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := pluginComponents(dir, c, i); err == nil {
+				t.Fatal("accepted a plugin component outside the reviewed placeholder contract")
+			}
+		})
+	}
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("testdata/plugin")); err != nil {
 		t.Fatal(err)
 	}
-	pod, err := nested(manifestObject(t, got, "Deployment", "ate-api-server"), "spec", "template", "spec")
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config/patch.yaml"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := named(pod["initContainers"], "objectstore-plugin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	args, ok := plugin["args"].([]any)
-	if !ok || len(args) != 4 || args[2] != "--account-url="+i.AccountURL {
-		t.Fatalf("runtime value changed YAML structure instead of remaining a scalar: %v", plugin)
+	if _, err := pluginComponents(dir, c, i); err == nil {
+		t.Fatal("accepted a plugin component with files outside the reviewed layout")
 	}
 }
 
@@ -447,56 +488,4 @@ spec:
 		}
 	}
 
-}
-
-func TestMicroVMDemoActorTemplateUsesAzureSnapshots(t *testing.T) {
-	const template = `metadata:
-  atespace: ate-demo-counter-microvm
-  name: counter-microvm
-containers:
-- name: counter
-  image: ko://go.ate.dev/substrate/demos/counter
-snapshotConfig:
-  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY
-  storageLocation: gs://${BUCKET_NAME}/ate-demo-counter-microvm/
-volumes:
-- name: data
-  durableDir: {}
-`
-	for _, tc := range []struct {
-		name    string
-		source  string
-		wantErr bool
-	}{
-		{name: "Azure snapshots", source: template},
-		{name: "changed location", source: strings.Replace(template, "gs://", "s3://", 1), wantErr: true},
-		{name: "changed template", source: strings.Replace(template, "name: counter-microvm", "name: other", 1), wantErr: true},
-		{name: "empty template", wantErr: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := adaptDemoActorTemplate([]byte(tc.source))
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("accepted changed upstream contract:\n%s", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, want := range []string{
-				"storageLocation: azblob://snapshots/ate-demo-counter-microvm/",
-				"preferredFidelity: SNAPSHOT_FIDELITY_MEMORY",
-				"image: ko://go.ate.dev/substrate/demos/counter",
-				"durableDir: {}",
-			} {
-				if !strings.Contains(string(got), want) {
-					t.Fatalf("adapted template lost %q:\n%s", want, got)
-				}
-			}
-			if strings.Contains(string(got), "gs://") || strings.Contains(string(got), "${BUCKET_NAME}") {
-				t.Fatalf("adapted template retained GCS configuration:\n%s", got)
-			}
-		})
-	}
 }

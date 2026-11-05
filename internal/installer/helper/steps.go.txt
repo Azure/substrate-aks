@@ -1,0 +1,179 @@
+package steps
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"go.ate.dev/substrate/cmd/ate-setup/internal/images"
+)
+
+// azureDemoImage is the demo substrate-aks deploys. Releases do not publish
+// it, so substrate-aks builds it into the same repository as the rest.
+const azureDemoImage = "demos/counter"
+
+// CheckAzureImages reports, as JSON, whether repository holds every image a
+// release publishes, the demo image and the exact plugin digest.
+func CheckAzureImages(ctx context.Context, repository, tag, plugin, ownedHost, dockerDir string, out io.Writer) error {
+	refs := releaseImageRefs(repository, tag)
+	refs = append(refs, strings.TrimSuffix(repository, "/")+"/"+images.ImageName(azureDemoImage)+":"+tag, plugin)
+	report := struct {
+		Status   string `json:"status"`
+		Image    string `json:"image"`
+		Checked  int    `json:"checked"`
+		Expected int    `json:"expected"`
+	}{Status: "available", Expected: len(refs)}
+	original, set := os.LookupEnv("DOCKER_CONFIG")
+	restore := func() error {
+		if set {
+			return os.Setenv("DOCKER_CONFIG", original)
+		}
+		return os.Unsetenv("DOCKER_CONFIG")
+	}
+	defer restore()
+	for _, ref := range refs {
+		// Lookups are synchronous and isolated to this helper process. External
+		// registries keep the caller's credentials, not the owned ACR login.
+		host, _, _ := strings.Cut(ref, "/")
+		if dockerDir != "" && host == ownedHost {
+			if err := os.Setenv("DOCKER_CONFIG", dockerDir); err != nil {
+				return err
+			}
+		} else if err := restore(); err != nil {
+			return err
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		digest, err := images.RemoteDigest(checkCtx, ref)
+		cancel()
+		report.Checked++
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, expected, pinned := strings.Cut(ref, "@"); err == nil && pinned && digest != expected {
+			err = errors.New("registry returned a different plugin digest")
+		}
+		if err == nil {
+			continue
+		}
+		report.Image = ref
+		report.Status = "registry-error"
+		var remoteErr *transport.Error
+		var networkErr net.Error
+		switch {
+		case errors.As(err, &remoteErr):
+			switch remoteErr.StatusCode {
+			case http.StatusNotFound:
+				parsed, parseErr := name.ParseReference(ref)
+				request := remoteErr.Request
+				if parseErr == nil && request != nil && request.URL != nil && request.Method == http.MethodHead &&
+					request.URL.Path == "/v2/"+parsed.Context().RepositoryStr()+"/manifests/"+parsed.Identifier() {
+					report.Status = "missing"
+				}
+			case http.StatusUnauthorized:
+				report.Status = "authentication"
+			case http.StatusForbidden:
+				report.Status = "authorization"
+			}
+		case errors.As(err, &networkErr), errors.Is(err, context.DeadlineExceeded):
+			report.Status = "network"
+		}
+		break
+	}
+	// Never serialize registry error bodies, token-service URLs or credentials.
+	return json.NewEncoder(out).Encode(report)
+}
+
+// AzureReleaseInventory prints, as JSON, the digest of every image a release
+// publishes under repository:tag, after checking that each image index has a
+// linux/amd64 image and that every platform image was built from revision.
+// The release registry is public, so lookups are anonymous.
+func AzureReleaseInventory(ctx context.Context, repository, tag, revision string, out io.Writer) error {
+	type image struct {
+		Name   string `json:"name"`
+		Digest string `json:"digest"`
+	}
+	inventory := []image{}
+	for _, ref := range releaseImageRefs(repository, tag) {
+		parsed, err := name.NewTag(ref, name.StrictValidation)
+		if err != nil {
+			return err
+		}
+		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		err = func() error {
+			desc, err := remote.Get(parsed, remote.WithContext(lookupCtx))
+			if err != nil {
+				return err
+			}
+			if !desc.MediaType.IsIndex() {
+				return fmt.Errorf("%s is not a multi-platform image index", ref)
+			}
+			index, err := desc.ImageIndex()
+			if err != nil {
+				return err
+			}
+			manifest, err := index.IndexManifest()
+			if err != nil {
+				return err
+			}
+			amd64 := false
+			for _, entry := range manifest.Manifests {
+				// Build attestations are listed with an unknown platform.
+				if entry.Platform == nil || entry.Platform.OS == "unknown" {
+					continue
+				}
+				platform, err := index.Image(entry.Digest)
+				if err != nil {
+					return err
+				}
+				config, err := platform.ConfigFile()
+				if err != nil {
+					return err
+				}
+				if got := config.Config.Labels[images.RevisionLabel]; got != revision {
+					return fmt.Errorf("%s for %s was built from %q, not the pinned commit %s", ref, entry.Platform, got, revision)
+				}
+				amd64 = amd64 || (entry.Platform.OS == "linux" && entry.Platform.Architecture == "amd64")
+			}
+			if !amd64 {
+				return fmt.Errorf("%s has no linux/amd64 image", ref)
+			}
+			inventory = append(inventory, image{Name: path.Base(parsed.RepositoryStr()), Digest: desc.Digest.String()})
+			return nil
+		}()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("verifying release image %s: %w", ref, err)
+		}
+	}
+	return json.NewEncoder(out).Encode(inventory)
+}
+
+// AssembleAzureMicroVMAssets assembles arch's microVM guest assets into outDir
+// from the releases and digests the pinned template names, as deploy
+// ate-system does before it stages them to its own object store.
+func AssembleAzureMicroVMAssets(ctx context.Context, template, outDir, arch string) error {
+	digests, err := loadMicroVMAssetDigests(template)
+	if err != nil {
+		return err
+	}
+	want, ok := digests[arch]
+	if !ok {
+		return fmt.Errorf("%s has no microVM assets for %s", template, arch)
+	}
+	stamp := microvmAssetStamp(arch, defaultKataVersion, defaultCloudHypervisorVersion)
+	if need, _, err := microvmAssetsNeedAssemble(outDir, stamp, want); err == nil && !need {
+		return nil
+	}
+	return assembleMicroVMAssets(ctx, defaultMicroVMReleaseBaseURL, outDir, arch, defaultKataVersion, defaultCloudHypervisorVersion, want)
+}
