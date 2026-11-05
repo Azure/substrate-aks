@@ -9,7 +9,7 @@ param workerVmSize string = 'Standard_D4s_v6'
 @minValue(1)
 @maxValue(100)
 param workerCount int = 1
-@description('MicroVM worker OS disk: Managed, or Ephemeral on the VM\'s local storage (NVMe on v6/v7 sizes with local disks). Fixed at pool creation.')
+@description('MicroVM worker OS disk: Managed, or Ephemeral on local VM storage (NVMe on v6/v7 sizes with local disks). Fixed at pool creation.')
 @allowed(['Managed', 'Ephemeral'])
 param workerOsDiskType string = 'Managed'
 @description('MicroVM worker OS disk size in GB. Managed disk performance scales with size; an Ephemeral disk must fit the local storage. Fixed at pool creation.')
