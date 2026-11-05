@@ -160,6 +160,9 @@ func TestConfigWorkerDiskAndPodBoundaries(t *testing.T) {
 		{"too few pods", func(w *WorkerPoolConfig) { w.MaxPods = 9 }, false},
 		{"most pods", func(w *WorkerPoolConfig) { w.MaxPods = 250 }, true},
 		{"too many pods", func(w *WorkerPoolConfig) { w.MaxPods = 251 }, false},
+		{"largest ephemeral disk", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2040 }, true},
+		{"ephemeral disk over Azure's cap", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2041 }, false},
+		{"largest managed disk is too large for ephemeral", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2048 }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testConfig(t)
@@ -287,6 +290,7 @@ func TestCleanEnvironment(t *testing.T) {
 		"EXPECTED_JWT_ISSUER=https://caller.invalid", "DOCKER_BUILD_FLAGS=--no-cache",
 		"E2E_ATE_ENVOY_CONCURRENCY=4", "KIND_CLUSTER_NAME=other",
 		"BENCHMARK_ACTOR_MEMORY=1Gi", "ANTHROPIC_API_KEY=synthetic-test-value",
+		"SETUP_CSI=both", "STORAGE_CLASS=other",
 	)
 	got := cleanEnvironment(input)
 	if !slices.Equal(got, preserved) {

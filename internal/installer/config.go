@@ -101,6 +101,10 @@ type WorkerPoolConfig struct {
 const (
 	DefaultWorkerOSDiskType   = "Managed"
 	DefaultWorkerOSDiskSizeGB = 128
+	// Azure caps ephemeral OS disks at 2,040 GiB, below the managed limit.
+	MaxEphemeralOSDiskSizeGB = 2040
+	// AKSDefaultMaxPods is the pod limit AKS applies with Azure CNI overlay.
+	AKSDefaultMaxPods = 250
 )
 
 func (w WorkerPoolConfig) osDiskType() string {
@@ -297,6 +301,9 @@ func (c Config) Validate() error {
 	}
 	if size := c.AKS.WorkerPool.OSDiskSizeGB; size != 0 && (size < 30 || size > 2048) {
 		return errors.New("aks.workerPool.osDiskSizeGB must be 30-2048")
+	}
+	if c.AKS.WorkerPool.osDiskType() == "Ephemeral" && c.AKS.WorkerPool.osDiskSizeGB() > MaxEphemeralOSDiskSizeGB {
+		return fmt.Errorf("aks.workerPool.osDiskSizeGB must be at most %d for an Ephemeral OS disk", MaxEphemeralOSDiskSizeGB)
 	}
 	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && (pods < 10 || pods > 250) {
 		return errors.New("aks.workerPool.maxPods must be 10-250, or omitted for the AKS default")

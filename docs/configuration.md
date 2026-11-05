@@ -132,7 +132,7 @@ before running `plan` and `provision`:
 | `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization |
 | `aks.workerPool.count` | `1` | 1-100 nodes |
 | `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
-| `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage |
+| `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage, up to 2,040 GB |
 | `aks.workerPool.maxPods` | AKS default | 10-250 pods per node; omit to keep the AKS default |
 
 AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
@@ -151,19 +151,22 @@ node can suspend and resume actors.
 
 | Choice | Snapshot disk | Trade-offs |
 | --- | --- | --- |
-| `Managed`, 128 GB (default) | Premium SSD P10, about 500 IOPS and 100 MB/s | Durable across reimage; saturates with a few active actors per node |
-| `Managed`, larger `osDiskSizeGB` | Scales with the disk tier, for example 1,024 GB is P30, about 5,000 IOPS and 200 MB/s | Durable; also capped per VM (`Standard_D8s_v7`: 16,000 IOPS, 472 MB/s) |
-| `Ephemeral` on a size with local NVMe, such as `Standard_D8ds_v7` | Local NVMe, about 560 MB/s on `Standard_D8ds_v7` | Not durable; shared with container images and OS I/O |
+| `Managed`, 128 GB (default) | Premium SSD P10, about 500 IOPS and 100 MB/s | Saturates with a few active actors per node |
+| `Managed`, larger `osDiskSizeGB` | Scales with the disk tier, for example 1,024 GB is P30, about 5,000 IOPS and 200 MB/s | Also capped per VM (`Standard_D8s_v7`: 16,000 IOPS, 472 MB/s) |
+| `Ephemeral` on a size with local NVMe, such as `Standard_D8ds_v7` | Local NVMe, about 560 MB/s on `Standard_D8ds_v7` | Also lost when the VM moves hosts; shared with container images and OS I/O |
+
+Both OS disk types survive a reboot. A reimage or node image upgrade resets the
+OS disk either way, along with any snapshots not yet uploaded to Blob storage, so
+drain a node before maintenance; workers get time to suspend and upload their
+actors.
 
 With `Ephemeral`, AKS places the OS disk on the local NVMe of v6 and v7 "d"
 sizes, and `/var/lib/ate` with it:
 
 - `osDiskSizeGB` sets the space `/var/lib/ate` gets, not the NVMe's full size.
   Snapshots and the image cache share it, so raise it toward the NVMe size
-  (440 GB on `Standard_D8ds_v7`) for dense nodes. Preflight checks it fits.
-- A reimage, node image upgrade, or host move wipes the node, including
-  snapshots not yet uploaded to Blob storage. Drain a node before maintenance;
-  workers get time to suspend and upload their actors.
+  (440 GB on `Standard_D8ds_v7`) for dense nodes. Preflight checks it fits, and
+  Azure caps ephemeral OS disks at 2,040 GB.
 - Sizes without local storage, such as `Standard_D8s_v7`, cannot use
   `Ephemeral`; preflight rejects them.
 
@@ -311,7 +314,10 @@ The installer is reviewed against two pins:
 | Azure Blob object-store plugin | [`agent-substrate-plugins/objectstore-azure-blob`](https://github.com/agent-substrate-plugins/objectstore-azure-blob) at `b21387e82cee399c65f49178a665727534e1c073`, the head of its unmerged [installation stack](https://github.com/agent-substrate-plugins/objectstore-azure-blob/pull/6) |
 
 Both are exact commits. A configured `tag` must name the configured commit;
-the installer checks this on every fetch and never follows a moved tag.
+the installer checks this on every fetch and never follows a moved tag. An exact
+commit cannot guarantee it stays fetchable: the plugin pin is reachable only
+from its pull request until the stack merges, so a force-push or squash-merge
+there can make fresh installs fail to fetch it until the pin moves.
 
 ### Image source
 
@@ -319,7 +325,7 @@ the installer checks this on every fetch and never follows a moved tag.
 
 | Value | Behavior |
 | --- | --- |
-| `release` (default) | Imports the release images upstream publishes for `substrate.source.tag` from `ghcr.io/agent-substrate/substrate` into the installation's ACR, by digest, after checking that each image was built from `substrate.source.commit`. Needs no Docker or Podman. |
+| `release` (default) | Imports the release images upstream publishes for `substrate.source.tag` from `ghcr.io/agent-substrate/substrate` into the installation's ACR, by digest, after checking that each image is labelled as built from `substrate.source.commit` (`org.opencontainers.image.revision`). Needs no Docker or Podman. |
 | `source` | Builds the release images from `substrate.source.commit` with the pinned `ate-setup publish release-images`, which needs Docker with buildx or Podman. Tags are `<tag>-azure.<commit>.<timestamp>`, so rebuilds never overwrite earlier images. |
 
 Both build the counter demo image, which releases do not publish, and the Azure

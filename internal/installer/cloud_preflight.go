@@ -313,7 +313,8 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 }
 
 // ephemeralOSDiskFits checks that size supports ephemeral OS disks and that
-// sizeGB fits its largest local placement: NVMe, cache or resource disk.
+// sizeGB fits its largest local placement (NVMe, cache or resource disk), up to
+// Azure's ephemeral OS disk limit.
 func ephemeralOSDiskFits(data []byte, size string, sizeGB int) error {
 	var skus []struct {
 		Name         string
@@ -341,7 +342,7 @@ func ephemeralOSDiskFits(data []byte, size string, sizeGB int) error {
 		if strings.Contains(capabilities["SupportedEphemeralOSDiskPlacements"], "NvmeDisk") {
 			largestGB = number("NvmeDiskSizeInMiB") / 1024
 		}
-		largestGB = max(largestGB, number("CachedDiskBytes")>>30, number("MaxResourceVolumeMB")/1024)
+		largestGB = min(max(largestGB, number("CachedDiskBytes")>>30, number("MaxResourceVolumeMB")/1024), MaxEphemeralOSDiskSizeGB)
 		if int64(sizeGB) > largestGB {
 			return fmt.Errorf("a %d GB ephemeral OS disk does not fit %s's %d GB of local storage; lower aks.workerPool.osDiskSizeGB or choose a larger size", sizeGB, size, largestGB)
 		}

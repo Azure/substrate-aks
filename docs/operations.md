@@ -176,8 +176,8 @@ region. `plan` runs a Bicep what-if and deploys nothing.
 > grants for the upload identity. It does not create AKS or Blob storage yet.
 
 **Release images.** By default, `images` checks that every image upstream
-published for the pinned release was built from the pinned commit, then imports
-each one into ACR by digest with `az acr import`. It builds the counter demo
+published for the pinned release is labelled as built from the pinned commit,
+then imports each one into ACR by digest with `az acr import`. It builds the counter demo
 image, which releases do not publish, and the Azure Blob plugin image with ko.
 Neither needs Docker or Podman. Importing uses the upload identity's
 `Container Registry Data Importer and Data Reader` grant, which can import and

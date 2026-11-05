@@ -32,8 +32,13 @@ func (a App) guardWorkerPool(cluster *clusterState) error {
 		if pool.Name != "microvm" {
 			continue
 		}
+		maxPods := w.MaxPods
+		if maxPods == 0 {
+			// Bicep omits an unset limit, which only matches a pool on the AKS default.
+			maxPods = AKSDefaultMaxPods
+		}
 		if !strings.EqualFold(pool.OSDiskType, w.osDiskType()) || pool.OSDiskSizeGB != w.osDiskSizeGB() ||
-			(w.MaxPods != 0 && pool.MaxPods != w.MaxPods) {
+			pool.MaxPods != maxPods {
 			return fmt.Errorf("the existing microVM pool has osDiskType %s, osDiskSizeGB %d and maxPods %d, which AKS cannot change; restore them in aks.workerPool, or destroy and recreate the installation",
 				pool.OSDiskType, pool.OSDiskSizeGB, pool.MaxPods)
 		}

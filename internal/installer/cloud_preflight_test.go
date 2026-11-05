@@ -217,6 +217,8 @@ func TestEphemeralOSDiskMustFitLocalStorage(t *testing.T) {
 			{"name":"SupportedEphemeralOSDiskPlacements","value":"NvmeDisk"},{"name":"NvmeDiskSizeInMiB","value":"450560"},
 			{"name":"MaxResourceVolumeMB","value":"0"}]},
 		{"name":"Standard_D8s_v7","capabilities":[{"name":"EphemeralOSDiskSupported","value":"False"}]},
+		{"name":"Standard_L80as_v4","capabilities":[{"name":"EphemeralOSDiskSupported","value":"True"},
+			{"name":"SupportedEphemeralOSDiskPlacements","value":"NvmeDisk"},{"name":"NvmeDiskSizeInMiB","value":"20971520"}]},
 		{"name":"Standard_D8ds_v5","capabilities":[{"name":"EphemeralOSDiskSupported","value":"True"},
 			{"name":"SupportedEphemeralOSDiskPlacements","value":"ResourceDisk,CacheDisk"},{"name":"CachedDiskBytes","value":"214748364800"},
 			{"name":"MaxResourceVolumeMB","value":"307200"}]}
@@ -229,6 +231,7 @@ func TestEphemeralOSDiskMustFitLocalStorage(t *testing.T) {
 		{"Standard_D8ds_v7", 128, true}, {"Standard_D8ds_v7", 440, true}, {"Standard_D8ds_v7", 441, false},
 		{"Standard_D8s_v7", 128, false},
 		{"Standard_D8ds_v5", 300, true}, {"Standard_D8ds_v5", 301, false},
+		{"Standard_L80as_v4", 2040, true}, {"Standard_L80as_v4", 2048, false},
 		{"Standard_Missing", 128, false},
 	} {
 		t.Run(fmt.Sprintf("%s/%d", tc.size, tc.gb), func(t *testing.T) {

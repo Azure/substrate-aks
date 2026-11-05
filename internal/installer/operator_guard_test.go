@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,9 @@ import (
 func clusterReply(c Config) reply {
 	managed := c.AKS.Operator != nil
 	return reply{contains: "aks list --resource-group " + c.Azure.ResourceGroup, output: fmt.Sprintf(
-		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1,"osDiskType":"Managed","osDiskSizeGb":128,"maxPods":250}]}]`,
-		c.AKS.ClusterName, managed, managed, managed, c.AKS.WorkerPool.VMSize)}
+		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1,"osDiskType":%q,"osDiskSizeGb":%d,"maxPods":%d}]}]`,
+		c.AKS.ClusterName, managed, managed, managed, c.AKS.WorkerPool.VMSize,
+		c.AKS.WorkerPool.osDiskType(), c.AKS.WorkerPool.osDiskSizeGB(), cmp.Or(c.AKS.WorkerPool.MaxPods, AKSDefaultMaxPods))}
 }
 
 func operatorRecordReply(c Config) reply {
@@ -81,9 +83,13 @@ func TestProvisionRejectsFixedWorkerPoolChanges(t *testing.T) {
 		{"disk type", func(w *WorkerPoolConfig) { w.OSDiskType = "Ephemeral" }, false},
 		{"disk size", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 256 }, false},
 		{"pod limit", func(w *WorkerPoolConfig) { w.MaxPods = 30 }, false},
+		{"pod limit removed", func(w *WorkerPoolConfig) { w.MaxPods = 0 }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			original := testConfig(t)
+			if tc.name == "pod limit removed" {
+				original.AKS.WorkerPool.MaxPods = 30
+			}
 			c := original
 			tc.change(&c.AKS.WorkerPool)
 			replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
