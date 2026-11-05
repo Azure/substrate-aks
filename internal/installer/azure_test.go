@@ -209,6 +209,9 @@ func TestProvisionWhatIfWritesTypedParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if params.Parameters["workerCount"].Value != float64(1) ||
+		params.Parameters["workerOsDiskType"].Value != "Managed" ||
+		params.Parameters["workerOsDiskSizeGB"].Value != float64(128) ||
+		params.Parameters["workerMaxPods"].Value != float64(0) ||
 		params.Parameters["assetPublisherObjectId"].Value != c.Azure.AssetPublisherObjectID {
 		t.Fatalf("incorrect typed parameters: %s", data)
 	}

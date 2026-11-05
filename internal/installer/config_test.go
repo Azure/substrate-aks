@@ -26,7 +26,7 @@ func testConfig(t *testing.T) Config {
 		},
 		AKS: AKSConfig{
 			ClusterName: "substrate-test", KubernetesVersion: "1.37",
-			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1},
+			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128},
 			APIAuthorizedCIDRs: []string{"203.0.113.8/32"},
 		},
 		Substrate: SubstrateConfig{
@@ -141,6 +141,35 @@ func TestConfigWorkerPoolBoundaries(t *testing.T) {
 	}
 }
 
+func TestConfigWorkerDiskAndPodBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*WorkerPoolConfig)
+		ok     bool
+	}{
+		{"defaults", func(*WorkerPoolConfig) {}, true},
+		{"unset", func(w *WorkerPoolConfig) { *w = WorkerPoolConfig{VMSize: w.VMSize, Count: 1} }, true},
+		{"ephemeral", func(w *WorkerPoolConfig) { w.OSDiskType = "Ephemeral" }, true},
+		{"lowercase type", func(w *WorkerPoolConfig) { w.OSDiskType = "ephemeral" }, false},
+		{"disk SKU as type", func(w *WorkerPoolConfig) { w.OSDiskType = "Premium_LRS" }, false},
+		{"smallest disk", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 30 }, true},
+		{"disk too small", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 29 }, false},
+		{"largest disk", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 2048 }, true},
+		{"disk too large", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 2049 }, false},
+		{"fewest pods", func(w *WorkerPoolConfig) { w.MaxPods = 10 }, true},
+		{"too few pods", func(w *WorkerPoolConfig) { w.MaxPods = 9 }, false},
+		{"most pods", func(w *WorkerPoolConfig) { w.MaxPods = 250 }, true},
+		{"too many pods", func(w *WorkerPoolConfig) { w.MaxPods = 251 }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			tc.change(&c.AKS.WorkerPool)
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("worker disk or pod validation: %v", err)
+			}
+		})
+	}
+}
 func TestConfigRequiresExplicitUnrestrictedAPIOptIn(t *testing.T) {
 	c := testConfig(t)
 	c.AKS.APIAuthorizedCIDRs = nil
@@ -180,7 +209,7 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
-		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1}) ||
+		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128}) ||
 		c.Substrate.Source != (Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit}) ||
 		c.Substrate.PluginSource != (Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit}) ||
 		c.Substrate.ImageSource != "" ||

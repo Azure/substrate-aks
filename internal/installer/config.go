@@ -85,9 +85,36 @@ type OperatorConfig struct {
 	PrincipalType string `json:"principalType"`
 }
 
+// WorkerPoolConfig sizes the microVM pool. AKS fixes OSDiskType, OSDiskSizeGB
+// and MaxPods when the pool is created; changing them needs a new installation.
 type WorkerPoolConfig struct {
 	VMSize string `json:"vmSize"`
 	Count  int    `json:"count"`
+	// OSDiskType is Managed or Ephemeral, which places the OS disk, and with it
+	// /var/lib/ate, on the VM's local storage (NVMe on v6/v7 "d" sizes).
+	OSDiskType   string `json:"osDiskType,omitempty"`
+	OSDiskSizeGB int    `json:"osDiskSizeGB,omitempty"`
+	// MaxPods is the AKS per-node pod limit; 0 keeps the AKS default.
+	MaxPods int `json:"maxPods,omitempty"`
+}
+
+const (
+	DefaultWorkerOSDiskType   = "Managed"
+	DefaultWorkerOSDiskSizeGB = 128
+)
+
+func (w WorkerPoolConfig) osDiskType() string {
+	if w.OSDiskType == "" {
+		return DefaultWorkerOSDiskType
+	}
+	return w.OSDiskType
+}
+
+func (w WorkerPoolConfig) osDiskSizeGB() int {
+	if w.OSDiskSizeGB == 0 {
+		return DefaultWorkerOSDiskSizeGB
+	}
+	return w.OSDiskSizeGB
 }
 
 type SubstrateConfig struct {
@@ -158,7 +185,8 @@ func DefaultConfig() Config {
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
-			WorkerPool:        WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1},
+			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,
+				OSDiskType: DefaultWorkerOSDiskType, OSDiskSizeGB: DefaultWorkerOSDiskSizeGB},
 		},
 		Substrate: SubstrateConfig{
 			Source:       Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit},
@@ -249,6 +277,15 @@ func (c Config) Validate() error {
 	}
 	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
 		return errors.New("aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")
+	}
+	if t := c.AKS.WorkerPool.OSDiskType; t != "" && t != "Managed" && t != "Ephemeral" {
+		return errors.New("aks.workerPool.osDiskType must be Managed or Ephemeral")
+	}
+	if size := c.AKS.WorkerPool.OSDiskSizeGB; size != 0 && (size < 30 || size > 2048) {
+		return errors.New("aks.workerPool.osDiskSizeGB must be 30-2048")
+	}
+	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && (pods < 10 || pods > 250) {
+		return errors.New("aks.workerPool.maxPods must be 10-250, or omitted for the AKS default")
 	}
 	if len(c.AKS.APIAuthorizedCIDRs) == 0 && !c.AKS.AllowUnrestrictedAPI {
 		return errors.New("aks.apiAuthorizedCidrs must allow your client/CI IP ranges; only explicit aks.allowUnrestrictedApi=true permits an empty allowlist")

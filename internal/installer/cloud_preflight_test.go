@@ -210,3 +210,31 @@ func TestRegionalSKUCatalogRejectsInvalidOrRepeatedPages(t *testing.T) {
 		})
 	}
 }
+
+func TestEphemeralOSDiskMustFitLocalStorage(t *testing.T) {
+	catalog := []byte(`[
+		{"name":"Standard_D8ds_v7","capabilities":[{"name":"EphemeralOSDiskSupported","value":"True"},
+			{"name":"SupportedEphemeralOSDiskPlacements","value":"NvmeDisk"},{"name":"NvmeDiskSizeInMiB","value":"450560"},
+			{"name":"MaxResourceVolumeMB","value":"0"}]},
+		{"name":"Standard_D8s_v7","capabilities":[{"name":"EphemeralOSDiskSupported","value":"False"}]},
+		{"name":"Standard_D8ds_v5","capabilities":[{"name":"EphemeralOSDiskSupported","value":"True"},
+			{"name":"SupportedEphemeralOSDiskPlacements","value":"ResourceDisk,CacheDisk"},{"name":"CachedDiskBytes","value":"214748364800"},
+			{"name":"MaxResourceVolumeMB","value":"307200"}]}
+	]`)
+	for _, tc := range []struct {
+		size string
+		gb   int
+		ok   bool
+	}{
+		{"Standard_D8ds_v7", 128, true}, {"Standard_D8ds_v7", 440, true}, {"Standard_D8ds_v7", 441, false},
+		{"Standard_D8s_v7", 128, false},
+		{"Standard_D8ds_v5", 300, true}, {"Standard_D8ds_v5", 301, false},
+		{"Standard_Missing", 128, false},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tc.size, tc.gb), func(t *testing.T) {
+			if err := ephemeralOSDiskFits(catalog, tc.size, tc.gb); (err == nil) != tc.ok {
+				t.Fatalf("ephemeral OS disk check: %v", err)
+			}
+		})
+	}
+}

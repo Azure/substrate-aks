@@ -75,7 +75,9 @@ placeholders are not valid deployment values.
     },
     "workerPool": {
       "vmSize": "Standard_D4s_v6",
-      "count": 1
+      "count": 1,
+      "osDiskType": "Managed",
+      "osDiskSizeGB": 128
     }
   },
   "substrate": {
@@ -129,10 +131,52 @@ before running `plan` and `provision`:
 | --- | --- | --- |
 | `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization |
 | `aks.workerPool.count` | `1` | 1-100 nodes |
+| `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
+| `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage |
+| `aks.workerPool.maxPods` | AKS default | 10-250 pods per node; omit to keep the AKS default |
+
+AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
+`plan` and `provision` refuse to change them on an existing installation;
+destroy it and create a new one instead.
 
 The 100-node limit keeps the cluster within its overlay pod address range
 (`10.244.0.0/16`, one `/24` per node, so 256 nodes in total) with room for
 upgrade surge nodes. AKS itself allows up to 1,000 nodes per pool.
+
+### Snapshot disk performance
+
+Every actor suspend writes its memory snapshot to the worker's disk under
+`/var/lib/ate`, which is on the OS disk, so OS disk throughput bounds how fast a
+node can suspend and resume actors.
+
+| Choice | Snapshot disk | Trade-offs |
+| --- | --- | --- |
+| `Managed`, 128 GB (default) | Premium SSD P10, about 500 IOPS and 100 MB/s | Durable across reimage; saturates with a few active actors per node |
+| `Managed`, larger `osDiskSizeGB` | Scales with the disk tier, for example 1,024 GB is P30, about 5,000 IOPS and 200 MB/s | Durable; also capped per VM (`Standard_D8s_v7`: 16,000 IOPS, 472 MB/s) |
+| `Ephemeral` on a size with local NVMe, such as `Standard_D8ds_v7` | Local NVMe, about 560 MB/s on `Standard_D8ds_v7` | Not durable; shared with container images and OS I/O |
+
+With `Ephemeral`, AKS places the OS disk on the local NVMe of v6 and v7 "d"
+sizes, and `/var/lib/ate` with it:
+
+- `osDiskSizeGB` sets the space `/var/lib/ate` gets, not the NVMe's full size.
+  Snapshots and the image cache share it, so raise it toward the NVMe size
+  (440 GB on `Standard_D8ds_v7`) for dense nodes. Preflight checks it fits.
+- A reimage, node image upgrade, or host move wipes the node, including
+  snapshots not yet uploaded to Blob storage. Drain a node before maintenance;
+  workers get time to suspend and upload their actors.
+- Sizes without local storage, such as `Standard_D8s_v7`, cannot use
+  `Ephemeral`; preflight rejects them.
+
+### Pods per node
+
+AKS reserves node memory for each pod a node may run: about 20 MiB per pod plus
+50 MiB. At the AKS default of 250 that is about 5 GiB, which actors cannot use;
+a `Standard_D8ds_v7` node has 31.3 GiB but 26.3 GiB allocatable. One ateworker
+pod hosts many actors, and worker nodes run only a few other pods (networking,
+storage drivers, atelet), so about 30 is enough for dedicated worker nodes.
+The system pool keeps the AKS default.
+
+### Quota and CPU compatibility
 
 Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools; request more quota before provisioning

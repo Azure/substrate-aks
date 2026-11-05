@@ -13,7 +13,7 @@ import (
 func clusterReply(c Config) reply {
 	managed := c.AKS.Operator != nil
 	return reply{contains: "aks list --resource-group " + c.Azure.ResourceGroup, output: fmt.Sprintf(
-		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1}]}]`,
+		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1,"osDiskType":"Managed","osDiskSizeGb":128,"maxPods":250}]}]`,
 		c.AKS.ClusterName, managed, managed, managed, c.AKS.WorkerPool.VMSize)}
 }
 
@@ -66,6 +66,36 @@ func TestProvisionGuardsExistingOperator(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestProvisionRejectsFixedWorkerPoolChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*WorkerPoolConfig)
+		ok     bool
+	}{
+		{"unchanged", func(*WorkerPoolConfig) {}, true},
+		{"unset settings keep the existing pool", func(w *WorkerPoolConfig) { *w = WorkerPoolConfig{VMSize: w.VMSize, Count: 2} }, true},
+		{"explicit existing pod limit", func(w *WorkerPoolConfig) { w.MaxPods = 250 }, true},
+		{"disk type", func(w *WorkerPoolConfig) { w.OSDiskType = "Ephemeral" }, false},
+		{"disk size", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 256 }, false},
+		{"pod limit", func(w *WorkerPoolConfig) { w.MaxPods = 30 }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := testConfig(t)
+			c := original
+			tc.change(&c.AKS.WorkerPool)
+			replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
+				clusterReply(original), operatorRecordReply(original)}
+			if tc.ok {
+				replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+			}
+			err := (App{Config: c, Runner: script(t, replies...)}).provision(t.Context(), true, false)
+			if tc.ok && err != nil || !tc.ok && (err == nil || !strings.Contains(err.Error(), "destroy and recreate")) {
+				t.Fatalf("fixed worker pool guard: %v", err)
+			}
+		})
 	}
 }
 

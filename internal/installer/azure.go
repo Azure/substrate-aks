@@ -185,7 +185,11 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		return err
 	}
 	if exists {
-		if _, err := a.guardOperator(ctx); err != nil {
+		cluster, err := a.guardOperator(ctx)
+		if err != nil {
+			return err
+		}
+		if err := a.guardWorkerPool(cluster); err != nil {
 			return err
 		}
 	}
@@ -213,6 +217,9 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"installationId": c.Installation.ID, "clusterName": c.AKS.ClusterName,
 		"kubernetesVersion": c.AKS.KubernetesVersion, "workerVmSize": c.AKS.WorkerPool.VMSize,
 		"workerCount": c.AKS.WorkerPool.Count, "apiAuthorizedCidrs": append([]string{}, c.AKS.APIAuthorizedCIDRs...),
+		"workerOsDiskType":            c.AKS.WorkerPool.osDiskType(),
+		"workerOsDiskSizeGB":          c.AKS.WorkerPool.osDiskSizeGB(),
+		"workerMaxPods":               c.AKS.WorkerPool.MaxPods,
 		"assetPublisherObjectId":      c.Azure.AssetPublisherObjectID,
 		"assetPublisherPrincipalType": c.publisherPrincipalType(),
 		"snapshotReaderObjectId":      c.Azure.SnapshotReaderObjectID,
