@@ -163,6 +163,8 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 	return dest, nil
 }
 
+const routerClientSPIFFEID = "spiffe://cluster.local/ns/ate-system/sa/atenet-client"
+
 // Placeholders for ate-setup's GCS-only snapshot transfer account settings.
 const (
 	transferPlaceholderProject = "substrate-aks-unused"
@@ -200,6 +202,9 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		"--snapshot-location", "azblob://snapshots/cluster/",
 		"--credential-provider", `{"name":"k8s.io"}`,
 		"--ateapi-postgres-storage-class", "managed-csi",
+		// kubectl ate proxy presents a pod certificate for this ServiceAccount;
+		// atenet-router admits no ingress client unless it is allowed.
+		"--ingress-allowed-spiffe-ids", routerClientSPIFFEID,
 		// ate-setup requires a GCS snapshot transfer account on every cluster
 		// but kind. It only writes the email into a ConfigMap key read by the
 		// in-tree sidecar's arguments, which the Azure plugin component

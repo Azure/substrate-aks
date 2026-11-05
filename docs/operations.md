@@ -351,14 +351,18 @@ kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
 kubectl ate resume actor my-counter -a ate-demo-counter-microvm
 ```
 
-For HTTP access, forward the router in another terminal:
+For HTTP access, proxy the actor in another terminal and call it:
 
 ```sh
-kubectl -n ate-system port-forward svc/atenet-router 8000:80
+kubectl ate proxy actor my-counter -a ate-demo-counter-microvm
+curl -X POST http://localhost:8000
 ```
 
-Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
-to call the actor and compare its state before and after suspension.
+The proxy reaches the actor through `atenet-router` with a pod certificate for
+the `ate-system/atenet-client` ServiceAccount, which the installer allows; anyone
+who can request that certificate, such as a cluster admin, can reach every
+actor. Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
+to compare the actor's state before and after suspension.
 
 `kubectl ate` talks directly to Substrate and can port-forward its API.
 Without an explicit token, it uses the shared `ate-client` service account.

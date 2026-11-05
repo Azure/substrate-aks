@@ -191,6 +191,9 @@ func TestUpstreamRefreshesOwnedRegistryCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 			login, deploy := r.calls[len(r.calls)-2], r.calls[len(r.calls)-1]
+			if !strings.Contains(strings.Join(deploy.Args, " "), "--ingress-allowed-spiffe-ids "+routerClientSPIFFEID) {
+				t.Fatal("kubectl ate proxy cannot reach actors through atenet-router")
+			}
 			dockerEnv := "DOCKER_CONFIG=" + filepath.Join(c.workspace(), "docker")
 			for _, call := range []Command{deploy} {
 				found := false
