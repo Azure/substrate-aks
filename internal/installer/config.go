@@ -105,6 +105,8 @@ const (
 	MaxEphemeralOSDiskSizeGB = 2040
 	// AKSDefaultMaxPods is the pod limit AKS applies with Azure CNI overlay.
 	AKSDefaultMaxPods = 250
+	// MinPoolPods is the fewest pods AKS lets a node pool hold in total.
+	MinPoolPods = 30
 )
 
 func (w WorkerPoolConfig) osDiskType() string {
@@ -307,6 +309,9 @@ func (c Config) Validate() error {
 	}
 	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && (pods < 10 || pods > 250) {
 		return errors.New("aks.workerPool.maxPods must be 10-250, or omitted for the AKS default")
+	}
+	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && pods*c.AKS.WorkerPool.Count < MinPoolPods {
+		return fmt.Errorf("aks.workerPool.maxPods times aks.workerPool.count must be at least %d, which AKS requires of every pool", MinPoolPods)
 	}
 	if len(c.AKS.APIAuthorizedCIDRs) == 0 && !c.AKS.AllowUnrestrictedAPI {
 		return errors.New("aks.apiAuthorizedCidrs must allow your client/CI IP ranges; only explicit aks.allowUnrestrictedApi=true permits an empty allowlist")

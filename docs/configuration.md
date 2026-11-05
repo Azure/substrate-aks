@@ -133,7 +133,7 @@ before running `plan` and `provision`:
 | `aks.workerPool.count` | `1` | 1-100 nodes |
 | `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
 | `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage, up to 2,040 GB |
-| `aks.workerPool.maxPods` | AKS default | 10-250 pods per node; omit to keep the AKS default |
+| `aks.workerPool.maxPods` | AKS default | 10-250 pods per node, and at least 30 across the pool (`maxPods` × `count`); omit to keep the AKS default |
 
 AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
 `plan` and `provision` refuse to change them on an existing installation;

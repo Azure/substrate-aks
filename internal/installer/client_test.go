@@ -42,12 +42,12 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	return root, []reply{
 		{contains: "group exists", output: "true"}, ownerReply(c),
 		{contains: "deployment sub show", output: string(outputs)},
-		{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
-		{contains: "git diff --name-only HEAD"},
-		{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"},
 		{contains: "aks get-credentials"},
 		{contains: "get namespace", output: "{}"},
 		{contains: "get configmap", output: `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"` + fp + `","phase":"deployed"}}`},
+		{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
+		{contains: "git diff --name-only HEAD"},
+		{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"},
 	}
 }
 
@@ -171,6 +171,8 @@ func TestSetupClientRequiresCompletedOwnedInstallation(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			c := testConfig(t)
 			_, replies := clientFixture(t, c)
+			// The install record is checked before the managed source is touched.
+			replies = replies[:6]
 			record := &replies[len(replies)-1]
 			if phase == "deployed" {
 				record.output = strings.ReplaceAll(record.output, c.Installation.ID, "another-installation")

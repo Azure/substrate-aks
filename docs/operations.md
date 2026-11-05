@@ -177,14 +177,15 @@ region. `plan` runs a Bicep what-if and deploys nothing.
 
 **Release images.** By default, `images` checks that every image upstream
 published for the pinned release is labelled as built from the pinned commit,
-then imports each one into ACR by digest with `az acr import`. It builds the counter demo
-image, which releases do not publish, and the Azure Blob plugin image with ko.
-Neither needs Docker or Podman. Importing uses the upload identity's
-`Container Registry Data Importer and Data Reader` grant, which can import and
-pull but not push or change the registry. It assembles runtime assets with the
-pinned `ate-setup` unless `assetsDir` is set, in which case it verifies the
-supplied files without overwriting them. Image settings are saved only after the imports,
-builds, and checksum checks succeed.
+then imports each one into ACR by digest with `az acr import`. It builds the
+counter demo image, which releases do not publish, and the Azure Blob plugin
+image with ko. Neither needs Docker or Podman. Importing uses the upload
+identity's `Container Registry Data Importer and Data Reader` grant. It writes
+images only through import, as `AcrPush` already allows, and cannot change the
+registry's settings. It assembles runtime assets with the pinned `ate-setup`
+unless `assetsDir` is set, in which case it verifies the supplied files without
+overwriting them. Image settings are saved only after the imports, builds, and
+checksum checks succeed.
 
 **Source builds.** With `"imageSource": "source"`, `images` builds the release
 images from the pinned commit instead, with Docker buildx or Podman (rootless
