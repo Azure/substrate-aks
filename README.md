@@ -76,7 +76,7 @@ automation options.
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
-| Substrate version | [`v1.0.0-rc.3`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0-rc.3) |
+| Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |

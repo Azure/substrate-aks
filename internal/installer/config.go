@@ -18,8 +18,8 @@ import (
 // installer is reviewed against. Bump them together with the contract tests.
 const (
 	DefaultRepository = "https://github.com/agent-substrate/substrate.git"
-	DefaultTag        = "v1.0.0-rc.3"
-	DefaultCommit     = "4ee8f66ac237adfc3303086b12275aefc150fd6f"
+	DefaultTag        = "v1.0.0"
+	DefaultCommit     = "b34fbee742906494b5eb4f1f36987176bf8770a4"
 	// DefaultReleaseImages is where upstream publishes DefaultTag's images.
 	DefaultReleaseImages = "ghcr.io/agent-substrate/substrate"
 

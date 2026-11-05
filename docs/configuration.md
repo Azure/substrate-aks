@@ -83,8 +83,8 @@ placeholders are not valid deployment values.
   "substrate": {
     "source": {
       "repository": "https://github.com/agent-substrate/substrate.git",
-      "tag": "v1.0.0-rc.3",
-      "commit": "4ee8f66ac237adfc3303086b12275aefc150fd6f"
+      "tag": "v1.0.0",
+      "commit": "b34fbee742906494b5eb4f1f36987176bf8770a4"
     },
     "pluginSource": {
       "repository": "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git",
@@ -310,7 +310,7 @@ The installer is reviewed against two pins:
 
 | Pin | Default |
 | --- | --- |
-| Substrate | [`v1.0.0-rc.3`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0-rc.3) (`4ee8f66ac237adfc3303086b12275aefc150fd6f`) |
+| Substrate | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) (`b34fbee742906494b5eb4f1f36987176bf8770a4`) |
 | Azure Blob object-store plugin | [`agent-substrate-plugins/objectstore-azure-blob`](https://github.com/agent-substrate-plugins/objectstore-azure-blob) at `b21387e82cee399c65f49178a665727534e1c073`, the head of its unmerged [installation stack](https://github.com/agent-substrate-plugins/objectstore-azure-blob/pull/6) |
 
 Both are exact commits. A configured `tag` must name the configured commit;

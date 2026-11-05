@@ -428,8 +428,8 @@ func TestPodmanImageBuildWiring(t *testing.T) {
 		}
 	}})
 	extra := extraImageReplies(c, "")
-	extra[1].contains = testKo + " build --base-import-paths --tags v1.0.0-rc.3-azure."
-	extra[len(extra)-2].contains = testKo + " build --bare --tags v1.0.0-rc.3-azure."
+	extra[1].contains = testKo + " build --base-import-paths --tags " + DefaultTag + "-azure."
+	extra[len(extra)-2].contains = testKo + " build --bare --tags " + DefaultTag + "-azure."
 	r := script(t, append(replies, extra...)...)
 	result, err := (App{Config: c, Runner: imageBuildRunner{r, filepath.Join(c.workspace(), "assets")}, ContainerEngine: "podman"}).BuildImages(t.Context())
 	if err != nil || result.Images.Repository != "substratetest123.azurecr.io/substrate" {
