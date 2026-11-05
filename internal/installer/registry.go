@@ -362,7 +362,7 @@ func (a App) importReleaseImages(ctx context.Context, root string, r Registry, r
 		if _, err := a.az(ctx, "acr", "import", "--name", r.Name,
 			"--source", DefaultReleaseImages+"/"+image.Name+"@"+image.Digest,
 			"--image", target, "--force"); err != nil {
-			return fmt.Errorf("importing %s (your Azure login needs Microsoft.ContainerRegistry/registries/importImage/action, for example Contributor, on the owned registry; AcrPush is not enough): %w", image.Name, err)
+			return fmt.Errorf("importing %s (the upload identity needs Container Registry Data Importer and Data Reader on the owned registry; provision grants it, and new grants can take a few minutes to propagate): %w", image.Name, err)
 		}
 		shown, err := a.az(ctx, "acr", "repository", "show", "--name", r.Name, "--image", target)
 		if err != nil {

@@ -172,18 +172,18 @@ region. `plan` runs a Bicep what-if and deploys nothing.
 
 > [!WARNING]
 > Registry provisioning starts billing. It creates the dedicated resource group,
-> a Basic ACR, and an `AcrPush` grant for the upload identity. It does not create
-> AKS or Blob storage yet.
+> a Basic ACR, and `AcrPush` and `Container Registry Data Importer and Data Reader`
+> grants for the upload identity. It does not create AKS or Blob storage yet.
 
 **Release images.** By default, `images` checks that every image upstream
 published for the pinned release was built from the pinned commit, then imports
 each one into ACR by digest with `az acr import`. It builds the counter demo
 image, which releases do not publish, and the Azure Blob plugin image with ko.
-Neither needs Docker or Podman. Importing needs your Azure login to hold the
-registry's `importImage` action, for example Contributor on the owned registry;
-`AcrPush` alone is not enough. It assembles runtime assets with the pinned
-`ate-setup` unless `assetsDir` is set, in which case it verifies the supplied
-files without overwriting them. Image settings are saved only after the imports,
+Neither needs Docker or Podman. Importing uses the upload identity's
+`Container Registry Data Importer and Data Reader` grant, which can import and
+pull but not push or change the registry. It assembles runtime assets with the
+pinned `ate-setup` unless `assetsDir` is set, in which case it verifies the
+supplied files without overwriting them. Image settings are saved only after the imports,
 builds, and checksum checks succeed.
 
 **Source builds.** With `"imageSource": "source"`, `images` builds the release
