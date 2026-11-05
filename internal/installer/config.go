@@ -157,17 +157,31 @@ func (s *Source) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (c Config) imageSource() ImageSource {
+// EffectiveImageSource is substrate.imageSource, defaulting to release.
+func (c Config) EffectiveImageSource() ImageSource {
 	if c.Substrate.ImageSource == "" {
 		return ImageSourceRelease
 	}
 	return c.Substrate.ImageSource
 }
 
+// Describe names the pinned revision for people: the tag when there is one,
+// then the short commit, then the repository when it is not the default.
+func (s Source) Describe(defaultRepository string) string {
+	text := s.Commit[:min(12, len(s.Commit))]
+	if s.Tag != "" {
+		text = s.Tag + " (" + text + ")"
+	}
+	if s.Repository != defaultRepository {
+		text += " from " + s.Repository
+	}
+	return text
+}
+
 // NeedsImageBuilder reports whether images still has to build with Docker or
 // Podman: only source builds do, and only until images are configured.
 func (c Config) NeedsImageBuilder() bool {
-	return c.imageSource() == ImageSourceBuild && c.Substrate.Images == (ImagesConfig{})
+	return c.EffectiveImageSource() == ImageSourceBuild && c.Substrate.Images == (ImagesConfig{})
 }
 
 type ImagesConfig struct {

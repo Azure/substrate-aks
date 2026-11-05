@@ -467,6 +467,8 @@ func (a App) Status(ctx context.Context) error {
 	if _, err := a.infrastructure(ctx); err != nil {
 		return err
 	}
+	a.progress("Substrate %s with the Azure Blob plugin %s", a.Config.Substrate.Source.Describe(DefaultRepository),
+		a.Config.Substrate.PluginSource.Describe(DefaultPluginRepository))
 	if err := a.credentials(ctx); err != nil {
 		return err
 	}

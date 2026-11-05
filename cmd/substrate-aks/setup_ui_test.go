@@ -40,6 +40,9 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 				"Development (" + c.Azure.SubscriptionID + ")", "Azure identity", c.Azure.AssetPublisherObjectID,
 				"Resource group", "Region", "1 system + 1 microVM", "API server access",
 				"Snapshot inspection", "No new operator access", "Existing operator grants are not revoked.",
+				"Version " + installer.DefaultTag + " (" + installer.DefaultCommit[:12] + ")",
+				"Release images imported into the installation's ACR", installer.DefaultReleaseImages,
+				"Storage plugin Azure Blob, " + installer.DefaultPluginCommit[:12],
 				"WARNING: This creates billable ACR, AKS, and storage resources.",
 				"Teardown deletes all installation data.",
 			} {

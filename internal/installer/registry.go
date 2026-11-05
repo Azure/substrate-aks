@@ -198,7 +198,7 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if c.Substrate.Images != (ImagesConfig{}) {
 		return BuildResult{}, errors.New("images are already configured; use images --check to verify reuse. Image bootstrap does not implement upgrades or overwrite an existing image set; after complete teardown use images --reset-config")
 	}
-	source := c.imageSource()
+	source := c.EffectiveImageSource()
 	if source == ImageSourceRelease && c.Substrate.Source.Tag == "" {
 		return BuildResult{}, errors.New(`release images need substrate.source.tag naming the release of substrate.source.commit; set it, or set substrate.imageSource to "source" to build the commit`)
 	}
