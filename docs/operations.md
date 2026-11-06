@@ -44,8 +44,8 @@ are; the main pane lists each stage's operations as they run.
 
 | Stage | What happens |
 | --- | --- |
-| Preparation | Checks local tools and the image builder, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. |
-| Images and assets | Previews and creates the private registry, then builds and publishes images and runtime assets. Skipped when the config already has published images; they are only verified. |
+| Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
+| Images and assets | Previews and creates the private registry, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and publishes runtime assets. Skipped when the config already has published images; they are only verified. |
 | AKS cluster | Previews and provisions AKS, storage, and identities, then checks the cluster. |
 | Substrate | Renders the Azure settings and installs Substrate. |
 | Counter demo | Optional; deploys the counter microVM demo. |
