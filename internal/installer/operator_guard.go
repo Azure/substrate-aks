@@ -15,7 +15,35 @@ type clusterState struct {
 	AgentPoolProfiles    []struct {
 		Name, VMSize string
 		Count        int
+		OSDiskType   string `json:"osDiskType"`
+		OSDiskSizeGB int    `json:"osDiskSizeGb"`
+		MaxPods      int    `json:"maxPods"`
 	}
+}
+
+// guardWorkerPool rejects changes to settings AKS fixes when the microVM pool
+// is created, before a deployment fails on them partway through.
+func (a App) guardWorkerPool(cluster *clusterState) error {
+	if cluster == nil {
+		return nil
+	}
+	w := a.Config.AKS.WorkerPool
+	for _, pool := range cluster.AgentPoolProfiles {
+		if pool.Name != "microvm" {
+			continue
+		}
+		maxPods := w.MaxPods
+		if maxPods == 0 {
+			// Bicep omits an unset limit, which only matches a pool on the AKS default.
+			maxPods = AKSDefaultMaxPods
+		}
+		if !strings.EqualFold(pool.OSDiskType, w.osDiskType()) || pool.OSDiskSizeGB != w.osDiskSizeGB() ||
+			pool.MaxPods != maxPods {
+			return fmt.Errorf("the existing microVM pool has osDiskType %s, osDiskSizeGB %d and maxPods %d, which AKS cannot change; restore them in aks.workerPool, or destroy and recreate the installation",
+				pool.OSDiskType, pool.OSDiskSizeGB, pool.MaxPods)
+		}
+	}
+	return nil
 }
 
 func (a App) guardOperator(ctx context.Context) (*clusterState, error) {

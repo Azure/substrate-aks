@@ -327,6 +327,20 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 		u.rowDetail("Sign-in", "Legacy configuration (unchanged)",
 			"This config predates managed Entra defaults. Setup does not migrate existing cluster authentication.")
 	}
+
+	u.group("Substrate")
+	u.row("Version", c.Substrate.Source.Describe(installer.DefaultRepository))
+	switch {
+	case c.Substrate.Images != (installer.ImagesConfig{}):
+		u.row("Images", "Saved: "+c.Substrate.Images.Repository+":"+c.Substrate.Images.Tag)
+	case c.EffectiveImageSource() == installer.ImageSourceBuild:
+		u.rowDetail("Images", "Built from source into the installation's ACR",
+			"Includes the counter demo and the Azure Blob plugin.")
+	default:
+		u.rowDetail("Images", "Release images imported into the installation's ACR",
+			"From "+installer.DefaultReleaseImages+", checked against the pinned commit. The counter demo and Azure Blob plugin are built.")
+	}
+	u.row("Storage plugin", "Azure Blob, "+c.Substrate.PluginSource.Describe(installer.DefaultPluginRepository))
 	u.row("Image builder", engine)
 
 	access := operator != nil && !same(operator.ObjectID) || !same(reader)

@@ -1,0 +1,35 @@
+package cmd
+
+import (
+	"github.com/spf13/cobra"
+	"go.ate.dev/substrate/cmd/ate-setup/internal/steps"
+)
+
+// substrate-aks adds this file to its disposable checkout of the pinned
+// source. These read-only commands need neither Kubernetes clients nor the
+// normal configuration report on their structured-output channel.
+func init() {
+	skip := func(*cobra.Command, []string) error { return nil }
+	publishCmd.AddCommand(&cobra.Command{
+		Use:    "check-images REPOSITORY TAG PLUGIN OWNED_HOST DOCKER_CONFIG_DIR",
+		Hidden: true, Args: cobra.ExactArgs(5),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.CheckAzureImages(cmd.Context(), args[0], args[1], args[2], args[3], args[4], cmd.OutOrStdout())
+		},
+	}, &cobra.Command{
+		Use:    "release-inventory REPOSITORY TAG REVISION",
+		Hidden: true, Args: cobra.ExactArgs(3),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.AzureReleaseInventory(cmd.Context(), args[0], args[1], args[2], cmd.OutOrStdout())
+		},
+	}, &cobra.Command{
+		Use:    "microvm-assets TEMPLATE OUT_DIR ARCH",
+		Hidden: true, Args: cobra.ExactArgs(3),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.AssembleAzureMicroVMAssets(cmd.Context(), args[0], args[1], args[2])
+		},
+	})
+}

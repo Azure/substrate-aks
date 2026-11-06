@@ -4,6 +4,15 @@ param clusterName string
 param kubernetesVersion string
 param workerVmSize string
 param workerCount int
+@allowed(['Managed', 'Ephemeral'])
+param workerOsDiskType string = 'Managed'
+@minValue(30)
+@maxValue(2048)
+param workerOsDiskSizeGB int = 128
+@description('0 keeps the AKS default.')
+@minValue(0)
+@maxValue(250)
+param workerMaxPods int = 0
 param apiAuthorizedCidrs array
 param assetPublisherObjectId string
 @allowed(['', 'User', 'ServicePrincipal', 'Group'])
@@ -94,21 +103,21 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         osDiskSizeGB: 128
         type: 'VirtualMachineScaleSets'
       }
-      {
+      union({
         name: 'microvm'
         mode: 'User'
         count: workerCount
         vmSize: workerVmSize
         osType: 'Linux'
         osSKU: 'Ubuntu'
-        osDiskType: 'Managed'
-        osDiskSizeGB: 128
+        osDiskType: workerOsDiskType
+        osDiskSizeGB: workerOsDiskSizeGB
         type: 'VirtualMachineScaleSets'
         nodeTaints: ['ate.dev/sandboxClass=microvm:NoSchedule']
         nodeLabels: {
           'substrate-aks/runtime': 'microvm'
         }
-      }
+      }, workerMaxPods == 0 ? {} : { maxPods: workerMaxPods })
     ]
   }
 }

@@ -1,0 +1,17 @@
+# Delete the upstream GKE credential provider volumes before adding Azure's,
+# so their GKE hostPath fields cannot survive a strategic merge.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: atelet
+  namespace: ate-system
+spec:
+  template:
+    spec:
+      volumes:
+      - name: image-credential-provider-bin
+        $patch: delete
+      - name: image-credential-provider-config
+        $patch: delete
+      - name: azure-cloud-config
+        $patch: delete

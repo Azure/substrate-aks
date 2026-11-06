@@ -29,7 +29,7 @@ func TestWorkspacePTYImageBuilderKeepsChecklist(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	p := newSetupPTY(t, 110, 30)
 	ctx, cancel := context.WithCancel(t.Context())
-	path := testCLIConfig(t)
+	path := testSourceCLIConfig(t)
 	discovery := subscriptionDisplayRunner(t)
 	executed := make(chan struct{}, 1)
 	done := make(chan error, 1)

@@ -1,8 +1,6 @@
 package installer
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,36 +69,7 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 	if a.Config.Substrate.Images != (ImagesConfig{}) {
 		return errors.New("prebuilt images require substrate.runtime.assetsDir with the four matching amd64 runtime assets")
 	}
-	for _, args := range [][]string{
-		{"bash", "--version"}, {"curl", "--version"}, {"tar", "--version"},
-		{"zstd", "--version"}, {"readlink", "-f", "."}, {"sha256sum"},
-	} {
-		a.progress("Checking runtime asset assembly prerequisite %s", args[0])
-		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err := a.Runner.Run(probeCtx, Command{Args: args})
-		cancel()
-		if err != nil {
-			return fmt.Errorf("runtime asset assembly requires %s; install the tool or supply substrate.runtime.assetsDir: %w", args[0], err)
-		}
-	}
-	var archive bytes.Buffer
-	writer := tar.NewWriter(&archive)
-	if err := writer.WriteHeader(&tar.Header{Name: "substrate-capability-probe", Mode: 0600}); err != nil {
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
-	a.progress("Checking tar can read zstd-compressed archives (GNU or BSD tar)")
-	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	compressed, err := a.Runner.Run(probeCtx, Command{Args: []string{"zstd", "--compress", "--stdout"}, Input: archive.Bytes(), BinaryOutput: true})
-	if err != nil {
-		return fmt.Errorf("checking zstd archive support: %w", err)
-	}
-	if _, err := a.Runner.Run(probeCtx, Command{Args: []string{"tar", "--zstd", "-tf", "-"}, Input: compressed}); err != nil {
-		return fmt.Errorf("tar must support --zstd archive reading; install a compatible tar or supply substrate.runtime.assetsDir: %w", err)
-	}
+	// The pinned source's ate-setup assembles the assets in Go; Doctor checks Go.
 	return nil
 }
 
@@ -404,7 +373,10 @@ func (a App) recordInstall(ctx context.Context, fp, phase string) error {
 			object{"apiVersion": "v1", "kind": "Namespace", "metadata": object{"name": "ate-system"}},
 			object{"apiVersion": "v1", "kind": "ConfigMap", "metadata": object{"name": "substrate-aks-install", "namespace": "ate-system"},
 				"data": object{"installationId": a.Config.Installation.ID, "fingerprint": fp, "phase": phase,
-					"repository": a.Config.Substrate.Source.Repository, "commit": a.Config.Substrate.Source.Commit}},
+					"repository": a.Config.Substrate.Source.Repository, "tag": a.Config.Substrate.Source.Tag,
+					"commit":           a.Config.Substrate.Source.Commit,
+					"pluginRepository": a.Config.Substrate.PluginSource.Repository,
+					"pluginCommit":     a.Config.Substrate.PluginSource.Commit}},
 		},
 	})
 	if err != nil {
@@ -422,35 +394,38 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err := a.Config.ValidateInstall(); err != nil {
 		return err
 	}
-	if err := a.CheckImages(ctx); err != nil {
-		return err
-	}
 	i, err := a.infrastructure(ctx)
 	if err != nil {
 		return err
 	}
-	root, err := a.prepare(ctx, i)
-	if err != nil {
-		return err
-	}
-	sandbox, err := sandboxManifest(root, a.Config.Substrate.Runtime.AssetsDir, i)
-	if err != nil {
-		return err
-	}
+	// The read-only install guard runs before the pinned source is fetched, so
+	// an installation from another revision is told upgrades are unsupported
+	// instead of failing on that revision's layout.
 	if err := a.credentials(ctx); err != nil {
-		return err
-	}
-	if err := a.checkCluster(ctx); err != nil {
 		return err
 	}
 	fp := fingerprint(a.Config, i)
 	if err := a.guardInstall(ctx, fp, component); err != nil {
 		return err
 	}
+	if err := a.CheckImages(ctx); err != nil {
+		return err
+	}
+	root, err := a.prepare(ctx, i)
+	if err != nil {
+		return err
+	}
+	sandbox, blobs, err := sandboxManifest(root, a.Config.Substrate.Runtime.AssetsDir, i)
+	if err != nil {
+		return err
+	}
+	if err := a.checkCluster(ctx); err != nil {
+		return err
+	}
 	if err := a.checkKVM(ctx); err != nil {
 		return err
 	}
-	if err := a.uploadAssets(ctx, i); err != nil {
+	if err := a.uploadAssets(ctx, i, blobs); err != nil {
 		return err
 	}
 	a.progress("Recording the installation checkpoint")
@@ -481,14 +456,14 @@ func (a App) Demo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	root, err := a.prepare(ctx, i)
-	if err != nil {
-		return err
-	}
 	if err := a.credentials(ctx); err != nil {
 		return err
 	}
 	if err := a.guardInstall(ctx, fingerprint(a.Config, i), "demo"); err != nil {
+		return err
+	}
+	root, err := a.prepare(ctx, i)
+	if err != nil {
 		return err
 	}
 	return a.upstream(ctx, root, "deploy", "demo", "counter-microvm")
@@ -501,9 +476,42 @@ func (a App) Status(ctx context.Context) error {
 	if err := a.credentials(ctx); err != nil {
 		return err
 	}
+	if err := a.installedRevisions(ctx); err != nil {
+		return err
+	}
 	a.progress("Fetching Substrate pods and persistent volumes")
 	_, err := a.runKubectl(ctx, nil, true, "get", "pods,pvc", "--namespace=ate-system", "--output=wide")
 	return err
+}
+
+// installedRevisions reports what the cluster's install record says was
+// installed, which can differ from the current configuration.
+func (a App) installedRevisions(ctx context.Context) error {
+	data, err := a.kubectl(ctx, nil, "get", "configmap", "substrate-aks-install", "--namespace=ate-system", "--ignore-not-found", "--output=json")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		a.progress("No Substrate installation is recorded on this cluster")
+		return nil
+	}
+	var record struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("reading the install record: %w", err)
+	}
+	d := record.Data
+	if d["commit"] == "" {
+		return errors.New("the install record names no Substrate revision")
+	}
+	substrate := Source{Repository: d["repository"], Tag: d["tag"], Commit: d["commit"]}.Describe(DefaultRepository)
+	plugin := "not recorded (installed before the Azure Blob plugin moved out of tree)"
+	if d["pluginCommit"] != "" {
+		plugin = Source{Repository: d["pluginRepository"], Commit: d["pluginCommit"]}.Describe(DefaultPluginRepository)
+	}
+	a.progress("Installed: Substrate %s with the Azure Blob plugin %s (phase %s)", substrate, plugin, d["phase"])
+	return nil
 }
 
 func NewLog(c Config) (*os.File, error) {

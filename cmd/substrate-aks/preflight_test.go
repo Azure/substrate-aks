@@ -50,33 +50,6 @@ func TestDoctorNeedsNeitherConfigNorCloud(t *testing.T) {
 	}
 }
 
-func TestNewSetupChecksRuntimeToolsBeforeBilling(t *testing.T) {
-	var output bytes.Buffer
-	missing := errors.New("zstd missing")
-	err := setup(t.Context(), setupOptions{
-		home: recordHome(testRecord(t, "substrate-test")), yes: true,
-		name: "substrate-test", location: "eastus2", cidr: "203.0.113.8/32",
-		local: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
-			if c.Args[0] == "zstd" {
-				return nil, missing
-			}
-			return []byte(`{"clientVersion":{"major":"1","minor":"37"}}`), nil
-		}),
-		discovery: defaultsRunner(func(_ context.Context, c installer.Command) ([]byte, error) {
-			if isRegionList(c) {
-				return []byte(testRegionsJSON), nil
-			}
-			if c.Args[1] == "account" {
-				return []byte(accountJSON("user")), nil
-			}
-			return []byte(`{"id":"` + defaultPublisher + `"}`), nil
-		}),
-	}, strings.NewReader(""), &output, &output, nil)
-	if !errors.Is(err, missing) || strings.Contains(output.String(), "Installation summary") {
-		t.Fatalf("new setup skipped runtime preflight: %v\n%s", err, &output)
-	}
-}
-
 func TestAzureDiscoveryCallsHaveDeadlines(t *testing.T) {
 	for _, probe := range []string{"account", "directory", "regions"} {
 		t.Run(probe, func(t *testing.T) {

@@ -183,7 +183,7 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 }
 
 func TestSetupForwardsContainerEngineOnlyToBuildPrerequisitesAndImages(t *testing.T) {
-	path := testCLIConfig(t)
+	path := testSourceCLIConfig(t)
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, containerEngine: "podman", discovery: subscriptionDisplayRunner(t)},
 		strings.NewReader(""), &output, &output, func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -215,7 +215,7 @@ func TestSetupShowsEngineBeforeBillingConfirmation(t *testing.T) {
 		{"explicit Podman", "podman", "podman", "podman (explicit selection)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := testCLIConfig(t)
+			path := testSourceCLIConfig(t)
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{
 				home: recordHome(path), name: recordName(path), containerEngine: tc.requested, discovery: subscriptionDisplayRunner(t),
@@ -247,7 +247,7 @@ func TestSetupShowsEngineBeforeBillingConfirmation(t *testing.T) {
 func TestSetupOffersBothEnginesAndPinsInteractiveChoice(t *testing.T) {
 	for _, selection := range []string{"", "podman"} {
 		t.Run("selection="+selection, func(t *testing.T) {
-			path := testCLIConfig(t)
+			path := testSourceCLIConfig(t)
 			var output bytes.Buffer
 			var probes []string
 			engine := selection
@@ -285,7 +285,7 @@ func TestSetupOffersBothEnginesAndPinsInteractiveChoice(t *testing.T) {
 func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 	for _, requested := range []string{"", "docker", "podman"} {
 		t.Run("requested="+requested, func(t *testing.T) {
-			path := testCLIConfig(t)
+			path := testSourceCLIConfig(t)
 			var output bytes.Buffer
 			var probes []string
 			yes, answers, engine := requested == "", "no\n", requested
@@ -324,9 +324,7 @@ func TestSetupSkipsEnginePickerForAutomationAndExplicitSelection(t *testing.T) {
 	}
 }
 
-func TestNewInstallationChoosesEngineBeforeAzureDiscovery(t *testing.T) {
-	scratch := t.TempDir()
-	t.Setenv("TMPDIR", scratch)
+func TestNewInstallationNeedsNoImageBuilder(t *testing.T) {
 	path := testRecord(t, "substrate-test")
 	var output bytes.Buffer
 	var calls []string
@@ -341,29 +339,21 @@ func TestNewInstallationChoosesEngineBeforeAzureDiscovery(t *testing.T) {
 			calls = append(calls, c.Args[0])
 			return []byte("Status: running\n"), nil
 		}),
-	}, strings.NewReader("podman\n"), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
+	}, strings.NewReader(""), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
 		t.Fatal("unfinished setup reached installation stages")
 		return nil
 	})
 	if err == nil {
 		t.Fatal("setup continued without the remaining answers")
 	}
-	text := strings.Join(strings.Fields(output.String()), " ")
-	picker := strings.Index(text, "Image builder: docker or podman [docker]")
-	first := slices.Index(calls, "azure")
-	if picker < 0 || first < 0 || slices.Contains(calls[first:], "docker") || slices.Contains(calls[first:], "podman") {
-		t.Fatalf("new installation did not choose its builder before Azure discovery: %v\n%s", calls, text)
-	}
-	if left, _ := os.ReadDir(scratch); len(left) != 0 {
-		t.Fatalf("builder probe left its throwaway workspace behind: %v", left)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("builder probe created the installation before it was configured: %v", err)
+	// New installations import release images, so neither builder is probed.
+	if slices.Contains(calls, "docker") || slices.Contains(calls, "podman") || strings.Contains(output.String(), "Image builder: docker or podman") {
+		t.Fatalf("new installation probed or offered an image builder: %v\n%s", calls, &output)
 	}
 }
 
 func TestSetupEnginePickerEOFStopsBeforeConfirmationAndStages(t *testing.T) {
-	path := testCLIConfig(t)
+	path := testSourceCLIConfig(t)
 	var output bytes.Buffer
 	err := setupForTest(t.Context(), setupOptions{
 		home: recordHome(path), name: recordName(path), discovery: subscriptionDisplayRunner(t),
@@ -380,7 +370,7 @@ func TestSetupEnginePickerEOFStopsBeforeConfirmationAndStages(t *testing.T) {
 }
 
 func TestSetupPinsAutoDetectedEngineAcrossStages(t *testing.T) {
-	path := testCLIConfig(t)
+	path := testSourceCLIConfig(t)
 	var output bytes.Buffer
 	var probes []string
 	err := setupForTest(t.Context(), setupOptions{
@@ -408,7 +398,7 @@ func TestSetupPinsAutoDetectedEngineAcrossStages(t *testing.T) {
 func TestSetupBuilderFailureStopsBeforeBillingConfirmation(t *testing.T) {
 	for _, phase := range []string{"daemon", "selected builder"} {
 		t.Run(phase, func(t *testing.T) {
-			path := testCLIConfig(t)
+			path := testSourceCLIConfig(t)
 			var output bytes.Buffer
 			unavailable := errors.New("builder unavailable")
 			err := setupForTest(t.Context(), setupOptions{

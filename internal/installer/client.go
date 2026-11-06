@@ -21,14 +21,14 @@ func (a App) SetupClient(ctx context.Context) (ClientSetup, error) {
 	if err != nil {
 		return ClientSetup{}, err
 	}
-	root, err := a.prepare(ctx, i)
-	if err != nil {
-		return ClientSetup{}, err
-	}
 	if err := a.credentials(ctx); err != nil {
 		return ClientSetup{}, err
 	}
 	if err := a.guardInstall(ctx, fingerprint(a.Config, i), "client"); err != nil {
+		return ClientSetup{}, err
+	}
+	root, err := a.prepare(ctx, i)
+	if err != nil {
 		return ClientSetup{}, err
 	}
 

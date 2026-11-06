@@ -77,6 +77,9 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if err := a.guardWorkerPool(cluster); err != nil {
+			return err
+		}
 	}
 	a.progress("Checking subscription deployment and role-assignment permissions")
 	scope := "/subscriptions/" + a.Config.Azure.SubscriptionID
@@ -169,6 +172,18 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		additional := int64(count) * cpus
 		needed[strings.ToLower(family)] += additional
 		total += additional
+	}
+	if w := a.Config.AKS.WorkerPool; w.osDiskType() == "Ephemeral" {
+		a.progress("Checking that %s can hold a %d GB ephemeral OS disk on local storage", w.VMSize, w.osDiskSizeGB())
+		if skuCatalog == nil {
+			skuCatalog, err = a.regionalSKUCatalog(ctx)
+			if err != nil {
+				return err
+			}
+		}
+		if err := ephemeralOSDiskFits(skuCatalog, w.VMSize, w.osDiskSizeGB()); err != nil {
+			return err
+		}
 	}
 	if total > 0 {
 		a.progress("Checking regional and VM-family CPU quota for %d additional vCPUs", total)
@@ -295,4 +310,43 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 		return "", 0, fmt.Errorf("VM SKU %s has no usable CPU/family information", size)
 	}
 	return "", 0, fmt.Errorf("VM SKU %s is not available in %s", size, a.Config.Azure.Location)
+}
+
+// ephemeralOSDiskFits checks that size supports ephemeral OS disks and that
+// sizeGB fits its largest local placement (NVMe, cache or resource disk), up to
+// Azure's ephemeral OS disk limit.
+func ephemeralOSDiskFits(data []byte, size string, sizeGB int) error {
+	var skus []struct {
+		Name         string
+		Capabilities []struct{ Name, Value string }
+	}
+	if err := json.Unmarshal(data, &skus); err != nil {
+		return fmt.Errorf("reading VM SKU %s: %w", size, err)
+	}
+	for _, sku := range skus {
+		if !strings.EqualFold(sku.Name, size) {
+			continue
+		}
+		capabilities := map[string]string{}
+		for _, capability := range sku.Capabilities {
+			capabilities[capability.Name] = capability.Value
+		}
+		if !strings.EqualFold(capabilities["EphemeralOSDiskSupported"], "True") {
+			return fmt.Errorf("VM size %s does not support ephemeral OS disks; choose a size with local storage, such as Standard_D8ds_v7, or set aks.workerPool.osDiskType to Managed", size)
+		}
+		number := func(name string) int64 {
+			value, _ := strconv.ParseInt(capabilities[name], 10, 64)
+			return max(0, value)
+		}
+		var largestGB int64
+		if strings.Contains(capabilities["SupportedEphemeralOSDiskPlacements"], "NvmeDisk") {
+			largestGB = number("NvmeDiskSizeInMiB") / 1024
+		}
+		largestGB = min(max(largestGB, number("CachedDiskBytes")>>30, number("MaxResourceVolumeMB")/1024), MaxEphemeralOSDiskSizeGB)
+		if int64(sizeGB) > largestGB {
+			return fmt.Errorf("a %d GB ephemeral OS disk does not fit %s's %d GB of local storage; lower aks.workerPool.osDiskSizeGB or choose a larger size", sizeGB, size, largestGB)
+		}
+		return nil
+	}
+	return fmt.Errorf("VM SKU %s is not available", size)
 }

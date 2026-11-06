@@ -21,20 +21,21 @@ func fingerprint(c Config, i Infrastructure) string {
 	// Preserve existing deployment fingerprints independently of the config layout.
 	type sourceSettings struct {
 		Source
-		ImageRepo   string `json:"imageRepo"`
-		ImageTag    string `json:"imageTag"`
-		PluginImage string `json:"pluginImage"`
-		AssetsDir   string `json:"assetsDir"`
+		PluginSource Source `json:"pluginSource"`
+		ImageRepo    string `json:"imageRepo"`
+		ImageTag     string `json:"imageTag"`
+		PluginImage  string `json:"pluginImage"`
+		AssetsDir    string `json:"assetsDir"`
 	}
 	source := sourceSettings{
-		c.Substrate.Source, c.Substrate.Images.Repository, c.Substrate.Images.Tag,
+		c.Substrate.Source, c.Substrate.PluginSource, c.Substrate.Images.Repository, c.Substrate.Images.Tag,
 		c.Substrate.Images.Plugin, c.Substrate.Runtime.AssetsDir,
 	}
 	data, _ := json.Marshal(struct {
 		Source         sourceSettings
 		Infrastructure Infrastructure
 		Adapter        int
-	}{source, i, 5})
+	}{source, i, 6})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -59,7 +60,7 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 		if err := json.Unmarshal(data, &p); err != nil {
 			return "", err
 		}
-		if p.Fingerprint != fp || len(p.Files) != 7 {
+		if p.Fingerprint != fp || len(p.Files) != 6 {
 			return "", errors.New("managed source marker is inconsistent; do not modify managed checkouts")
 		}
 		for rel, want := range p.Files {
@@ -123,8 +124,21 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 	if err := a.fetchPinnedSource(ctx, stage); err != nil {
 		return "", err
 	}
+	// The plugin checkout is read for its components, never built or kept.
+	pluginRoot, err := os.MkdirTemp(a.Config.workspace(), "plugin-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(pluginRoot)
+	if err := a.fetchPluginSource(ctx, pluginRoot); err != nil {
+		return "", err
+	}
+	plugin, err := pluginComponents(pluginRoot, a.Config, i)
+	if err != nil {
+		return "", err
+	}
 	a.progress("Adapting Substrate manifests for this Azure installation")
-	paths, err := adaptSource(stage, a.Config, i)
+	paths, err := adaptSource(stage, a.Config, plugin)
 	if err != nil {
 		return "", err
 	}
@@ -148,6 +162,14 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 	}
 	return dest, nil
 }
+
+const routerClientSPIFFEID = "spiffe://cluster.local/ns/ate-system/sa/atenet-client"
+
+// Placeholders for ate-setup's GCS-only snapshot transfer account settings.
+const (
+	transferPlaceholderProject = "substrate-aks-unused"
+	transferPlaceholderAccount = "unused"
+)
 
 func (a App) upstream(ctx context.Context, root string, args ...string) error {
 	c := a.Config
@@ -179,7 +201,21 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		"--ko-default-platforms", "linux/amd64",
 		"--snapshot-location", "azblob://snapshots/cluster/",
 		"--credential-provider", `{"name":"k8s.io"}`,
-		"--ateapi-postgres-storage-class", "managed-csi")
+		"--ateapi-postgres-storage-class", "managed-csi",
+		// kubectl ate proxy presents a pod certificate for this ServiceAccount;
+		// atenet-router admits no ingress client unless it is allowed.
+		"--ingress-allowed-spiffe-ids", routerClientSPIFFEID,
+		// ate-setup requires a GCS snapshot transfer account on every cluster
+		// but kind. It only writes the email into a ConfigMap key read by the
+		// in-tree sidecar's arguments, which the Azure plugin component
+		// replaces, so these placeholders are never used.
+		"--gcp-project-id", transferPlaceholderProject,
+		"--snapshot-transfer-gsa-name", transferPlaceholderAccount)
+	if args[1] == "ate-system" {
+		// ate-setup would stage microVM assets to GCS; the installer uploads
+		// them to Blob storage and applies the microvm SandboxConfig itself.
+		command = append(command, "--sandbox-classes", "gvisor")
+	}
 	a.progress("Deploying %s and waiting for workloads to become ready (up to 10 minutes per rollout)", strings.Join(args[1:], " "))
 	_, err := a.Runner.Run(ctx, Command{
 		Dir: root, Args: command, Env: env,

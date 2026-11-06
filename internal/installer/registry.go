@@ -123,45 +123,73 @@ func (a App) registryConfig() (string, map[string]json.RawMessage, error) {
 
 func (a App) fetchPinnedSource(ctx context.Context, dir string) error {
 	a.progress("Fetching Substrate source at the configured commit")
+	if err := a.fetchSource(ctx, dir, a.Config.Substrate.Source); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(dir, sandboxTemplate)); err != nil {
+		return fmt.Errorf("selected source has no microVM SandboxConfig template: %w", err)
+	}
+	return nil
+}
+
+func (a App) fetchPluginSource(ctx context.Context, dir string) error {
+	a.progress("Fetching the Azure Blob object-store plugin at the configured commit")
+	if err := a.fetchSource(ctx, dir, a.Config.Substrate.PluginSource); err != nil {
+		return err
+	}
+	for _, rel := range []string{pluginComponent, pluginAssetsComponent, "cmd/azure-blob-objectstore-plugin"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			return fmt.Errorf("selected plugin source has no %s deployment contract: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+// fetchSource checks out s.Commit into dir. A configured tag must name the
+// same commit; the tag is never trusted on its own.
+func (a App) fetchSource(ctx context.Context, dir string, s Source) error {
+	ref := s.Commit
+	if s.Tag != "" {
+		ref = "+refs/tags/" + s.Tag + ":refs/tags/" + s.Tag
+	}
 	for _, args := range [][]string{
 		{"git", "init", "--quiet", "."},
-		{"git", "fetch", "--quiet", "--depth=1", a.Config.Substrate.Source.Repository, a.Config.Substrate.Source.Commit},
-		{"git", "checkout", "--quiet", "--detach", "FETCH_HEAD"},
+		{"git", "fetch", "--quiet", "--depth=1", s.Repository, ref},
 	} {
 		if _, err := a.Runner.Run(ctx, Command{Dir: dir, Args: args}); err != nil {
 			return err
 		}
 	}
+	if s.Tag != "" {
+		tagged, err := a.Runner.Run(ctx, Command{Dir: dir, Args: []string{"git", "rev-parse", "--verify", "refs/tags/" + s.Tag + "^{commit}"}})
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(tagged)) != s.Commit {
+			return fmt.Errorf("tag %s in %s names %s, not the configured commit %s", s.Tag, s.Repository, strings.TrimSpace(string(tagged)), s.Commit)
+		}
+	}
+	if _, err := a.Runner.Run(ctx, Command{Dir: dir, Args: []string{"git", "checkout", "--quiet", "--detach", s.Commit}}); err != nil {
+		return err
+	}
 	head, err := a.Runner.Run(ctx, Command{Dir: dir, Args: []string{"git", "rev-parse", "HEAD"}})
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(head)) != a.Config.Substrate.Source.Commit {
+	if strings.TrimSpace(string(head)) != s.Commit {
 		return errors.New("fetched source does not match configured commit")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "internal/plugins/azure-blob/config/kustomization.yaml")); err != nil {
-		return fmt.Errorf("selected source has no Azure Blob plugin deployment contract: %w", err)
 	}
 	return nil
 }
 
-// Only the disposable build checkout receives this startup adaptation.
-func prepareImagePublisher(root string) error {
-	path := filepath.Join(root, "cmd/ate-setup/internal/cmd/root.go")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading upstream publisher startup: %w", err)
+// sourceImageTag names images built from source. ate-setup publishes only
+// release-style tags, and the timestamp keeps rebuilds from overwriting them.
+func sourceImageTag(s Source, now time.Time) string {
+	base := s.Tag
+	if base == "" {
+		base = "v0.0.0"
 	}
-	const clusterSetup = "\t\tif err := cfg.EnsureClusterCredentials(cmd.Context()); err != nil {\n\t\t\treturn err\n\t\t}\n"
-	if strings.Count(string(data), clusterSetup) != 1 {
-		return errors.New("upstream publisher startup changed; update the Azure image-build adapter before publishing")
-	}
-	const publishSetup = "\t\tif cmd.Parent() == publishCmd {\n\t\t\tenv = &steps.Env{Cfg: cfg}\n\t\t\treturn nil\n\t\t}\n\n"
-	adapted := strings.Replace(string(data), clusterSetup, publishSetup+clusterSetup, 1)
-	if err := os.WriteFile(path, []byte(adapted), 0600); err != nil {
-		return fmt.Errorf("adapting upstream publisher startup: %w", err)
-	}
-	return nil
+	return base + "-azure." + s.Commit[:12] + "." + now.UTC().Format("20060102t150405")
 }
 
 func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
@@ -170,15 +198,23 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if c.Substrate.Images != (ImagesConfig{}) {
 		return BuildResult{}, errors.New("images are already configured; use images --check to verify reuse. Image bootstrap does not implement upgrades or overwrite an existing image set; after complete teardown use images --reset-config")
 	}
+	source := c.EffectiveImageSource()
+	if source == ImageSourceRelease && c.Substrate.Source.Tag == "" {
+		return BuildResult{}, errors.New(`release images need substrate.source.tag naming the release of substrate.source.commit; set it, or set substrate.imageSource to "source" to build the commit`)
+	}
 	r, err := a.registry(ctx)
 	if err != nil {
 		return BuildResult{}, err
 	}
-	engine, env, err := a.imageBuildEngine(ctx)
-	if err != nil {
-		return BuildResult{}, err
+	var engine string
+	var env []string
+	if source == ImageSourceBuild {
+		engine, env, err = a.imageBuildEngine(ctx)
+		if err != nil {
+			return BuildResult{}, err
+		}
 	}
-	_, err = a.loginRegistry(ctx, r)
+	dockerDir, err := a.loginRegistry(ctx, r)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -190,34 +226,58 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if err := a.fetchPinnedSource(ctx, root); err != nil {
 		return BuildResult{}, err
 	}
-	a.progress("Preparing the image publisher without cluster dependencies")
-	if err := prepareImagePublisher(root); err != nil {
+	if err := prepareHelper(root); err != nil {
 		return BuildResult{}, err
 	}
-	if engine == "podman" {
-		if err := preparePodmanPublisher(root); err != nil {
+	repo := r.LoginServer + "/substrate"
+	var tag string
+	if source == ImageSourceRelease {
+		tag = c.Substrate.Source.Tag
+		if err := a.importReleaseImages(ctx, root, r, repo, tag); err != nil {
+			return BuildResult{}, err
+		}
+	} else {
+		if engine == "podman" {
+			if err := preparePodmanPublisher(root); err != nil {
+				return BuildResult{}, err
+			}
+		}
+		tag = sourceImageTag(c.Substrate.Source, time.Now())
+		a.progress("Building and pushing Substrate release images from source; this can take several minutes")
+		if _, err := a.Runner.Run(ctx, Command{
+			Dir: root, Env: append(append([]string{}, env...), "VERSION="+tag),
+			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-images",
+				"--no-dev-env", "--ko-docker-repo", repo, "--ko-default-platforms", "linux/amd64"},
+		}); err != nil {
 			return BuildResult{}, err
 		}
 	}
-	tag := "azure-" + c.Substrate.Source.Commit[:12] + "-" + time.Now().UTC().Format("20060102t150405.000000000")
-	env = append(env, "VERSION="+tag)
-	repo := r.LoginServer + "/substrate"
-	a.progress("Building and pushing Substrate platform and demo images; this can take several minutes")
-	_, err = a.Runner.Run(ctx, Command{
-		Dir: root, Env: env,
-		Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-images",
-			"--no-dev-env", "--ko-docker-repo", repo, "--ko-default-platforms", "linux/amd64"},
-	})
+	ko, err := a.koBinary(ctx, root)
 	if err != nil {
+		return BuildResult{}, err
+	}
+	koEnv := []string{"DOCKER_CONFIG=" + dockerDir, "KO_DEFAULTPLATFORMS=linux/amd64"}
+	a.progress("Building and pushing the counter demo image, which releases do not publish")
+	if _, err := a.Runner.Run(ctx, Command{
+		Dir: root, Env: append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+repo),
+		Args: []string{ko, "build", "--base-import-paths", "--tags", tag, "./" + demoImagePackage},
+	}); err != nil {
+		return BuildResult{}, err
+	}
+	pluginRoot, err := os.MkdirTemp(c.workspace(), "plugin-")
+	if err != nil {
+		return BuildResult{}, err
+	}
+	defer os.RemoveAll(pluginRoot)
+	if err := a.fetchPluginSource(ctx, pluginRoot); err != nil {
 		return BuildResult{}, err
 	}
 	a.progress("Building and pushing the Azure Blob plugin image")
 	pluginRepo := repo + "/plugins/objectstore/azure-blob"
 	plugin, err := a.Runner.Run(ctx, Command{
-		Dir: filepath.Join(root, "internal/plugins/azure-blob"),
-		Env: append(append([]string{}, env...), "KO_DOCKER_REPO="+pluginRepo, "KO_DEFAULTPLATFORMS=linux/amd64"),
-		Args: []string{"go", "run", "github.com/google/ko@v0.19.1", "build", "--bare",
-			"--tags", tag, "./cmd/azure-blob-objectstore-plugin"},
+		Dir:  pluginRoot,
+		Env:  append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+pluginRepo),
+		Args: []string{ko, "build", "--bare", "--tags", tag, "./cmd/azure-blob-objectstore-plugin"},
 	})
 	if err != nil {
 		return BuildResult{}, err
@@ -231,19 +291,91 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		a.progress("Downloading and assembling the pinned amd64 microVM runtime assets")
 		assetsDir = filepath.Join(c.workspace(), "assets")
 		if _, err := a.Runner.Run(ctx, Command{
-			Dir: root, Args: []string{"bash", "hack/microvm-assets/assemble.sh"},
-			Env: []string{"ARCH=amd64", "OUT=" + assetsDir},
+			Dir: root, Env: []string{"NO_DEV_ENV=1"},
+			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "microvm-assets",
+				filepath.Join(root, sandboxTemplate), assetsDir, "amd64", "--no-dev-env", "--no-report-defaults"},
 		}); err != nil {
 			return BuildResult{}, err
 		}
 	}
 	a.progress("Verifying runtime asset checksums")
-	if err := verifyRuntimeAssets(root, assetsDir); err != nil {
+	if _, err := verifyRuntimeAssets(root, assetsDir); err != nil {
 		return BuildResult{}, err
 	}
 	return BuildResult{
 		Images: ImagesConfig{Repository: repo, Tag: tag, Plugin: image}, AssetsDir: assetsDir,
 	}, nil
+}
+
+// demoImagePackage is the demo the installer deploys. Releases do not publish
+// it, so every image source builds it into the owned registry.
+const demoImagePackage = "demos/counter"
+
+// koBinary locates the ko the pinned source pins for its own builds.
+func (a App) koBinary(ctx context.Context, root string) (string, error) {
+	data, err := a.Runner.Run(ctx, Command{Dir: filepath.Join(root, "hack/tools/ko"), Args: []string{"go", "tool", "-n", "ko"}})
+	if err != nil {
+		return "", fmt.Errorf("locating the pinned ko tool: %w", err)
+	}
+	binary := strings.TrimSpace(string(data))
+	if !filepath.IsAbs(binary) {
+		return "", errors.New("the pinned ko tool path is not absolute")
+	}
+	return binary, nil
+}
+
+type releaseImage struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"`
+}
+
+var imageNamePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+
+// importReleaseImages copies every image the pinned release publishes into the
+// owned registry by digest, after the pinned source's own inventory confirms
+// that each one was built from the configured commit.
+func (a App) importReleaseImages(ctx context.Context, root string, r Registry, repo, tag string) error {
+	a.progress("Verifying that the %s release images were built from the configured commit", tag)
+	data, err := a.Runner.Run(ctx, Command{
+		Dir: root, Env: []string{"NO_DEV_ENV=1"},
+		Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-inventory",
+			DefaultReleaseImages, tag, a.Config.Substrate.Source.Commit, "--no-dev-env", "--no-report-defaults"},
+	})
+	if err != nil {
+		return fmt.Errorf("verifying release images (nothing was imported): %w", err)
+	}
+	var inventory []releaseImage
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&inventory); err != nil || len(inventory) < 3 {
+		return errors.New("the pinned release inventory returned no usable image list")
+	}
+	prefix := strings.TrimPrefix(repo, r.LoginServer+"/")
+	for _, image := range inventory {
+		if !imageNamePattern.MatchString(image.Name) || !digestPattern.MatchString("image@"+image.Digest) {
+			return errors.New("the pinned release inventory returned an invalid image reference")
+		}
+		target := prefix + "/" + image.Name + ":" + tag
+		a.progress("Importing %s into %s", image.Name, r.LoginServer)
+		// Imports are server-side and keep the digest; --force only retags the
+		// verified digest on a retry.
+		if _, err := a.az(ctx, "acr", "import", "--name", r.Name,
+			"--source", DefaultReleaseImages+"/"+image.Name+"@"+image.Digest,
+			"--image", target, "--force"); err != nil {
+			return fmt.Errorf("importing %s (the upload identity needs Container Registry Data Importer and Data Reader on the owned registry; provision grants it, and new grants can take a few minutes to propagate): %w", image.Name, err)
+		}
+		shown, err := a.az(ctx, "acr", "repository", "show", "--name", r.Name, "--image", target)
+		if err != nil {
+			return err
+		}
+		var manifest struct {
+			Digest string `json:"digest"`
+		}
+		if err := json.Unmarshal(shown, &manifest); err != nil || manifest.Digest != image.Digest {
+			return fmt.Errorf("imported %s does not have the verified release digest", target)
+		}
+	}
+	return nil
 }
 
 func pluginDigestReference(output, repository, tag string) (string, error) {

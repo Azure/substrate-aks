@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +14,19 @@ import (
 	"strings"
 )
 
+// The Substrate release and the Azure Blob object-store plugin revision the
+// installer is reviewed against. Bump them together with the contract tests.
 const (
-	DefaultRepository = "https://github.com/aramase/substrate.git"
-	DefaultCommit     = "c3b44aa46312e073a6384f68723a7b14dffd5518"
+	DefaultRepository = "https://github.com/agent-substrate/substrate.git"
+	DefaultTag        = "v1.0.0"
+	DefaultCommit     = "b34fbee742906494b5eb4f1f36987176bf8770a4"
+	// DefaultReleaseImages is where upstream publishes DefaultTag's images.
+	DefaultReleaseImages = "ghcr.io/agent-substrate/substrate"
+
+	// The plugin is pinned to an unreleased pull request head until it is tagged.
+	DefaultPluginRepository = "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git"
+	DefaultPluginCommit     = "b21387e82cee399c65f49178a665727534e1c073"
+
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
 	SystemVMSize        = "Standard_D4s_v6"
@@ -74,20 +85,109 @@ type OperatorConfig struct {
 	PrincipalType string `json:"principalType"`
 }
 
+// WorkerPoolConfig sizes the microVM pool. AKS fixes OSDiskType, OSDiskSizeGB
+// and MaxPods when the pool is created; changing them needs a new installation.
 type WorkerPoolConfig struct {
 	VMSize string `json:"vmSize"`
 	Count  int    `json:"count"`
+	// OSDiskType is Managed or Ephemeral, which places the OS disk, and with it
+	// /var/lib/ate, on the VM's local storage (NVMe on v6/v7 "d" sizes).
+	OSDiskType   string `json:"osDiskType,omitempty"`
+	OSDiskSizeGB int    `json:"osDiskSizeGB,omitempty"`
+	// MaxPods is the AKS per-node pod limit; 0 keeps the AKS default.
+	MaxPods int `json:"maxPods,omitempty"`
+}
+
+const (
+	DefaultWorkerOSDiskType   = "Managed"
+	DefaultWorkerOSDiskSizeGB = 128
+	// Azure caps ephemeral OS disks at 2,040 GiB, below the managed limit.
+	MaxEphemeralOSDiskSizeGB = 2040
+	// AKSDefaultMaxPods is the pod limit AKS applies with Azure CNI overlay.
+	AKSDefaultMaxPods = 250
+	// MinPoolPods is the fewest pods AKS lets a node pool hold in total.
+	MinPoolPods = 30
+)
+
+func (w WorkerPoolConfig) osDiskType() string {
+	if w.OSDiskType == "" {
+		return DefaultWorkerOSDiskType
+	}
+	return w.OSDiskType
+}
+
+func (w WorkerPoolConfig) osDiskSizeGB() int {
+	if w.OSDiskSizeGB == 0 {
+		return DefaultWorkerOSDiskSizeGB
+	}
+	return w.OSDiskSizeGB
 }
 
 type SubstrateConfig struct {
-	Source  Source        `json:"source"`
-	Images  ImagesConfig  `json:"images"`
-	Runtime RuntimeConfig `json:"runtime"`
+	Source       Source `json:"source"`
+	PluginSource Source `json:"pluginSource"`
+	// ImageSource selects how images bootstraps substrate.images: "release"
+	// (the default) imports the published release images, and "source" builds
+	// them from substrate.source.
+	ImageSource ImageSource   `json:"imageSource,omitempty"`
+	Images      ImagesConfig  `json:"images"`
+	Runtime     RuntimeConfig `json:"runtime"`
 }
 
+type ImageSource string
+
+const (
+	ImageSourceRelease ImageSource = "release"
+	ImageSourceBuild   ImageSource = "source"
+)
+
+// Source pins a Git revision. Tag is optional; when set, the tag must name
+// Commit, and release images are looked up by it.
 type Source struct {
 	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
 	Commit     string `json:"commit"`
+}
+
+// UnmarshalJSON replaces the whole default pin, so a configured commit never
+// inherits the default tag.
+func (s *Source) UnmarshalJSON(data []byte) error {
+	type plain Source
+	var p plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return err
+	}
+	*s = Source(p)
+	return nil
+}
+
+// EffectiveImageSource is substrate.imageSource, defaulting to release.
+func (c Config) EffectiveImageSource() ImageSource {
+	if c.Substrate.ImageSource == "" {
+		return ImageSourceRelease
+	}
+	return c.Substrate.ImageSource
+}
+
+// Describe names the pinned revision for people: the tag when there is one,
+// then the short commit, then the repository when it is not the default.
+func (s Source) Describe(defaultRepository string) string {
+	text := s.Commit[:min(12, len(s.Commit))]
+	if s.Tag != "" {
+		text = s.Tag + " (" + text + ")"
+	}
+	if s.Repository != defaultRepository {
+		text += " from " + s.Repository
+	}
+	return text
+}
+
+// NeedsImageBuilder reports whether images still has to build with Docker or
+// Podman: only source builds do, and only until images are configured.
+func (c Config) NeedsImageBuilder() bool {
+	return c.EffectiveImageSource() == ImageSourceBuild && c.Substrate.Images == (ImagesConfig{})
 }
 
 type ImagesConfig struct {
@@ -105,10 +205,12 @@ func DefaultConfig() Config {
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
-			WorkerPool:        WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1},
+			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,
+				OSDiskType: DefaultWorkerOSDiskType, OSDiskSizeGB: DefaultWorkerOSDiskSizeGB},
 		},
 		Substrate: SubstrateConfig{
-			Source: Source{Repository: DefaultRepository, Commit: DefaultCommit},
+			Source:       Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit},
+			PluginSource: Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit},
 		},
 	}
 }
@@ -119,6 +221,9 @@ var (
 	shaPattern    = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}$`)
 	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+	// releasePattern is upstream's release tag form, which ate-setup requires
+	// of published image tags.
+	releasePattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 )
 
 func LoadConfig(path string) (Config, error) {
@@ -193,6 +298,21 @@ func (c Config) Validate() error {
 	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
 		return errors.New("aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")
 	}
+	if t := c.AKS.WorkerPool.OSDiskType; t != "" && t != "Managed" && t != "Ephemeral" {
+		return errors.New("aks.workerPool.osDiskType must be Managed or Ephemeral")
+	}
+	if size := c.AKS.WorkerPool.OSDiskSizeGB; size != 0 && (size < 30 || size > 2048) {
+		return errors.New("aks.workerPool.osDiskSizeGB must be 30-2048")
+	}
+	if c.AKS.WorkerPool.osDiskType() == "Ephemeral" && c.AKS.WorkerPool.osDiskSizeGB() > MaxEphemeralOSDiskSizeGB {
+		return fmt.Errorf("aks.workerPool.osDiskSizeGB must be at most %d for an Ephemeral OS disk", MaxEphemeralOSDiskSizeGB)
+	}
+	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && (pods < 10 || pods > 250) {
+		return errors.New("aks.workerPool.maxPods must be 10-250, or omitted for the AKS default")
+	}
+	if pods := c.AKS.WorkerPool.MaxPods; pods != 0 && pods*c.AKS.WorkerPool.Count < MinPoolPods {
+		return fmt.Errorf("aks.workerPool.maxPods times aks.workerPool.count must be at least %d, which AKS requires of every pool", MinPoolPods)
+	}
 	if len(c.AKS.APIAuthorizedCIDRs) == 0 && !c.AKS.AllowUnrestrictedAPI {
 		return errors.New("aks.apiAuthorizedCidrs must allow your client/CI IP ranges; only explicit aks.allowUnrestrictedApi=true permits an empty allowlist")
 	}
@@ -232,12 +352,30 @@ func (c Config) Validate() error {
 			return errors.New("aks.operator.principalType must be User, ServicePrincipal, or Group")
 		}
 	}
-	u, err := url.Parse(c.Substrate.Source.Repository)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("substrate.source.repository must be an HTTPS Git repository URL without credentials, query or fragment")
+	if err := c.Substrate.Source.validate("substrate.source"); err != nil {
+		return err
 	}
-	if !shaPattern.MatchString(c.Substrate.Source.Commit) {
-		return errors.New("substrate.source.commit must be an exact lowercase 40-character commit SHA, not a branch")
+	if err := c.Substrate.PluginSource.validate("substrate.pluginSource"); err != nil {
+		return err
+	}
+	switch c.Substrate.ImageSource {
+	case "", ImageSourceRelease, ImageSourceBuild:
+	default:
+		return errors.New(`substrate.imageSource must be "release" or "source"`)
+	}
+	return nil
+}
+
+func (s Source) validate(field string) error {
+	u, err := url.Parse(s.Repository)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s.repository must be an HTTPS Git repository URL without credentials, query or fragment", field)
+	}
+	if !shaPattern.MatchString(s.Commit) {
+		return fmt.Errorf("%s.commit must be an exact lowercase 40-character commit SHA, not a branch", field)
+	}
+	if s.Tag != "" && !releasePattern.MatchString(s.Tag) {
+		return fmt.Errorf("%s.tag must be a release tag such as v1.0.0 or v1.0.0-rc.3, or omitted", field)
 	}
 	return nil
 }

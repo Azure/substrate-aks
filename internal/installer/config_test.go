@@ -26,11 +26,12 @@ func testConfig(t *testing.T) Config {
 		},
 		AKS: AKSConfig{
 			ClusterName: "substrate-test", KubernetesVersion: "1.37",
-			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1},
+			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128},
 			APIAuthorizedCIDRs: []string{"203.0.113.8/32"},
 		},
 		Substrate: SubstrateConfig{
-			Source: Source{Repository: DefaultRepository, Commit: DefaultCommit},
+			Source:       DefaultConfig().Substrate.Source,
+			PluginSource: DefaultConfig().Substrate.PluginSource,
 			Images: ImagesConfig{
 				Repository: "example.invalid/substrate", Tag: "experimental",
 				Plugin: "example.invalid/azure-plugin@sha256:" + strings.Repeat("a", 64),
@@ -56,6 +57,12 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 		change func(*Config)
 	}{
 		{"branch instead of SHA", func(c *Config) { c.Substrate.Source.Commit = "main" }},
+		{"plugin branch instead of SHA", func(c *Config) { c.Substrate.PluginSource.Commit = "main" }},
+		{"plugin repository with credentials", func(c *Config) {
+			c.Substrate.PluginSource.Repository = "https://user:token@github.com/example/plugin.git"
+		}},
+		{"non-release source tag", func(c *Config) { c.Substrate.Source.Tag = "main" }},
+		{"unknown image source", func(c *Config) { c.Substrate.ImageSource = "ghcr" }},
 		{"unrestricted API", func(c *Config) { c.AKS.APIAuthorizedCIDRs = []string{"0.0.0.0/0"} }},
 		{"missing API ranges", func(c *Config) { c.AKS.APIAuthorizedCIDRs = nil }},
 		{"contradictory API access", func(c *Config) { c.AKS.AllowUnrestrictedAPI = true }},
@@ -134,6 +141,41 @@ func TestConfigWorkerPoolBoundaries(t *testing.T) {
 	}
 }
 
+func TestConfigWorkerDiskAndPodBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*WorkerPoolConfig)
+		ok     bool
+	}{
+		{"defaults", func(*WorkerPoolConfig) {}, true},
+		{"unset", func(w *WorkerPoolConfig) { *w = WorkerPoolConfig{VMSize: w.VMSize, Count: 1} }, true},
+		{"ephemeral", func(w *WorkerPoolConfig) { w.OSDiskType = "Ephemeral" }, true},
+		{"lowercase type", func(w *WorkerPoolConfig) { w.OSDiskType = "ephemeral" }, false},
+		{"disk SKU as type", func(w *WorkerPoolConfig) { w.OSDiskType = "Premium_LRS" }, false},
+		{"smallest disk", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 30 }, true},
+		{"disk too small", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 29 }, false},
+		{"largest disk", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 2048 }, true},
+		{"disk too large", func(w *WorkerPoolConfig) { w.OSDiskSizeGB = 2049 }, false},
+		{"fewest pods", func(w *WorkerPoolConfig) { w.MaxPods, w.Count = 10, 3 }, true},
+		{"pool below the AKS minimum", func(w *WorkerPoolConfig) { w.MaxPods, w.Count = 10, 2 }, false},
+		{"one node at the AKS minimum", func(w *WorkerPoolConfig) { w.MaxPods = 30 }, true},
+		{"one node below the AKS minimum", func(w *WorkerPoolConfig) { w.MaxPods = 29 }, false},
+		{"too few pods", func(w *WorkerPoolConfig) { w.MaxPods = 9 }, false},
+		{"most pods", func(w *WorkerPoolConfig) { w.MaxPods = 250 }, true},
+		{"too many pods", func(w *WorkerPoolConfig) { w.MaxPods = 251 }, false},
+		{"largest ephemeral disk", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2040 }, true},
+		{"ephemeral disk over Azure's cap", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2041 }, false},
+		{"largest managed disk is too large for ephemeral", func(w *WorkerPoolConfig) { w.OSDiskType, w.OSDiskSizeGB = "Ephemeral", 2048 }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			tc.change(&c.AKS.WorkerPool)
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("worker disk or pod validation: %v", err)
+			}
+		})
+	}
+}
 func TestConfigRequiresExplicitUnrestrictedAPIOptIn(t *testing.T) {
 	c := testConfig(t)
 	c.AKS.APIAuthorizedCIDRs = nil
@@ -173,12 +215,35 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
-		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1}) ||
-		c.Substrate.Source != (Source{Repository: DefaultRepository, Commit: DefaultCommit}) ||
+		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128}) ||
+		c.Substrate.Source != (Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit}) ||
+		c.Substrate.PluginSource != (Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit}) ||
+		c.Substrate.ImageSource != "" ||
 		c.Installation.Dir != dir ||
 		c.Installation.Ownership != (Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}) ||
 		c.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
 		t.Fatalf("grouped configuration lost settings, defaults or relative paths: %+v", c)
+	}
+}
+
+func TestConfiguredSourceDoesNotInheritDefaultTag(t *testing.T) {
+	c := testConfig(t)
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := strings.Repeat("c", 40)
+	data = []byte(strings.Replace(string(data), `"tag":"`+DefaultTag+`","commit":"`+DefaultCommit+`"`, `"commit":"`+other+`"`, 1))
+	path := filepath.Join(t.TempDir(), "installation.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Substrate.Source != (Source{Repository: DefaultRepository, Commit: other}) {
+		t.Fatalf("a configured commit inherited the default release tag: %+v", loaded.Substrate.Source)
 	}
 }
 
@@ -228,6 +293,7 @@ func TestCleanEnvironment(t *testing.T) {
 		"EXPECTED_JWT_ISSUER=https://caller.invalid", "DOCKER_BUILD_FLAGS=--no-cache",
 		"E2E_ATE_ENVOY_CONCURRENCY=4", "KIND_CLUSTER_NAME=other",
 		"BENCHMARK_ACTOR_MEMORY=1Gi", "ANTHROPIC_API_KEY=synthetic-test-value",
+		"SETUP_CSI=both", "STORAGE_CLASS=other",
 	)
 	got := cleanEnvironment(input)
 	if !slices.Equal(got, preserved) {

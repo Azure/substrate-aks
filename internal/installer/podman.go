@@ -29,7 +29,7 @@ func preparePodmanPublisher(root string) error {
 	}
 	qualified := string(source)
 	for _, image := range []struct{ from, to string }{
-		{"FROM rust:bookworm@sha256:", "FROM docker.io/library/rust:bookworm@sha256:"},
+		{"FROM --platform=$BUILDPLATFORM rust:bookworm@sha256:", "FROM --platform=$BUILDPLATFORM docker.io/library/rust:bookworm@sha256:"},
 		{"FROM envoyproxy/envoy:", "FROM docker.io/envoyproxy/envoy:"},
 	} {
 		if strings.Count(qualified, image.from) != 1 {

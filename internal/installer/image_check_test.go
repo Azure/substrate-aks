@@ -17,10 +17,26 @@ func imageCheckReplies(c Config, result string) []reply {
 		replies = append(replies, accountReply(c), reply{contains: "group exists", output: "true"}, ownerReply(c), registryReply(c),
 			acrLoginReply())
 	}
-	return append(replies,
-		reply{contains: "git init"}, reply{contains: "git fetch"}, reply{contains: "git checkout"},
-		reply{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
-		reply{contains: "publish check-images", output: result})
+	replies = append(replies, fetchReplies(c.Substrate.Source)...)
+	return append(replies, reply{contains: "publish check-images", output: result})
+}
+
+// installGuardReplies scripts install's read-only checks that run before the
+// pinned source is touched: infrastructure, credentials and the install record.
+// An empty record is a cluster with no ate-system namespace yet.
+func installGuardReplies(t *testing.T, c Config, record string) []reply {
+	t.Helper()
+	outputs, err := json.Marshal(testInfrastructure())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replies := []reply{{contains: "group exists", output: "true"}, ownerReply(c),
+		{contains: "deployment sub show", output: string(outputs)}, {contains: "aks get-credentials"}}
+	if record == "" {
+		return append(replies, reply{contains: "get namespace ate-system", output: ""})
+	}
+	return append(replies, reply{contains: "get namespace ate-system", output: "{}"},
+		reply{contains: "get configmap substrate-aks-install", output: record})
 }
 
 func TestSavedImagesInRecreatedRegistry(t *testing.T) {
@@ -149,7 +165,7 @@ func TestDestroyRecreateAndRecoverSavedImages(t *testing.T) {
 	if err != nil || !bytes.Equal(saved, before) {
 		t.Fatal("teardown or registry recreation silently rewrote saved images")
 	}
-	r = script(t, imageCheckReplies(c, `{"status":"missing","image":"substratetest123.azurecr.io/substrate/ate-idp-server:experimental","checked":1,"expected":18}`)...)
+	r = script(t, append(installGuardReplies(t, c, ""), imageCheckReplies(c, `{"status":"missing","image":"substratetest123.azurecr.io/substrate/ate-idp-server:experimental","checked":1,"expected":18}`)...)...)
 	if err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).Install(t.Context(), "ate-system"); !errors.Is(err, errImagesMissing) {
 		t.Fatalf("recreated empty registry reached installation: %v", err)
 	}
@@ -172,30 +188,47 @@ func TestInstallChecksImagesBeforePreparationAndCheckpoints(t *testing.T) {
 	for _, component := range []string{"ate-system", "atelet", "apiserver"} {
 		t.Run(component, func(t *testing.T) {
 			c := testConfig(t)
-			r := script(t, imageCheckReplies(c, `{"status":"missing","image":"example.invalid/substrate/podcertcontroller:experimental","checked":12,"expected":18}`)...)
+			// The script fails on any command beyond the read-only guards and
+			// the image check, so stale images reach no preparation, cluster
+			// writes, uploads or install checkpoints.
+			record := ""
+			if component != "ate-system" {
+				// Component redeploys need a completed installation.
+				record = `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"` + fingerprint(c, testInfrastructure()) + `","phase":"deployed"}}`
+			}
+			r := script(t, append(installGuardReplies(t, c, record),
+				imageCheckReplies(c, `{"status":"missing","image":"example.invalid/substrate/podcertcontroller:experimental","checked":12,"expected":18}`)...)...)
 			err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).Install(t.Context(), component)
 			if !errors.Is(err, errImagesMissing) {
 				t.Fatalf("install did not reject stale images: %v", err)
 			}
-			for _, call := range r.calls {
-				if len(call.Input) != 0 || call.Args[0] == "kubectl" ||
-					strings.Contains(strings.Join(call.Args, " "), "deployment sub show") {
-					t.Fatalf("stale images reached preparation, cluster probes, uploads or install checkpoints: %v", call.Args)
-				}
-			}
 		})
 	}
-	t.Run("valid images do not bypass infrastructure guards", func(t *testing.T) {
+	t.Run("ownership is checked before images", func(t *testing.T) {
 		c := testConfig(t)
 		want := errors.New("ownership lookup denied")
-		replies := append(imageCheckReplies(c, `{"status":"available","image":"","checked":18,"expected":18}`),
-			reply{contains: "group exists", err: want})
-		r := script(t, replies...)
-		err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).Install(t.Context(), "ate-system")
+		r := script(t, reply{contains: "group exists", err: want})
+		err := (App{Config: c, Runner: r}).Install(t.Context(), "ate-system")
 		if !errors.Is(err, want) {
-			t.Fatalf("image validation bypassed the installation's ownership guard: %v", err)
+			t.Fatalf("install did not stop at the installation's ownership guard: %v", err)
 		}
 	})
+}
+
+func TestInstallRejectsOtherRevisionsBeforeFetchingSource(t *testing.T) {
+	c := testConfig(t)
+	// An install record from a previous pin carries another fingerprint.
+	record := `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"from-an-older-revision","phase":"deployed"}}`
+	for _, run := range []func(App) error{
+		func(a App) error { return a.Install(t.Context(), "ate-system") },
+		func(a App) error { return a.Demo(t.Context()) },
+		func(a App) error { _, err := a.SetupClient(t.Context()); return err },
+	} {
+		r := script(t, installGuardReplies(t, c, record)...)
+		if err := run(App{Config: c, Runner: r}); err == nil || !strings.Contains(err.Error(), "upgrades are not implemented") {
+			t.Fatalf("an installation from another revision was not refused before its source was fetched: %v", err)
+		}
+	}
 }
 
 func TestImageCheckLoginFailureIsNotMissing(t *testing.T) {

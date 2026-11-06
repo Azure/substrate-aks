@@ -10,7 +10,7 @@ import (
 )
 
 func TestFingerprintDeploymentContract(t *testing.T) {
-	const expected = "9bbf1626ee2dedd9c0ddef6eb837b67edf2474f3a3f8908ccaa08a5b0a61fff2"
+	const expected = "1448f6d91894aa0a20c395b010919c2b45b20c874bfe5c7726671de8ddc5c777"
 	if got := fingerprint(testConfig(t), testInfrastructure()); got != expected {
 		t.Fatalf("deployment contract changed the installation fingerprint: %s", got)
 	}
@@ -24,7 +24,7 @@ func TestPreparedSourceRejectsModifiedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := prepared{Fingerprint: fp, Files: map[string]string{}}
-	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml", "demo-template.yaml"} {
+	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml"} {
 		data := []byte("prepared " + name)
 		if err := os.WriteFile(filepath.Join(root, name), data, 0600); err != nil {
 			t.Fatal(err)
@@ -191,6 +191,9 @@ func TestUpstreamRefreshesOwnedRegistryCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 			login, deploy := r.calls[len(r.calls)-2], r.calls[len(r.calls)-1]
+			if !strings.Contains(strings.Join(deploy.Args, " "), "--ingress-allowed-spiffe-ids "+routerClientSPIFFEID) {
+				t.Fatal("kubectl ate proxy cannot reach actors through atenet-router")
+			}
 			dockerEnv := "DOCKER_CONFIG=" + filepath.Join(c.workspace(), "docker")
 			for _, call := range []Command{deploy} {
 				found := false

@@ -2,7 +2,8 @@
 
 Run [Agent Substrate](https://github.com/agent-substrate/substrate) on Azure
 Kubernetes Service (AKS). The guided installer creates the Azure resources,
-builds the images, and installs Substrate.
+imports the Substrate release images, and installs Substrate with the
+[Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob).
 
 > [!WARNING]
 > **Experimental, single-tenant, and billable.** This quickstart creates a new AKS
@@ -24,13 +25,11 @@ builds the images, and installs Substrate.
 | Azure CLI | Sign in to the target subscription; install Bicep with `az bicep install` |
 | `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
 | Azure `kubelogin` | Signs `kubectl` in to the cluster with your Azure CLI login |
-| Docker with buildx or Podman | Running and able to build Linux/amd64 images |
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
 
-Building runtime assets also needs `bash`, `curl`, `tar --zstd`, `zstd`,
-`readlink -f`, and `sha256sum`. Follow the
-[macOS setup notes](docs/operations.md#macos-host-setup) for compatible tools.
+Docker with buildx or Podman is needed only to
+[build images from source](docs/configuration.md#image-source).
 
 ```sh
 git clone https://github.com/Azure/substrate-aks.git
@@ -61,7 +60,6 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 | `az account set --subscription SUBSCRIPTION_UUID` | Select a different subscription **before** creating an installation |
 | `bin/substrate-aks setup NAME` | Resume or reconcile a saved installation |
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
-| `bin/substrate-aks setup --container-engine=podman` | Force Podman instead of auto-detecting an image builder |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
@@ -78,8 +76,9 @@ automation options.
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
-| Images | Built from the pinned source and stored in a private Azure Container Registry (ACR) |
-| Storage | Azure Blob containers for snapshots and runtime assets |
+| Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
+| Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built there |
+| Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |
 
 > [!IMPORTANT]

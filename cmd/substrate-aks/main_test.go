@@ -250,8 +250,8 @@ func TestCLIImageVerificationReportsWorkspaceSteps(t *testing.T) {
 case "$1" in
   init|fetch|checkout) ;;
   rev-parse)
-    /bin/mkdir -p internal/plugins/azure-blob/config cmd/ate-setup/internal/cmd cmd/ate-setup/internal/steps
-    printf 'resources: []' > internal/plugins/azure-blob/config/kustomization.yaml
+    /bin/mkdir -p manifests/ate-install cmd/ate-setup/internal/cmd cmd/ate-setup/internal/steps
+    printf 'kind: SandboxConfig' > manifests/ate-install/sandboxconfig-microvm.yaml.tmpl
     printf '%s' '`+c.Substrate.Source.Commit+`';;
   *) exit 19;;
 esac

@@ -165,6 +165,7 @@ func TestStatusDisplaysResultsButNotSetupCommands(t *testing.T) {
 		reply{contains: "group exists", output: "true"}, ownerReply(c),
 		reply{contains: "deployment sub show", output: string(outputs)},
 		reply{contains: "aks get-credentials"},
+		reply{contains: "get configmap substrate-aks-install", output: ""},
 		reply{contains: "get pods,pvc", output: "pod status"},
 	)
 	if err := (App{Config: c, Runner: r}).Status(t.Context()); err != nil {
@@ -174,6 +175,40 @@ func TestStatusDisplaysResultsButNotSetupCommands(t *testing.T) {
 		if call.ShowOutput != (index == len(r.calls)-1) {
 			t.Fatalf("status hid its results or exposed setup command output: %+v", call)
 		}
+	}
+}
+
+func TestStatusReportsInstalledRevisionsFromTheRecord(t *testing.T) {
+	c := testConfig(t)
+	for _, tc := range []struct {
+		name, record string
+		want         []string
+	}{
+		{"current record",
+			`{"data":{"repository":"` + DefaultRepository + `","tag":"v1.0.0","commit":"` + DefaultCommit + `","pluginRepository":"` + DefaultPluginRepository + `","pluginCommit":"` + DefaultPluginCommit + `","phase":"deployed"}}`,
+			[]string{"v1.0.0 (" + DefaultCommit[:12] + ")", "plugin " + DefaultPluginCommit[:12], "phase deployed"}},
+		{"record from the previous pin",
+			`{"data":{"repository":"https://github.com/aramase/substrate.git","commit":"c3b44aa46312e073a6384f68723a7b14dffd5518","phase":"deployed"}}`,
+			[]string{"c3b44aa46312 from https://github.com/aramase/substrate.git", "plugin not recorded"}},
+		{"no installation", "", []string{"No Substrate installation is recorded"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lines []string
+			r := script(t, reply{contains: "get configmap substrate-aks-install", output: tc.record})
+			a := App{Config: c, Runner: r, Progress: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}
+			if err := a.installedRevisions(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Join(lines, "\n")
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("status reported %q, missing %q", got, want)
+				}
+			}
+			if tc.name == "record from the previous pin" && strings.Contains(got, DefaultPluginCommit[:12]) {
+				t.Fatalf("status reported the configured plugin for an older installation: %q", got)
+			}
+		})
 	}
 }
 
@@ -209,6 +244,9 @@ func TestProvisionWhatIfWritesTypedParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if params.Parameters["workerCount"].Value != float64(1) ||
+		params.Parameters["workerOsDiskType"].Value != "Managed" ||
+		params.Parameters["workerOsDiskSizeGB"].Value != float64(128) ||
+		params.Parameters["workerMaxPods"].Value != float64(0) ||
 		params.Parameters["assetPublisherObjectId"].Value != c.Azure.AssetPublisherObjectID {
 		t.Fatalf("incorrect typed parameters: %s", data)
 	}

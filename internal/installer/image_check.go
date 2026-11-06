@@ -13,8 +13,8 @@ import (
 	"strings"
 )
 
-//go:embed imagecheck/*.go.txt
-var imageCheckSource embed.FS
+//go:embed helper/*.go.txt
+var helperSource embed.FS
 
 var errImagesMissing = errors.New("configured image is missing")
 
@@ -40,16 +40,19 @@ func (a App) imageCheckStep(name string, work func() error) error {
 	return err
 }
 
-func prepareImageChecker(root string) error {
+// prepareHelper adds the installer's read-only publish subcommands to a
+// disposable checkout: image inventory checks, release image verification and
+// microVM asset assembly, all through the pinned source's own code.
+func prepareHelper(root string) error {
 	for _, pkg := range []string{"cmd", "steps"} {
-		data, err := imageCheckSource.ReadFile("imagecheck/" + pkg + ".go.txt")
+		data, err := helperSource.ReadFile("helper/" + pkg + ".go.txt")
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(root, "cmd/ate-setup/internal", pkg, "azure_image_check.go")
+		path := filepath.Join(root, "cmd/ate-setup/internal", pkg, "azure_helper.go")
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
-			return fmt.Errorf("preparing the pinned image checker: %w", err)
+			return fmt.Errorf("preparing the pinned source helper: %w", err)
 		}
 		_, writeErr := file.Write(data)
 		if err := errors.Join(writeErr, file.Close()); err != nil {
@@ -109,11 +112,11 @@ func (a App) CheckImages(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	if err := a.imageCheckStep(imageCheckTools, func() error { return prepareImageChecker(root) }); err != nil {
+	if err := a.imageCheckStep(imageCheckTools, func() error { return prepareHelper(root) }); err != nil {
 		return err
 	}
 	return a.imageCheckStep(imageCheckInventory, func() error {
-		a.progress("Verifying the pinned publisher's image inventory and the Azure plugin digest")
+		a.progress("Verifying the pinned release image inventory, the demo image and the Azure plugin digest")
 		data, err := a.Runner.Run(ctx, Command{
 			Dir: root,
 			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "check-images",

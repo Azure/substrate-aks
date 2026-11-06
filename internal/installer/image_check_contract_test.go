@@ -27,7 +27,7 @@ func TestPinnedImageCheckContract(t *testing.T) {
 	if output, err := exec.Command("git", "clone", "--quiet", "--shared", root, dest).CombinedOutput(); err != nil {
 		t.Fatalf("copying pinned source: %v\n%s", err, output)
 	}
-	if err := prepareImageChecker(dest); err != nil {
+	if err := prepareHelper(dest); err != nil {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(t.TempDir(), "ate-setup")
@@ -41,10 +41,12 @@ func TestPinnedImageCheckContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"envoy-dataplane": true, "plugin": true}
+	// Releases publish the released packages and envoy-dataplane; the installer
+	// adds the counter demo and the plugin.
+	want := map[string]bool{"envoy-dataplane": true, "counter": true, "plugin": true}
 	ast.Inspect(inventory, func(node ast.Node) bool {
 		spec, ok := node.(*ast.ValueSpec)
-		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "Components" {
+		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "released" {
 			return true
 		}
 		list, ok := spec.Values[0].(*ast.CompositeLit)
@@ -64,7 +66,7 @@ func TestPinnedImageCheckContract(t *testing.T) {
 		}
 		return false
 	})
-	if len(want) <= 2 {
+	if len(want) <= 3 {
 		t.Fatal("could not read the pinned publisher's inventory")
 	}
 	for _, tc := range []struct {

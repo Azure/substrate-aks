@@ -11,8 +11,14 @@ import (
 )
 
 func PublishPodmanImage(ctx context.Context, rootDir, dockerRepo, imageName, tag, contextPath, koDefaultPlatforms string, extraFlags []string) (string, error) {
-	if len(extraFlags) != 0 {
-		return "", fmt.Errorf("Docker build flags are not supported by the Podman publisher")
+	// Releases label their images; no other Docker build flag is supported.
+	var labels []string
+	for _, flag := range extraFlags {
+		label, ok := strings.CutPrefix(flag, "--label=")
+		if !ok || label == "" {
+			return "", fmt.Errorf("Docker build flag %q is not supported by the Podman publisher", flag)
+		}
+		labels = append(labels, "--label", label)
 	}
 	platforms, err := dockerfilePlatforms(rootDir, koDefaultPlatforms)
 	if err != nil {
@@ -35,7 +41,8 @@ func PublishPodmanImage(ctx context.Context, rootDir, dockerRepo, imageName, tag
 		}
 		return nil
 	}
-	if err := run("build", "--authfile", authfile, "--platform", platforms, "-t", ref, contextPath); err != nil {
+	build := append([]string{"build", "--authfile", authfile, "--platform", platforms}, labels...)
+	if err := run(append(build, "-t", ref, contextPath)...); err != nil {
 		return "", err
 	}
 	dir, err := os.MkdirTemp("", "substrate-aks-podman-")
