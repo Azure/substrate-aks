@@ -88,7 +88,7 @@ placeholders are not valid deployment values.
     },
     "pluginSource": {
       "repository": "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git",
-      "commit": "b21387e82cee399c65f49178a665727534e1c073"
+      "commit": "5639af04ad429cf51d2dbf452c80709d3b68e48b"
     },
     "imageSource": "release",
     "images": {
@@ -311,13 +311,10 @@ The installer is reviewed against two pins:
 | Pin | Default |
 | --- | --- |
 | Substrate | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) (`b34fbee742906494b5eb4f1f36987176bf8770a4`) |
-| Azure Blob object-store plugin | [`agent-substrate-plugins/objectstore-azure-blob`](https://github.com/agent-substrate-plugins/objectstore-azure-blob) at `b21387e82cee399c65f49178a665727534e1c073`, the head of its unmerged [installation stack](https://github.com/agent-substrate-plugins/objectstore-azure-blob/pull/6) |
+| Azure Blob object-store plugin | [`agent-substrate-plugins/objectstore-azure-blob`](https://github.com/agent-substrate-plugins/objectstore-azure-blob) at `5639af04ad429cf51d2dbf452c80709d3b68e48b` on its `main` branch |
 
 Both are exact commits. A configured `tag` must name the configured commit;
-the installer checks this on every fetch and never follows a moved tag. An exact
-commit cannot guarantee it stays fetchable: the plugin pin is reachable only
-from its pull request until the stack merges, so a force-push or squash-merge
-there can make fresh installs fail to fetch it until the pin moves.
+the installer checks this on every fetch and never follows a moved tag.
 
 ### Image source
 
