@@ -173,9 +173,9 @@ func TestAccessibleEnginePickerRejectsEOFAndCancellation(t *testing.T) {
 }
 
 func TestAccessibleDatabaseSelection(t *testing.T) {
-	for _, backend := range []string{"bundled", "flexible-server", "horizondb"} {
+	for _, backend := range []string{"bundled", "flexible-server"} {
 		var out bytes.Buffer
-		p := newSetupPrompt(strings.NewReader("invalid\n"+backend+"\n"), newSetupUI(&out), true)
+		p := newSetupPrompt(strings.NewReader("horizondb\n"+backend+"\n"), newSetupUI(&out), true)
 		got, err := p.database(t.Context(), "bundled")
 		if err != nil || got != backend || !strings.Contains(out.String(), "choose bundled") {
 			t.Fatalf("selection %s: %s, %v\n%s", backend, got, err, &out)

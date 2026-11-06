@@ -46,69 +46,6 @@ func databaseBackend(c Config) DatabaseBackend {
 	return c.Database.Backend
 }
 
-func (a App) horizonCreateMode(ctx context.Context) (string, error) {
-	data, err := a.az(ctx, "resource", "list", "--resource-type", "Microsoft.HorizonDb/clusters",
-		"--query", "[].{id:id,location:location,tags:tags}")
-	if err != nil {
-		return "", fmt.Errorf("discovering the owned HorizonDB cluster: %w", err)
-	}
-	type clusterMetadata struct {
-		ID       string            `json:"id"`
-		Location string            `json:"location"`
-		Tags     map[string]string `json:"tags"`
-	}
-	var inventory []clusterMetadata
-	if err := json.Unmarshal(data, &inventory); err != nil || inventory == nil {
-		return "", errors.New("invalid HorizonDB cluster inventory; cannot select Create or Update")
-	}
-	prefix := "/subscriptions/" + a.Config.Azure.SubscriptionID + "/resourceGroups/" +
-		a.Config.Azure.ResourceGroup + "/providers/Microsoft.HorizonDb/clusters/"
-	var clusters []clusterMetadata
-	for _, cluster := range inventory {
-		if cluster.ID == "" || cluster.Location == "" {
-			return "", errors.New("incomplete HorizonDB cluster inventory; cannot select Create or Update")
-		}
-		if cluster.Tags[ownershipTag] == a.Config.Installation.ID ||
-			strings.HasPrefix(strings.ToLower(cluster.ID), strings.ToLower(prefix)) {
-			clusters = append(clusters, cluster)
-		}
-	}
-	if len(clusters) == 0 {
-		return "Create", nil
-	}
-	if len(clusters) != 1 {
-		return "", errors.New("multiple owned HorizonDB clusters found; refusing to select an update target")
-	}
-	cluster := clusters[0]
-	if !strings.HasPrefix(strings.ToLower(cluster.ID), strings.ToLower(prefix)) ||
-		len(cluster.ID) == len(prefix) || strings.ContainsAny(cluster.ID[len(prefix):], "/?#") ||
-		cluster.Location != a.Config.DatabaseLocation() || cluster.Tags[ownershipTag] != a.Config.Installation.ID {
-		return "", errors.New("HorizonDB cluster identity, region or ownership does not match; refusing to update")
-	}
-	data, err = a.az(ctx, "resource", "show", "--ids", cluster.ID, "--api-version", "2026-05-01-preview",
-		"--query", "{id:id,location:location,tags:tags,state:properties.provisioningState,version:properties.version,administratorMatches:properties.administratorLogin=='substrateadmin'}")
-	if err != nil {
-		return "", fmt.Errorf("verifying the existing HorizonDB cluster before Update: %w", err)
-	}
-	var existing struct {
-		ID, Location, State, Version string
-		Tags                         map[string]string
-		AdministratorMatches         *bool
-	}
-	if err := json.Unmarshal(data, &existing); err != nil {
-		return "", fmt.Errorf("reading existing HorizonDB cluster metadata: %w", err)
-	}
-	if !strings.EqualFold(existing.ID, cluster.ID) || existing.Location != a.Config.DatabaseLocation() ||
-		existing.Tags[ownershipTag] != a.Config.Installation.ID || existing.Version != "17" ||
-		existing.AdministratorMatches == nil || !*existing.AdministratorMatches {
-		return "", errors.New("existing HorizonDB identity, ownership, PostgreSQL version or administrator cannot be verified; refusing Update or API migration")
-	}
-	if existing.State != "Succeeded" {
-		return "", fmt.Errorf("existing HorizonDB cluster is in provisioning state %q, not Succeeded; inspect its Azure operations before retrying Update", existing.State)
-	}
-	return "Update", nil
-}
-
 func validateDatabaseInfrastructure(c Config, db *DatabaseInfrastructure) error {
 	if !c.ManagedDatabase() {
 		if db != nil {
@@ -120,9 +57,6 @@ func validateDatabaseInfrastructure(c Config, db *DatabaseInfrastructure) error 
 		return errors.New("deployment is missing managed PostgreSQL outputs; provision the selected backend first")
 	}
 	kind, suffix := "Microsoft.DBforPostgreSQL/flexibleServers/", ".postgres.database.azure.com"
-	if c.Database.Backend == DatabaseHorizon {
-		kind, suffix = "Microsoft.HorizonDB/clusters/", "."+c.DatabaseLocation()+".horizondb.azure.com"
-	}
 	prefix := "/subscriptions/" + c.Azure.SubscriptionID + "/resourceGroups/" + c.Azure.ResourceGroup + "/providers/" + kind
 	name := ""
 	if len(db.ResourceID) > len(prefix) && strings.EqualFold(db.ResourceID[:len(prefix)], prefix) {

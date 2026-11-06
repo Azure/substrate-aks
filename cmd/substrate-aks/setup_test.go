@@ -440,7 +440,7 @@ func TestSetupDeclinesBeforeCloudChanges(t *testing.T) {
 }
 
 func TestSetupRejectsUnsupportedDatabaseBeforeAnyStage(t *testing.T) {
-	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible, installer.DatabaseHorizon} {
+	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			path := testCLIConfig(t)
 			c, err := installer.LoadConfig(path)
@@ -467,9 +467,6 @@ func TestSetupRejectsUnsupportedDatabaseBeforeAnyStage(t *testing.T) {
 				if backend == installer.DatabaseFlexible && strings.Contains(args, "postgres flexible-server list-skus") {
 					return []byte(`[{"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
 				}
-				if backend == installer.DatabaseHorizon && strings.Contains(args, "/capabilities?") {
-					return []byte(`{"value":[]}`), nil
-				}
 				t.Fatalf("unexpected discovery command: %v", command.Args)
 				return nil, nil
 			})
@@ -491,7 +488,7 @@ func TestSetupRejectsUnsupportedDatabaseBeforeAnyStage(t *testing.T) {
 }
 
 func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
-	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible, installer.DatabaseHorizon} {
+	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			path := testCLIConfig(t)
 			c, err := installer.LoadConfig(path)
@@ -508,9 +505,6 @@ func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
 				t.Fatal(err)
 			}
 			kind, host := "Microsoft.DBforPostgreSQL/flexibleServers", "pgexample.postgres.database.azure.com"
-			if backend == installer.DatabaseHorizon {
-				kind, host = "Microsoft.HorizonDB/clusters", "pgexample.abcdef.eastus.horizondb.azure.com"
-			}
 			id := "/subscriptions/" + c.Azure.SubscriptionID + "/resourceGroups/" + c.Azure.ResourceGroup + "/providers/" + kind + "/pgexample"
 			db := &installer.DatabaseInfrastructure{Backend: backend, Location: "eastus", ResourceID: id,
 				Host: host, Name: "substrate", Schema: "substrate", EgressIP: "20.1.2.3"}
@@ -578,7 +572,6 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 		name, region, capabilities string
 	}{
 		{"flexible-server", "westus3", `[{"supportedServerVersions":[{"name":"17"}],"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D2ads_v5"}]}]}]`},
-		{"horizondb", "eastus", `{"value":[{"location":"eastus","clusterCapabilities":{"supportedPostgreSqlVersions":[{"name":"17"}]},"poolCapabilities":{"supportedProcessors":[{"name":"Intel","supportedGenerations":[{"computeGeneration":1,"supportedComputeModels":[{"type":"Provisioned","supportedComputeSizes":[{"vCores":2}]}]}]}]}}]}`},
 	} {
 		outcomes := []string{"select supported region", "EOF before selection", "cancel discovery"}
 		for _, outcome := range outcomes {
@@ -602,7 +595,7 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 					if args == "az ad signed-in-user show --only-show-errors --output json" {
 						return []byte(`{"id":"` + defaultPublisher + `"}`), nil
 					}
-					if !strings.Contains(args, "postgres flexible-server list-skus") && !strings.Contains(args, "/capabilities?") {
+					if !strings.Contains(args, "postgres flexible-server list-skus") {
 						t.Fatalf("unexpected discovery command: %v", command.Args)
 					}
 					if strings.Contains(args, "--location southcentralus") || strings.Contains(args, "/locations/southcentralus/") {
@@ -685,7 +678,7 @@ func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
 func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
 	for _, flags := range [][]string{
 		{"--identity-object-id", defaultPublisher},
-		{"--database", "horizondb"},
+		{"--database", "flexible-server"},
 		{"--database-location", "eastus"},
 	} {
 		t.Run(flags[0], func(t *testing.T) {

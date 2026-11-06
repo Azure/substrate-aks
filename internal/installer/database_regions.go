@@ -20,8 +20,6 @@ func AvailableDatabaseRegions(ctx context.Context, runner Runner, subscription s
 	switch backend {
 	case DatabaseFlexible:
 		namespace = "Microsoft.DBforPostgreSQL"
-	case DatabaseHorizon:
-		namespace = "Microsoft.HorizonDB"
 	default:
 		return nil, fmt.Errorf("cannot discover regions for database backend %q", backend)
 	}
@@ -130,12 +128,6 @@ func ValidateDatabaseRegion(ctx context.Context, runner Runner, subscription, lo
 		if err == nil {
 			err = validateFlexibleCapabilities(data)
 		}
-	case DatabaseHorizon:
-		url := fmt.Sprintf("https://management.azure.com/subscriptions/%s/providers/Microsoft.HorizonDB/locations/%s/capabilities?api-version=2026-10-01-preview", subscription, c.DatabaseLocation())
-		data, err = a.az(ctx, "rest", "--method", "get", "--url", url)
-		if err == nil {
-			err = validateHorizonCapabilities(data, c.DatabaseLocation())
-		}
 	default:
 		err = fmt.Errorf("unknown database backend %q", database.Backend)
 	}
@@ -163,11 +155,7 @@ func (a App) CheckDatabaseRegion(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(availabilityErr, fmt.Errorf("verifying the existing managed database: %w", err))
 	}
-	apiVersion := "2025-08-01"
-	if a.Config.Database.Backend == DatabaseHorizon {
-		apiVersion = "2026-05-01-preview"
-	}
-	data, err := a.az(ctx, "resource", "show", "--ids", i.Database.ResourceID, "--api-version", apiVersion,
+	data, err := a.az(ctx, "resource", "show", "--ids", i.Database.ResourceID, "--api-version", "2025-08-01",
 		"--query", "{id:id,location:location,tags:tags}")
 	if err != nil {
 		return errors.Join(availabilityErr, fmt.Errorf("verifying the existing managed database: %w", err))
@@ -241,66 +229,4 @@ func validateFlexibleCapabilities(data []byte) error {
 		}
 	}
 	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 GeneralPurpose Standard_D2ads_v5 profile", errDatabaseRegionUnavailable)
-}
-
-func validateHorizonCapabilities(data []byte, location string) error {
-	var response struct {
-		Value []struct {
-			Location string `json:"location"`
-			Cluster  struct {
-				Versions []databaseCapability `json:"supportedPostgreSqlVersions"`
-			} `json:"clusterCapabilities"`
-			Pool struct {
-				Processors []struct {
-					databaseCapability
-					Generations []struct {
-						Models []struct {
-							Type  string `json:"type"`
-							Sizes []struct {
-								VCores int `json:"vCores"`
-							} `json:"supportedComputeSizes"`
-						} `json:"supportedComputeModels"`
-					} `json:"supportedGenerations"`
-				} `json:"supportedProcessors"`
-			} `json:"poolCapabilities"`
-		} `json:"value"`
-	}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return fmt.Errorf("reading HorizonDB capabilities: %w", err)
-	}
-	if response.Value == nil {
-		return errors.New("reading HorizonDB capabilities: Azure returned no capability list")
-	}
-	for _, capability := range response.Value {
-		if !strings.EqualFold(capability.Location, location) {
-			continue
-		}
-		versionSupported := false
-		for _, version := range capability.Cluster.Versions {
-			if version.Name == "17" && version.available() {
-				versionSupported = true
-			}
-		}
-		if !versionSupported {
-			continue
-		}
-		for _, processor := range capability.Pool.Processors {
-			if processor.Name != "Intel" || !processor.available() {
-				continue
-			}
-			for _, generation := range processor.Generations {
-				for _, model := range generation.Models {
-					if model.Type != "Provisioned" {
-						continue
-					}
-					for _, size := range model.Sizes {
-						if size.VCores == 2 {
-							return nil
-						}
-					}
-				}
-			}
-		}
-	}
-	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 Intel provisioned two-vCore profile", errDatabaseRegionUnavailable)
 }

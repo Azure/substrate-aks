@@ -65,7 +65,7 @@ init flags:
   --snapshot-reader-object-id UUID        Optional read-only snapshot inspection
   --snapshot-reader-principal-type TYPE   Explicit reader type: User, ServicePrincipal, or Group
   --name substrate-dev --location eastus2
-  --database bundled|flexible-server|horizondb  HorizonDB is preview
+  --database bundled|flexible-server      PostgreSQL backend (default: bundled)
   --database-location REGION              Managed database region (default: AKS region)
 
 setup flags:
@@ -184,7 +184,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
-		fs.StringVar(&database, "database", "bundled", "bundled, flexible-server or horizondb (preview)")
+		fs.StringVar(&database, "database", "bundled", "bundled or flexible-server")
 		fs.StringVar(&databaseLocation, "database-location", "", "managed database region (default: AKS region)")
 	}
 	if command == "setup" {

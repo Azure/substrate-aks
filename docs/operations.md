@@ -95,7 +95,7 @@ exports. On failure it prints recovery commands instead.
 
 ### Options and automation
 
-Setup also offers bundled PostgreSQL, Flexible Server, or HorizonDB (preview).
+Setup also offers bundled PostgreSQL or Azure Database for PostgreSQL Flexible Server.
 Managed database regions are filtered by subscription-specific capabilities.
 Setup rechecks the chosen region before billing approval.
 
@@ -493,8 +493,8 @@ the shared client remain. If `destroy` fails, local state is kept for a retry.
 
 Managed PostgreSQL servers and clusters are created in the installation's
 resource group, even when the database region differs from AKS, so group
-deletion removes them. Preview HorizonDB deletions can block group deletion;
-`destroy` then fails and keeps local state for a retry. The database Key Vault
+deletion removes them. If group deletion fails, `destroy` keeps local state
+for a retry. The database Key Vault
 stays soft-deleted for seven days (purge protection is off); the installer
 does not purge or recover it. Vault names derive from the installation ID, so
 a new installation with the same name uses a different vault.
@@ -558,14 +558,14 @@ The image-check tests use local registries, and publisher tests use controlled
 engine commands. They do not prove live ACR access or real image builds.
 
 Additional opt-in contracts check external PostgreSQL selection/secret
-reconciliation, compiled network/Key Vault/HorizonDB configuration, deployment
+reconciliation, compiled network/Key Vault configuration, deployment
 history selection, and the real bootstrap shell twice in an isolated Docker
 PostgreSQL instance. These also require Docker and Bicep, but no working
 kubeconfig or Azure resource deployment:
 
 ```sh
 go test -tags=integration ./internal/installer \
-  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestHorizonBicep(APIContract|CreateModeWiring)|TestHorizonStandaloneParameterExamples|TestHorizonInventoryPreservesForeignClusters|TestInfrastructureDeploymentHistorySelection' \
+  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestInfrastructureDeploymentHistorySelection' \
   -args -contract-root /absolute/path/to/pinned/substrate
 ```
 
@@ -574,8 +574,8 @@ under `deploy/` and the embedded Go checker/publisher sources as well as ordinar
 These tests do not provision Azure.
 
 The read-only Azure capability contracts check the configured fixed profiles
-against Flexible Server in `westus3` and HorizonDB in `eastus`, and discover the
-subscription-supported choices across the service region catalogs. They require
+against Flexible Server in `westus3`, and discover the subscription-supported
+choices across the service region catalog. They require
 subscription access but create no resources and read no credentials:
 
 ```sh
@@ -673,127 +673,33 @@ autoscaling, dashboards, and shared filesystems.
 
 ### Managed PostgreSQL acceptance
 
-Separate managed database probes passed the exact pinned bootstrap twice, all
-three migrations, owner/runtime role separation, UNLOGGED partition maintenance,
-advisory locks and concurrent xid/snapshot outbox fencing over verified TLS:
-Flexible Server PostgreSQL 17 in `westus3`, and HorizonDB PostgreSQL 17 in `eastus`.
-Real Azure what-if succeeded for all three backends and selected only the chosen
-database service; registry-only exclusion is covered independently.
+A separate Flexible Server PostgreSQL 17 probe in `westus3` passed the exact
+pinned bootstrap twice, all three migrations, owner/runtime role separation,
+UNLOGGED partition maintenance, advisory locks and concurrent xid/snapshot
+outbox fencing over verified TLS. Real Azure what-if succeeded for bundled and
+Flexible Server and selected only the chosen database service; registry-only
+exclusion is covered independently.
 
-Separate vault-only Azure contracts passed for both managed backend settings:
-actual credential creation/readback, reuse from a fresh workspace, ARM secure
-secret-reference resolution and local-file/diagnostic leakage checks. The
-disposable groups were deleted and confirmed absent; vaults remain soft-deleted
-for seven days. Updated real previews include the selected database and vault
-only in managed mode, with neither in bundled or registry-only mode.
+A separate vault-only Azure contract passed actual credential creation/readback,
+reuse from a fresh workspace, ARM secure secret-reference resolution and
+local-file/diagnostic leakage checks. The disposable group was deleted and
+confirmed absent; the vault remains soft-deleted for seven days. Real previews
+include the database and vault only in managed mode, with neither in bundled or
+registry-only mode.
 
-Fresh AKS installations also passed with Flexible Server in `westus3` and
-an earlier HorizonDB template using `2026-05-01-preview` in `eastus`, both with AKS in
-`southcentralus`. Each completed managed bootstrap and
-API startup with two ready API replicas, plus two isolated counter microVM actors.
-Two synchronous Azure Blob MEMORY snapshots and automatic HTTP-triggered and
-explicit CLI resume preserved memory, durable-file and rootfs counters through
-1, 2, 3 and 4. API and demo pods remained ready with zero restarts. Test actors
-were removed, and both installations were torn down. This establishes scoped
-live acceptance, not production readiness.
+Fresh AKS installations passed with Flexible Server in `westus3` and AKS in
+`southcentralus`. Each completed managed bootstrap and API startup with two
+ready API replicas, plus two isolated counter microVM actors. Two synchronous
+Azure Blob MEMORY snapshots and automatic HTTP-triggered and explicit CLI resume
+preserved memory, durable-file and rootfs counters through 1, 2, 3 and 4. API
+and demo pods remained ready with zero restarts. Independent repeat runs also
+passed same-config reprovisioning: the server identity, egress IP and firewall
+were unchanged and counters continued without pod restarts. Test actors were
+removed, and the installations and their AKS node groups were torn down and
+independently confirmed absent. This establishes scoped live acceptance, not
+production readiness.
 
-Independent Opus 5.5 and GPT-6.1 Sol runs each repeated both managed installations
-and counter acceptance. Flexible Server reprovisioning passed. Both reproduced
-HorizonDB's rejection of the old template's `createMode: Create` during
-reprovisioning. The failed same-name ARM deployment then lost its outputs,
-breaking installer discovery even though workloads and counters stayed healthy.
-All four installation groups and their AKS node groups were deleted and
-independently confirmed absent.
-
-An intermediate HorizonDB template used `2026-10-01-preview`, omitted creation
-provenance and explicitly deployed pool and authentication resources. Default
-parameter groups were discovered by their actual regional resource IDs, not the
-documentation's example name. The tested subscription returned no East US
-defaults, but advertised `default_pg17` in Japan East and three other regions.
-Missing or ambiguous defaults failed before provisioning; that implementation
-did not create this read-only service resource or silently select another region/API.
-
-An isolated Japan East test successfully provisioned the new API's cluster,
-pool, authentication, restricted firewall and AKS infrastructure. Live inspection
-confirmed PostgreSQL 17, Intel generation 1, two provisioned vCores, one node,
-HA disabled, seven-day local backups and the regional `default_pg17` association.
-This run exposed pool-before-authentication ordering and the write-once
-`administratorLogin` reconciliation requirement. The tested intermediate
-implementation corrected ordering and omitted an already initialized login,
-including when no full deployment previously succeeded. Those child-resource
-rules do not apply to the legacy API now selected by the modules.
-
-After these fixes, the exact same saved configuration passed both full preview
-and infrastructure reprovisioning. Installer status discovered the new successful
-deployment. Pool identity/profile and the static egress IP were unchanged; AKS
-and the database reported successful provisioning and the firewall still allowed
-only that egress IPv4. After the preceding failed attempt, status also recovered
-the earlier successful outputs. This establishes infrastructure reconciliation,
-not application continuity across reprovisioning.
-
-**New-API fresh-install and counter acceptance were blocked:** the service's
-advertised ReadWrite hostname has `cluster.rw` labels before a suffix covered
-only by a single-label wildcard certificate. A read-only SQL probe with
-`sslmode=verify-full` rejected the hostname, and independent certificate
-inspection confirmed the SAN mismatch. Bootstrap failed and cleaned up its
-temporary resources; application migrations and counter tests could not run.
-TLS was not weakened and no guessed hostname or old API was substituted.
-HorizonDB must advertise a writable hostname covered by its certificate, or
-correct the certificate, before that new-API acceptance gate can pass.
-The isolated installation and its recorded AKS node resource group were deleted
-and independently confirmed absent; the vault was not purged.
-
-A second isolated fresh installation in Korea Central also passed infrastructure
-provisioning and cluster checks with the expected database profile and single-IP
-firewall. A credential-free PostgreSQL TLS probe from AKS reproduced the same
-hostname mismatch: the certificate chain was trusted, but its SANs did not cover
-the advertised `cluster.rw` hostname. The probe Pod was removed. Testing stopped
-before image publication, SQL bootstrap, application installation, counters or
-same-config reprovisioning. The mismatch is therefore not confined to Japan East;
-these two runs do not establish its prevalence in other regions or API versions.
-The Korea installation and its recorded AKS node group were also deleted and
-independently confirmed absent; the vault was not purged.
-
-The current modules return to the previously fresh-install-tested
-`2026-05-01-preview` shape, with an explicit Create/Update lifecycle parameter
-instead of always sending Create. The installer verifies live cluster identity,
-ownership, region, PostgreSQL version, administrator and successful provisioning
-before selecting Update. An explicitly empty inventory selects Create; access
-failures, malformed responses and busy/failed clusters do not. This does not depend on
-successful full-deployment history or permit adoption/API migration.
-Direct infrastructure users supply the same lifecycle parameter themselves;
-see [standalone examples](infrastructure.md).
-
-An isolated East US database / South Central US AKS run passed fresh provisioning
-with this parameterized legacy template. Strict TLS from AKS verified the actual
-advertised FQDN and trusted certificate chain. Exact same-config plan, provision
-and status passed using Update. The standalone subscription parameter-file example
-also passed actual Azure what-if and Update deployment, without invoking Go or
-reading an installer configuration. Database identity, credentials metadata,
-static Standard egress and its single-IP firewall were unchanged.
-
-Normal setup then passed managed SQL bootstrap, migrations, two ready API replicas
-and two ready demo workers, with no bundled PostgreSQL. Both application DSNs
-targeted the actual external host/database with distinct owner/runtime passwords
-and `sslmode=verify-full`. Durable Azure Blob MEMORY snapshots and automatic and
-explicit resume preserved memory/file/rootfs counters through 1, 2, 3 and 4.
-Another full plan/provision/check/status with the actors running passed; API pod
-identities and zero restart counts were unchanged. Counters then advanced to
-5 and 3 for the two actors, and another snapshot/automatic resume advanced the
-first to 6. Database identity/profile, credentials metadata and egress remained
-unchanged. CPU type and backup properties were not returned by the inspected
-legacy response and remain unverified, not confirmed matching.
-
-The first cold actor HTTP activation returned a router 504 before the actor
-reached Running. That failed attempt was retained. The complete exact counter
-sequence passed after activation readiness, including HTTP-triggered resume;
-this is not a claim that cold-activation latency is resolved.
-Both test actors were deleted, the actor list was empty, and local port-forwards
-were stopped. Guarded teardown completed, and independent subscription-scoped
-checks confirmed both the installation and actual AKS node resource groups absent.
-The vault was not purged; its soft-delete retention remains.
-
-Full provision attempts now use distinct `substrate-<installation-id>-run-<suffix>`
+Full provision attempts use distinct `substrate-<installation-id>-run-<suffix>`
 subscription deployment names. Resource discovery uses the latest successful full
 attempt (or the legacy unsuffixed record), not a failed rerun's missing outputs.
 Provision still returns its actual failure. This does not reconstruct outputs
@@ -802,18 +708,14 @@ inspect the installation's subscription deployment history and retry the same
 saved installation; missing outputs alone do not establish that resources
 are absent. Access errors and invalid/mismatched metadata remain errors.
 
-The installed Bicep type catalog emitted missing-preview-type warnings for the
-newer API. The selected legacy template compiles with its catalog types.
-Compiled-template contracts check the documented API shape; they do not
-replace live provider validation.
-
 **Still unverified:** cross-node restore, sustained load, egress IP stability
 after sizing/network changes, unauthorized-IP rejection, live component retries,
-database reconnection after pod restarts, full new-API HorizonDB application
-acceptance and renewable Entra database credentials. These are not established
-by the scoped live runs, SQL probes, Docker bootstrap execution or Azure previews. Preview HorizonDB
-operations can remain provisioning/deleting for extended periods and fail;
-inspect Azure operation status rather than assuming an accepted request succeeded.
+database reconnection after pod restarts and renewable Entra database
+credentials. These are not established by the scoped live runs, SQL probes,
+Docker bootstrap execution or Azure previews.
+
+Azure HorizonDB is not offered yet. Support will target its
+`2026-10-01-preview` API in a follow-up change.
 
 Existing-cluster support, managed database migration/adoption/rotation, other
 private actor registries, actor-scoped Blob authorization, autoscaling, dashboards,

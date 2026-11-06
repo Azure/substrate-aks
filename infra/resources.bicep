@@ -24,12 +24,9 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryName string
-@allowed(['bundled', 'flexible-server', 'horizondb'])
+@allowed(['bundled', 'flexible-server'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
-@description('HorizonDB operation supplied by the caller: Create for a fresh cluster, Update for an existing cluster with the same installation identity.')
-@allowed(['Create', 'Update'])
-param horizonCreateMode string = 'Create'
 @secure()
 param databaseAdminPassword string = ''
 
@@ -191,17 +188,6 @@ module flexible 'flexible-server.bicep' = if (databaseBackend == 'flexible-serve
   }
 }
 
-module horizon 'horizondb.bicep' = if (databaseBackend == 'horizondb') {
-  name: 'postgres-horizon-${installationId}'
-  params: {
-    location: databaseLocation
-    installationId: installationId
-    adminPassword: databaseAdminPassword
-    createMode: horizonCreateMode
-    egressIP: egress!.properties.ipAddress
-  }
-}
-
 resource kubeletPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, cluster.id, acrPull)
   scope: registry
@@ -346,8 +332,8 @@ output infrastructure object = {
     database: {
       backend: databaseBackend
       location: databaseLocation
-      resourceId: databaseBackend == 'flexible-server' ? flexible!.outputs.resourceId : horizon!.outputs.resourceId
-      host: databaseBackend == 'flexible-server' ? flexible!.outputs.host : horizon!.outputs.host
+      resourceId: flexible!.outputs.resourceId
+      host: flexible!.outputs.host
       name: 'substrate'
       schema: 'substrate'
       egressIP: egress!.properties.ipAddress

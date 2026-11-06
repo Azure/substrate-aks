@@ -47,7 +47,6 @@ type DatabaseBackend string
 const (
 	DatabaseBundled  DatabaseBackend = "bundled"
 	DatabaseFlexible DatabaseBackend = "flexible-server"
-	DatabaseHorizon  DatabaseBackend = "horizondb"
 )
 
 type DatabaseConfig struct {
@@ -303,7 +302,7 @@ func (c Config) Validate() error {
 		if c.Database.Location != "" {
 			return errors.New("database.location is only valid for managed PostgreSQL")
 		}
-	case DatabaseFlexible, DatabaseHorizon:
+	case DatabaseFlexible:
 		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
 			return errors.New("database.location must be an Azure region name")
 		}
@@ -312,7 +311,7 @@ func (c Config) Validate() error {
 			return errors.New("managed PostgreSQL requires aks.operator, which receives access to the database credential vault")
 		}
 	default:
-		return errors.New("database.backend must be bundled, flexible-server or horizondb")
+		return errors.New("database.backend must be bundled or flexible-server")
 	}
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")

@@ -24,9 +24,9 @@ var databaseRegionSubscription = flag.String("database-region-subscription", "",
 
 func TestAzureDatabaseRegionCapabilities(t *testing.T) {
 	if !uuidPattern.MatchString(*databaseRegionSubscription) {
-		t.Fatal("provide -database-region-subscription; this test only reads Flexible Server westus3 and HorizonDB eastus capabilities")
+		t.Fatal("provide -database-region-subscription; this test only reads Flexible Server westus3 capabilities")
 	}
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			if err := ValidateDatabaseRegion(t.Context(), ExecRunner{}, *databaseRegionSubscription, c.Azure.Location, c.Database); err != nil {
@@ -52,7 +52,7 @@ func TestAzureDatabaseRegionDiscovery(t *testing.T) {
 	if err := json.Unmarshal(data, &regions); err != nil || len(regions) == 0 {
 		t.Fatalf("reading physical region catalog: %v", err)
 	}
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			available, err := AvailableDatabaseRegions(t.Context(), runner, *databaseRegionSubscription, backend, regions)
 			if err != nil {
@@ -65,9 +65,9 @@ func TestAzureDatabaseRegionDiscovery(t *testing.T) {
 
 func TestAzureDatabaseVaultContract(t *testing.T) {
 	if !uuidPattern.MatchString(*vaultContractSubscription) || !uuidPattern.MatchString(*vaultContractOperator) {
-		t.Fatal("provide -vault-contract-subscription and -vault-contract-operator; this test creates and deletes two disposable Key Vault resource groups, but no AKS or database")
+		t.Fatal("provide -vault-contract-subscription and -vault-contract-operator; this test creates and deletes a disposable Key Vault resource group, but no AKS or database")
 	}
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			c.Azure.SubscriptionID = *vaultContractSubscription

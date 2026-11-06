@@ -27,7 +27,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1); see [microVM worker pool](#microvm-worker-pool) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
-| PostgreSQL | `bundled`; managed `flexible-server` and `horizondb` are opt-in |
+| PostgreSQL | `bundled`; managed `flexible-server` is opt-in |
 
 Each installation is saved as `installations/NAME/installation.json` in the
 installer's home directory, a per-user state directory:
@@ -197,16 +197,14 @@ Choose during guided setup, or when creating a new installation:
 
 ```sh
 bin/substrate-aks init flex --database flexible-server --database-location westus3
-# Alternatively, for HorizonDB preview:
-bin/substrate-aks init horizon --database horizondb --database-location eastus
 ```
 
 The selection is saved in the new installation record:
 
 ```json
 "database": {
-  "backend": "horizondb",
-  "location": "eastus"
+  "backend": "flexible-server",
+  "location": "westus3"
 }
 ```
 
@@ -218,7 +216,6 @@ Records without `database` use bundled PostgreSQL.
 | --- | --- |
 | `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
 | `flexible-server` | PostgreSQL 17, General Purpose `Standard_D2ads_v5`, 32 GiB, seven-day locally redundant backups, no HA |
-| `horizondb` | Preview, PostgreSQL 17, two Intel vCores, one replica, BestEffort placement; service-default seven-day backups |
 
 Optional `database.location` defaults to `azure.location` and applies only to
 managed backends. It can differ from AKS, with cross-region latency and transfer
@@ -244,36 +241,11 @@ before billing approval. Regions given by flags are checked before saving.
 Other validation failures stop noninteractive commands and saved installations;
 no region is changed without user selection. Advertised support does **not**
 guarantee quota, live SKU capacity or successful provisioning. Live SQL probes succeeded
-in `westus3` for Flexible Server and `eastus` for HorizonDB; advertised regions
-and SKUs were not all deployable. Register `Microsoft.DBforPostgreSQL` or
-`Microsoft.HorizonDB` in the target subscription before provisioning.
+in `westus3`; advertised regions and SKUs were not all deployable. Register
+`Microsoft.DBforPostgreSQL` in the target subscription before provisioning.
 
-HorizonDB deployment uses API `2026-05-01-preview`, its implicit `DefaultPool`
-and the service-generated cluster FQDN. Full `plan`/`provision` inspect live
-installation-owned cluster metadata and supply `Create` when none exists or
-`Update` for a verified existing, successfully provisioned PostgreSQL 17 cluster
-with the expected administrator. Busy, failed, foreign or unverifiable resources
-stop deployment rather than being treated as absent. This also covers clusters
-left by partial failed deployments, without requiring successful deployment
-history. Retries reuse the Key Vault password.
-
-The reusable Bicep entrypoints expose constrained `horizonCreateMode`
-(`createMode` at the leaf), defaulting to `Create`. Direct callers explicitly
-select `Update`; the modules do not discover lifecycle state themselves.
-See [standalone infrastructure deployment](infrastructure.md) for secure
-parameter-file examples requiring no installer configuration.
-Read-only subscription capabilities still use the newer discovery API; they do
-not require its regional default parameter groups or select a CPU generation.
-Existing new-API installations are not an automatic migration path.
-
-**Acceptance:** the selected legacy API passed a fresh East US installation,
-verified TLS, standalone Bicep deployment, same-config Update and durable counter
-continuity across reprovisioning. The first cold actor activation timed out;
-the exact counter sequence passed after activation readiness.
-Japan East and Korea Central tests of `2026-10-01-preview` provisioned
-infrastructure but failed strict TLS because the advertised writable hostnames
-did not match the service certificates. This return to a fixed legacy API is
-not an automatic fallback on deployment failure.
+**Acceptance:** fresh Flexible Server installations passed managed bootstrap,
+verified TLS, same-config reprovisioning and durable counter continuity.
 See [operations](operations.md#live-acceptance-and-limitations).
 
 Managed modes provision the database in the installation's owned resource group,
@@ -321,9 +293,8 @@ coordinated, and automatic rotation is not implemented.
 backups.** This installer provides no restore workflow or automatic recovery.
 The database, even in a different region from AKS, and its vault are in the
 installation's resource group, so `destroy` deletes them before removing the
-local installation. If group deletion fails, for example while a preview
-HorizonDB deletion is still in progress, `destroy` reports the error and keeps
-the local installation for a retry. The vault and its secrets are soft-deleted
+local installation. If group deletion fails, `destroy` reports the
+error and keeps the local installation for a retry. The vault and its secrets are soft-deleted
 with seven-day retention (purge protection is off); teardown does not purge
 them. A new installation gets a new ID and therefore a different vault name,
 even with the same installation name. A managed-database installation can't be

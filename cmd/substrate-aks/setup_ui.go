@@ -348,10 +348,6 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	case installer.DatabaseFlexible:
 		u.rowDetail("PostgreSQL", "Azure Database for PostgreSQL Flexible Server",
 			"PostgreSQL 17, General Purpose Standard_D2ads_v5, 32 GiB, seven-day local backups, no HA.")
-	case installer.DatabaseHorizon:
-		u.rowDetail("PostgreSQL", "Azure HorizonDB (preview)",
-			"PostgreSQL 17, 2 Intel vCores, one replica, BestEffort placement, service-default 7-day backups.")
-		warnings = append(warnings, "HorizonDB is a preview service.")
 	default:
 		u.rowDetail("PostgreSQL", "Bundled in the cluster", "32 GiB Azure Disk; no backups or HA.")
 	}

@@ -78,10 +78,6 @@ func managedTestConfig(t *testing.T, backend DatabaseBackend) (Config, *Database
 	// A separate operator shows that the vault grant does not follow the upload identity.
 	c.AKS.Operator = &OperatorConfig{ObjectID: "44444444-4444-4444-8444-444444444444", PrincipalType: "Group"}
 	kind, host := "Microsoft.DBforPostgreSQL/flexibleServers/", "pgexample.postgres.database.azure.com"
-	if backend == DatabaseHorizon {
-		c.Database.Location = "eastus"
-		kind, host = "Microsoft.HorizonDB/clusters/", "pgexample.abcdef.eastus.horizondb.azure.com"
-	}
 	return c, &DatabaseInfrastructure{
 		Backend: backend, Location: c.Database.Location,
 		ResourceID: "/subscriptions/" + c.Azure.SubscriptionID + "/resourceGroups/" + c.Azure.ResourceGroup + "/providers/" + kind + "pgexample",
@@ -90,14 +86,15 @@ func managedTestConfig(t *testing.T, backend DatabaseBackend) (Config, *Database
 }
 
 func TestDatabaseSelectionValidationAndLegacyDefault(t *testing.T) {
-	for _, backend := range []DatabaseBackend{"", DatabaseBundled, DatabaseFlexible, DatabaseHorizon, "invalid"} {
+	for _, backend := range []DatabaseBackend{"", DatabaseBundled, DatabaseFlexible, "horizondb", "invalid"} {
 		c := testConfig(t)
 		c.Database = DatabaseConfig{Backend: backend}
 		c.AKS.Operator = &OperatorConfig{ObjectID: "44444444-4444-4444-8444-444444444444", PrincipalType: "User"}
-		if err := c.Validate(); (err != nil) != (backend == "invalid") {
+		// HorizonDB is not offered until the installer supports its current API.
+		if err := c.Validate(); (err != nil) != (backend == "invalid" || backend == "horizondb") {
 			t.Fatalf("backend %q validation: %v", backend, err)
 		}
-		managed := backend == DatabaseFlexible || backend == DatabaseHorizon
+		managed := backend == DatabaseFlexible
 		c.AKS.Operator = nil
 		if err := c.Validate(); managed != (err != nil && strings.Contains(err.Error(), "aks.operator")) {
 			t.Fatalf("backend %q without an operator, who receives vault access: %v", backend, err)
@@ -108,21 +105,21 @@ func TestDatabaseSelectionValidationAndLegacyDefault(t *testing.T) {
 	if c.Validate() == nil {
 		t.Fatal("bundled accepted a managed database region")
 	}
-	c.Database = DatabaseConfig{Backend: DatabaseHorizon, Location: "invalid region"}
+	c.Database = DatabaseConfig{Backend: DatabaseFlexible, Location: "invalid region"}
 	if c.Validate() == nil {
 		t.Fatal("managed database accepted an invalid region")
 	}
 }
 
 func TestManagedDatabaseOutputsAreBoundToTheInstallation(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, db := managedTestConfig(t, backend)
 			if err := validateDatabaseInfrastructure(c, db); err != nil {
 				t.Fatal(err)
 			}
 			canonical := *db
-			canonical.ResourceID = strings.ReplaceAll(canonical.ResourceID, "Microsoft.HorizonDB", "Microsoft.HorizonDb")
+			canonical.ResourceID = strings.ReplaceAll(canonical.ResourceID, "Microsoft.DBforPostgreSQL", "Microsoft.DBForPostgreSQL")
 			if err := validateDatabaseInfrastructure(c, &canonical); err != nil {
 				t.Fatalf("ARM's case-insensitive resource ID was rejected: %v", err)
 			}
@@ -158,7 +155,7 @@ func TestManagedDatabaseOutputsAreBoundToTheInstallation(t *testing.T) {
 }
 
 func TestDatabaseCredentialsPersistInVaultWithoutLocalFilesOrRotation(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			r := databaseTestRunner(t, c, false, reply{contains: "deployment sub list", output: "[]"})
@@ -339,7 +336,7 @@ func assertNoPersistedCredentials(t *testing.T, c Config, s databaseSecrets) {
 }
 
 func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		for _, registry := range []bool{false, true} {
 			t.Run(string(backend)+"/registry="+map[bool]string{true: "yes", false: "no"}[registry], func(t *testing.T) {
 				c, _ := managedTestConfig(t, backend)
@@ -348,9 +345,6 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 					replies = append(replies, databasePreflightReplies(c)...)
 				}
 				replies = append(replies, reply{contains: "group exists", output: "false"})
-				if backend == DatabaseHorizon && !registry {
-					replies = append(replies, reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"})
-				}
 				if !registry {
 					replies = append(replies, reply{contains: c.deploymentName() + "-vault"},
 						reply{contains: "deployment sub list", output: "[]"})
@@ -393,17 +387,6 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 					if !bytes.Contains(data, []byte(c.databaseVaultID())) || !bytes.Contains(data, []byte(`"reference"`)) {
 						t.Fatal("ARM did not receive a Key Vault reference")
 					}
-					if backend == DatabaseHorizon {
-						var parameters struct {
-							Parameters map[string]struct{ Value any }
-						}
-						if err := json.Unmarshal(data, &parameters); err != nil {
-							t.Fatal(err)
-						}
-						if parameters.Parameters["horizonCreateMode"].Value != "Create" {
-							t.Fatal("fresh HorizonDB provisioning did not select Create")
-						}
-					}
 					for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
 						if bytes.Contains(data, []byte(password)) || strings.Contains(strings.Join(last.Args, " "), password) {
 							t.Fatal("password leaked into a local parameter file or argv")
@@ -423,7 +406,7 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 }
 
 func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		for _, tc := range []struct {
 			name, recordedBackend, recordedRegion string
 			reject                                bool
@@ -453,9 +436,6 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
 				if !tc.reject {
 					replies = append(replies, reply{contains: "aks list", output: "[]"})
-					if backend == DatabaseHorizon {
-						replies = append(replies, reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"})
-					}
 					replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
 				}
 				r := script(t, replies...)
@@ -473,9 +453,8 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 }
 
 func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
-	c, _ := managedTestConfig(t, DatabaseHorizon)
+	c, _ := managedTestConfig(t, DatabaseFlexible)
 	r := script(t, accountReply(c), targetReply(), databaseRegionReply(c.Database.Backend), reply{contains: "group exists", output: "false"},
-		reply{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: "[]"},
 		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
 	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 		t.Fatal(err)
@@ -490,138 +469,12 @@ func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
 	}
 }
 
-func horizonExistingReplies(t *testing.T, c Config, db *DatabaseInfrastructure) []reply {
-	t.Helper()
-	inventory, err := json.Marshal([]any{object{"id": db.ResourceID, "location": c.DatabaseLocation(),
-		"tags": map[string]string{ownershipTag: c.Installation.ID}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	existing, err := json.Marshal(object{"id": db.ResourceID, "location": c.DatabaseLocation(),
-		"tags": map[string]string{ownershipTag: c.Installation.ID}, "state": "Succeeded",
-		"version": "17", "administratorMatches": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return []reply{
-		{contains: "resource list --resource-type Microsoft.HorizonDb/clusters", output: string(inventory)},
-		{contains: "resource show --ids " + db.ResourceID + " --api-version 2026-05-01-preview", output: string(existing)},
-	}
-}
-
-func TestHorizonCreateModeUsesOwnedLiveState(t *testing.T) {
-	for _, scenario := range []string{"new cluster", "unrelated cluster", "existing without successful deployment", "wrong group", "wrong owner",
-		"multiple clusters", "invalid inventory", "incomplete inventory", "wrong administrator", "unobservable administrator",
-		"new API shape", "busy cluster", "failed cluster", "changed resource", "changed owner", "malformed metadata", "access denied", "inventory access denied"} {
-		t.Run(scenario, func(t *testing.T) {
-			c, db := managedTestConfig(t, DatabaseHorizon)
-			replies := horizonExistingReplies(t, c, db)
-			wantMode, wantError := "Update", false
-			denied := errors.New("resource access denied")
-			switch scenario {
-			case "new cluster":
-				replies[0].output = "[]"
-				replies = replies[:1]
-				wantMode = "Create"
-			case "unrelated cluster":
-				replies[0].output = strings.ReplaceAll(replies[0].output, c.Installation.ID, "another-installation")
-				replies[0].output = strings.ReplaceAll(replies[0].output, c.Azure.ResourceGroup, "another-group")
-				replies = replies[:1]
-				wantMode = "Create"
-			case "wrong group":
-				replies[0].output = strings.ReplaceAll(replies[0].output, c.Azure.ResourceGroup, "another-group")
-				replies, wantError = replies[:1], true
-			case "wrong owner":
-				replies[0].output = strings.ReplaceAll(replies[0].output, c.Installation.ID, "another-installation")
-				replies, wantError = replies[:1], true
-			case "multiple clusters":
-				replies[0].output = strings.TrimSuffix(replies[0].output, "]") + "," + strings.TrimPrefix(replies[0].output, "[")
-				replies, wantError = replies[:1], true
-			case "invalid inventory":
-				replies[0].output = "null"
-				replies, wantError = replies[:1], true
-			case "incomplete inventory":
-				replies[0].output = `[{}]`
-				replies, wantError = replies[:1], true
-			case "wrong administrator":
-				replies[1].output = strings.Replace(replies[1].output, `"administratorMatches":true`, `"administratorMatches":false`, 1)
-				wantError = true
-			case "unobservable administrator":
-				replies[1].output = strings.Replace(replies[1].output, `"administratorMatches":true`, `"administratorMatches":null`, 1)
-				wantError = true
-			case "new API shape":
-				replies[1].output = strings.Replace(replies[1].output, `"version":"17"`, `"postgreSqlVersion":"17"`, 1)
-				wantError = true
-			case "busy cluster":
-				replies[1].output = strings.Replace(replies[1].output, `"Succeeded"`, `"Updating"`, 1)
-				wantError = true
-			case "failed cluster":
-				replies[1].output = strings.Replace(replies[1].output, `"Succeeded"`, `"Failed"`, 1)
-				wantError = true
-			case "changed resource":
-				replies[1].output = strings.Replace(replies[1].output, db.ResourceID, db.ResourceID+"other", 1)
-				wantError = true
-			case "changed owner":
-				replies[1].output = strings.ReplaceAll(replies[1].output, c.Installation.ID, "another-installation")
-				wantError = true
-			case "malformed metadata":
-				replies[1].output = "{"
-				wantError = true
-			case "access denied":
-				replies[1].err = denied
-				wantError = true
-			case "inventory access denied":
-				replies[0].err = denied
-				replies, wantError = replies[:1], true
-			}
-			r := script(t, replies...)
-			mode, err := (App{Config: c, Runner: r}).horizonCreateMode(t.Context())
-			if (err != nil) != wantError || (!wantError && mode != wantMode) {
-				t.Fatalf("mode=%q error=%v; want mode=%q error=%v", mode, err, wantMode, wantError)
-			}
-			if strings.Contains(scenario, "access denied") && !errors.Is(err, denied) {
-				t.Fatalf("resource access error was lost: %v", err)
-			}
-		})
-	}
-}
-
-func TestHorizonProvisionForwardsUpdateWithoutSuccessfulDeployment(t *testing.T) {
-	c, db := managedTestConfig(t, DatabaseHorizon)
-	group, err := json.Marshal(object{"location": c.Azure.Location, "tags": map[string]string{
-		ownershipTag: c.Installation.ID, "substrate-aks-database": string(DatabaseHorizon),
-		"substrate-aks-database-location": c.DatabaseLocation(),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	replies := append([]reply{accountReply(c), targetReply()}, databasePreflightReplies(c)...)
-	replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
-	replies = append(replies, reply{contains: "aks list", output: "[]"})
-	replies = append(replies, horizonExistingReplies(t, c, db)...)
-	replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
-	r := script(t, replies...)
-	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
-		t.Fatal(err)
-	}
-	var parameters struct {
-		Parameters map[string]struct{ Value any }
-	}
-	if err := json.Unmarshal(r.calls[len(r.calls)-1].Input, &parameters); err != nil {
-		t.Fatal(err)
-	}
-	if parameters.Parameters["horizonCreateMode"].Value != "Update" {
-		t.Fatal("reprovisioning must supply Update even without a successful deployment record")
-	}
-}
-
 func TestManagedUpstreamUsesExplicitSecretEnvironment(t *testing.T) {
 	for _, tc := range []struct {
 		backend   DatabaseBackend
 		component string
 	}{
 		{DatabaseFlexible, "ate-system"}, {DatabaseFlexible, "apiserver"},
-		{DatabaseHorizon, "ate-system"}, {DatabaseHorizon, "apiserver"},
 	} {
 		t.Run(string(tc.backend)+"/"+tc.component, func(t *testing.T) {
 			component := tc.component
@@ -682,7 +535,7 @@ func TestManagedUpstreamUsesExplicitSecretEnvironment(t *testing.T) {
 }
 
 func TestDatabaseBootstrapFailureCleansSecretsAndDoesNotSucceed(t *testing.T) {
-	c, db := managedTestConfig(t, DatabaseHorizon)
+	c, db := managedTestConfig(t, DatabaseFlexible)
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "pkg/postgressetup"), 0700); err != nil {
 		t.Fatal(err)

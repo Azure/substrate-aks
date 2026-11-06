@@ -17,23 +17,8 @@ const flexibleCapabilitiesJSON = `[{
 	"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D2ads_v5"}]}]
 }]`
 
-const horizonCapabilitiesJSON = `{"value":[{
-	"location":"eastus",
-	"clusterCapabilities":{"supportedPostgreSqlVersions":[{"name":"17"}]},
-	"poolCapabilities":{"supportedProcessors":[{
-		"name":"Intel","supportedGenerations":[{
-			"computeGeneration":1,"supportedComputeModels":[{
-				"type":"Provisioned","supportedComputeSizes":[{"vCores":2}]
-			}]
-		}]
-	}]}
-}]}`
-
-func databaseRegionReply(backend DatabaseBackend) reply {
-	if backend == DatabaseFlexible {
-		return reply{contains: "postgres flexible-server list-skus --location westus3", output: flexibleCapabilitiesJSON}
-	}
-	return reply{contains: "Microsoft.HorizonDB/locations/eastus/capabilities?api-version=2026-10-01-preview", output: horizonCapabilitiesJSON}
+func databaseRegionReply(DatabaseBackend) reply {
+	return reply{contains: "postgres flexible-server list-skus --location westus3", output: flexibleCapabilitiesJSON}
 }
 
 // workspaceHasState reports whether anything was written in the installation
@@ -79,35 +64,8 @@ func TestFlexibleDatabaseRegionCapabilities(t *testing.T) {
 	}
 }
 
-func TestHorizonDatabaseRegionCapabilities(t *testing.T) {
-	for _, tc := range []struct{ name, data, want string }{
-		{"supported", horizonCapabilitiesJSON, ""},
-		{"wrong region", strings.ReplaceAll(horizonCapabilitiesJSON, `"eastus"`, `"westus3"`), "required PostgreSQL 17"},
-		{"no PostgreSQL 17", strings.ReplaceAll(horizonCapabilitiesJSON, `"17"`, `"18"`), "required PostgreSQL 17"},
-		{"wrong processor", strings.ReplaceAll(horizonCapabilitiesJSON, `"Intel"`, `"AMD"`), "required PostgreSQL 17"},
-		{"service-selected generation", strings.ReplaceAll(horizonCapabilitiesJSON, `"computeGeneration":1`, `"computeGeneration":2`), ""},
-		{"wrong model", strings.ReplaceAll(horizonCapabilitiesJSON, `"Provisioned"`, `"Serverless"`), "required PostgreSQL 17"},
-		{"wrong size", strings.ReplaceAll(horizonCapabilitiesJSON, `"vCores":2`, `"vCores":4`), "required PostgreSQL 17"},
-		{"missing capabilities", `{}`, "reading HorizonDB"},
-		{"null", "null", "reading HorizonDB"},
-		{"wrong shape", `[]`, "reading HorizonDB"},
-		{"malformed", "{", "reading HorizonDB"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateHorizonCapabilities([]byte(tc.data), "eastus")
-			if tc.want == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %q, got %v", tc.want, err)
-			}
-		})
-	}
-}
-
 func TestDatabaseRegionValidationIsReadOnlyAndSubscriptionScoped(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseBundled, DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseBundled, DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			r := script(t)
@@ -130,7 +88,7 @@ func TestDatabaseRegionValidationIsReadOnlyAndSubscriptionScoped(t *testing.T) {
 }
 
 func TestDatabaseRegionFailureStopsBeforeProvisioning(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		for _, whatIf := range []bool{false, true} {
 			c, _ := managedTestConfig(t, backend)
 			for _, apiError := range []error{nil, errors.New("Azure capability access denied")} {
@@ -156,7 +114,7 @@ func TestDatabaseRegionFailureStopsBeforeProvisioning(t *testing.T) {
 }
 
 func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		for _, scenario := range []string{"existing", "absent group", "unowned group", "missing outputs",
 			"missing resource", "wrong resource", "wrong region", "unowned resource", "invalid response"} {
 			t.Run(string(backend)+"/"+scenario, func(t *testing.T) {
@@ -169,9 +127,6 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 				}
 				capability := databaseRegionReply(backend)
 				capability.output = "[]"
-				if backend == DatabaseHorizon {
-					capability.output = `{"value":[]}`
-				}
 				replies := []reply{capability}
 				if scenario == "absent group" {
 					replies = append(replies, reply{contains: "group exists", output: "false"})
@@ -201,9 +156,6 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 								t.Fatal(err)
 							}
 							apiVersion := "2025-08-01"
-							if backend == DatabaseHorizon {
-								apiVersion = "2026-05-01-preview"
-							}
 							response := reply{contains: "resource show --ids " + db.ResourceID + " --api-version " + apiVersion, output: string(resource)}
 							if scenario == "missing resource" {
 								response.err = errors.New("ResourceNotFound")
@@ -237,7 +189,7 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 }
 
 func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		for _, whatIf := range []bool{false, true} {
 			t.Run(string(backend)+map[bool]string{false: "/provision", true: "/preview"}[whatIf], func(t *testing.T) {
 				c, db := managedTestConfig(t, backend)
@@ -261,17 +213,11 @@ func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
 				}
 				capability := databaseRegionReply(backend)
 				capability.output = "[]"
-				if backend == DatabaseHorizon {
-					capability.output = `{"value":[]}`
-				}
 				replies := []reply{accountReply(c), targetReply(), capability, {contains: "group exists", output: "true"},
 					{contains: "group show", output: string(group)}, {contains: "deployment sub list", output: string(outputs)},
 					{contains: "resource show --ids " + db.ResourceID, output: string(resource)}}
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)},
 					reply{contains: "aks list", output: "[]"})
-				if backend == DatabaseHorizon {
-					replies = append(replies, horizonExistingReplies(t, c, db)...)
-				}
 				action := "create"
 				if whatIf {
 					action = "what-if"
@@ -295,7 +241,7 @@ func (r databaseRunnerFunc) Run(ctx context.Context, command Command) ([]byte, e
 }
 
 func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			var mu sync.Mutex
@@ -307,9 +253,6 @@ func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing
 				}
 				if strings.Contains(args, "provider show") {
 					namespace := "Microsoft.DBforPostgreSQL"
-					if backend == DatabaseHorizon {
-						namespace = "Microsoft.HorizonDB"
-					}
 					if !strings.Contains(args, "--namespace "+namespace) {
 						t.Errorf("discovery used the wrong provider: %v", command.Args)
 					}
@@ -330,15 +273,9 @@ func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing
 				checked[region]++
 				mu.Unlock()
 				profile := flexibleCapabilitiesJSON
-				if backend == DatabaseHorizon {
-					profile = strings.ReplaceAll(horizonCapabilitiesJSON, `"eastus"`, `"`+region+`"`)
-				}
 				switch region {
 				case "southcentralus":
-					if backend == DatabaseFlexible {
-						return []byte(`[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
-					}
-					return []byte(`{"value":[]}`), nil
+					return []byte(`[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
 				case "northeurope":
 					profile = strings.ReplaceAll(profile, `"17"`, `"16"`)
 				}
