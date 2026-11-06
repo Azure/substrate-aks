@@ -7,6 +7,8 @@ param databaseBackend string
 param databaseLocation string
 param vaultName string
 param operatorObjectId string
+@allowed(['User', 'ServicePrincipal', 'Group'])
+param operatorPrincipalType string
 
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
@@ -26,5 +28,6 @@ module vault 'vault.bicep' = {
     installationId: installationId
     vaultName: vaultName
     operatorObjectId: operatorObjectId
+    operatorPrincipalType: operatorPrincipalType
   }
 }

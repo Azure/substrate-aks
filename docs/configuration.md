@@ -300,9 +300,11 @@ bootstrap Secret and upstream application Secret/environment integration.
 Kubernetes Secrets and application passwords remain; this is not passwordless
 database authentication or CSI integration.
 
-The configured Azure upload identity receives **Key Vault Secrets Officer on
-this vault only**, not a subscription-wide grant. Run managed database commands
-as that identity or separately grant the installer equivalent vault access.
+The AKS operator (`aks.operator`) receives **Key Vault Secrets Officer on this
+vault only**, not a subscription-wide grant. Its cluster admin role already
+exposes the application's database credentials, so this adds no new access. The
+upload identity gets no vault access. Run managed database commands as the
+operator or separately grant the installer equivalent vault access.
 The deployment identity also needs `Microsoft.KeyVault/vaults/deploy/action`.
 The vault has an authenticated public endpoint; pods need no Key Vault identity
 or direct vault access. After reconciling the vault and grant, provisioning waits
@@ -324,9 +326,9 @@ HorizonDB deletion is still in progress, `destroy` reports the error and keeps
 the local installation for a retry. The vault and its secrets are soft-deleted
 with seven-day retention (purge protection is off); teardown does not purge
 them. A new installation gets a new ID and therefore a different vault name,
-even with the same installation name. Reusing a saved installation whose group
-was deleted outside the installer can fail on its soft-deleted vault; recover or
-purge it with the required Azure permissions, or create a new installation.
+even with the same installation name. A managed-database installation can't be
+reused after its resource group is deleted outside the installer; see
+[retry and teardown](operations.md#retry-and-teardown).
 
 ## Azure identity and permissions
 

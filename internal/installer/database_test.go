@@ -75,6 +75,8 @@ func managedTestConfig(t *testing.T, backend DatabaseBackend) (Config, *Database
 	t.Helper()
 	c := testConfig(t)
 	c.Database = DatabaseConfig{Backend: backend, Location: "westus3"}
+	// A separate operator shows that the vault grant does not follow the upload identity.
+	c.AKS.Operator = &OperatorConfig{ObjectID: "44444444-4444-4444-8444-444444444444", PrincipalType: "Group"}
 	kind, host := "Microsoft.DBforPostgreSQL/flexibleServers/", "pgexample.postgres.database.azure.com"
 	if backend == DatabaseHorizon {
 		c.Database.Location = "eastus"
@@ -91,8 +93,14 @@ func TestDatabaseSelectionValidationAndLegacyDefault(t *testing.T) {
 	for _, backend := range []DatabaseBackend{"", DatabaseBundled, DatabaseFlexible, DatabaseHorizon, "invalid"} {
 		c := testConfig(t)
 		c.Database = DatabaseConfig{Backend: backend}
+		c.AKS.Operator = &OperatorConfig{ObjectID: "44444444-4444-4444-8444-444444444444", PrincipalType: "User"}
 		if err := c.Validate(); (err != nil) != (backend == "invalid") {
 			t.Fatalf("backend %q validation: %v", backend, err)
+		}
+		managed := backend == DatabaseFlexible || backend == DatabaseHorizon
+		c.AKS.Operator = nil
+		if err := c.Validate(); managed != (err != nil && strings.Contains(err.Error(), "aks.operator")) {
+			t.Fatalf("backend %q without an operator, who receives vault access: %v", backend, err)
 		}
 	}
 	c := testConfig(t)
@@ -355,6 +363,22 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 				last := r.calls[len(r.calls)-1]
 				if last.SensitiveOutput == registry {
 					t.Fatal("incorrect protection for secret-bearing provisioning command")
+				}
+				for _, call := range r.calls {
+					if !strings.Contains(strings.Join(call.Args, " "), c.deploymentName()+"-vault") {
+						continue
+					}
+					var vault struct {
+						Parameters map[string]struct{ Value string }
+					}
+					if err := json.Unmarshal(call.Input, &vault); err != nil {
+						t.Fatal(err)
+					}
+					// The upload identity has no path to database credentials.
+					if vault.Parameters["operatorObjectId"].Value != c.AKS.Operator.ObjectID ||
+						vault.Parameters["operatorPrincipalType"].Value != c.AKS.Operator.PrincipalType {
+						t.Fatalf("database vault access was not granted to the AKS operator: %+v", vault.Parameters)
+					}
 				}
 				path := filepath.Join(c.workspace(), "infra", "parameters.json")
 				if !registry {

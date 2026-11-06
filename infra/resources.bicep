@@ -24,6 +24,7 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryName string
+@allowed(['bundled', 'flexible-server', 'horizondb'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
 @description('HorizonDB operation supplied by the caller: Create for a fresh cluster, Update for an existing cluster with the same installation identity.')
@@ -33,7 +34,6 @@ param horizonCreateMode string = 'Create'
 param databaseAdminPassword string = ''
 
 var managedDatabase = databaseBackend != 'bundled'
-var defaultNodeResourceGroup = 'MC_${resourceGroup().name}_${clusterName}_${location}'
 var tags = {
   'substrate-aks-installation': installationId
 }
@@ -88,9 +88,6 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
   }
   dependsOn: [egressNetwork]
   properties: {
-    ...(length(defaultNodeResourceGroup) > 80 ? {
-      nodeResourceGroup: 'MC_${clusterName}_${uniqueString(resourceGroup().id, installationId)}'
-    } : {})
     dnsPrefix: clusterName
     kubernetesVersion: kubernetesVersion
     enableRBAC: true

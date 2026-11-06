@@ -448,6 +448,7 @@ func TestSetupRejectsUnsupportedDatabaseBeforeAnyStage(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.Database = installer.DatabaseConfig{Backend: backend}
+			c.AKS.Operator = &installer.OperatorConfig{ObjectID: defaultPublisher, PrincipalType: "User"}
 			data, err := json.Marshal(c)
 			if err != nil {
 				t.Fatal(err)
@@ -498,6 +499,7 @@ func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.Database = installer.DatabaseConfig{Backend: backend, Location: "eastus"}
+			c.AKS.Operator = &installer.OperatorConfig{ObjectID: defaultPublisher, PrincipalType: "User"}
 			data, err := json.Marshal(c)
 			if err != nil {
 				t.Fatal(err)
@@ -544,6 +546,8 @@ func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
 						"tags": map[string]string{"substrate-aks-installation": c.Installation.ID}})
 				case strings.Contains(args, "account show"):
 					return []byte(accountJSON("user")), nil
+				case strings.Contains(args, "ad signed-in-user show"):
+					return []byte(`{"id":"` + defaultPublisher + `"}`), nil
 				default:
 					t.Fatalf("unexpected discovery command: %v", command.Args)
 					return nil, nil

@@ -307,6 +307,10 @@ func (c Config) Validate() error {
 		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
 			return errors.New("database.location must be an Azure region name")
 		}
+		// The database credential vault grants access to the AKS operator.
+		if c.AKS.Operator == nil {
+			return errors.New("managed PostgreSQL requires aks.operator, which receives access to the database credential vault")
+		}
 	default:
 		return errors.New("database.backend must be bundled, flexible-server or horizondb")
 	}

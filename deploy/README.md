@@ -24,6 +24,8 @@ deployment values. Use the [installer](../README.md#quickstart), not
 Managed PostgreSQL uses a separate non-root, bounded psql Job in
 `database-bootstrap.yaml`. The installer supplies a temporary Secret and the
 pinned `pkg/postgressetup/setup.sql` ConfigMap, then cleans all three resources.
+If cleanup fails, the installer reports it and removes them on the next install;
+see [operations](../docs/operations.md#provision-and-install) for manual cleanup.
 No password or DSN is embedded in the manifest.
 
 ## Working on the components

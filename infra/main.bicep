@@ -70,7 +70,8 @@ module vault 'vault.bicep' = if (!registryOnly && databaseBackend != 'bundled') 
     location: location
     installationId: installationId
     vaultName: databaseVaultName
-    operatorObjectId: assetPublisherObjectId
+    operatorObjectId: operatorObjectId
+    operatorPrincipalType: operatorPrincipalType
   }
 }
 

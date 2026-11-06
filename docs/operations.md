@@ -250,8 +250,8 @@ bin/substrate-aks client
 
 Managed databases use a restricted firewall, a static AKS outbound IP, and
 IP-scoped cluster network permissions. Credentials are retained in a Standard
-Key Vault with vault-scoped Secrets Officer access for the configured Azure
-identity and seven-day soft-delete retention.
+Key Vault with vault-scoped Secrets Officer access for the AKS operator and
+seven-day soft-delete retention.
 
 The cluster uses Azure CNI Overlay and Cilium network policy, with a separate
 tainted microVM node pool. Automatic Kubernetes version upgrades are disabled to
@@ -290,7 +290,11 @@ For a [managed PostgreSQL backend](configuration.md#postgresql-backend), `instal
 first runs a bounded non-root PostgreSQL-client Job in AKS. It creates the
 dedicated `substrate` database and runs the pinned upstream role/schema script
 transactionally. The temporary Job, administrator Secret and SQL ConfigMap are
-removed on success or failure. Failure does not record a completed install.
+removed on success or failure, and again before the next bootstrap. If that
+cleanup itself fails, the error is reported and the administrator Secret can
+remain in `ate-system`; remove all three with
+`kubectl delete job,secret,configmap substrate-aks-postgres-bootstrap -n ate-system`.
+Failure does not record a completed install.
 The installer observes both successful and failed Job conditions, reporting a
 terminal failure without waiting for the full readiness deadline.
 The application, not the bootstrap Job, runs its migrations under the separate
@@ -303,7 +307,7 @@ reports the managed endpoint and AKS egress address alongside workload status.
 Keep the saved installation and its ID for retries. Provisioning reuses
 the credentials in the installer-owned Key Vault rather than rotating them.
 The installation directory contains no database passwords. Run as the
-configured Azure identity or grant the
+AKS operator or grant the
 installer equivalent vault access. Provisioning waits up to three minutes for
 recognized vault RBAC/DNS propagation failures instead of aborting on the first
 probe, including Linux and macOS DNS error wording. Metadata-only probes retain
@@ -496,7 +500,11 @@ does not purge or recover it. Vault names derive from the installation ID, so
 a new installation with the same name uses a different vault.
 
 If the resource group was deleted outside the installer, clear references to
-deleted images before reusing the saved installation:
+deleted images before reusing the saved installation. This doesn't apply to a
+managed PostgreSQL installation: create a new installation instead. Reusing it
+fails on the soft-deleted vault name for seven days. After that, a new empty
+vault is created, and setup refuses to generate passwords because the earlier
+deployments are still recorded.
 
 ```sh
 bin/substrate-aks images substrate-dev --reset-config

@@ -164,7 +164,7 @@ func (a App) provisionDatabaseVault(ctx context.Context, dir string) error {
 		"location": c.Azure.Location, "resourceGroupName": c.Azure.ResourceGroup,
 		"installationId": c.Installation.ID, "databaseBackend": string(c.Database.Backend),
 		"databaseLocation": c.DatabaseLocation(), "vaultName": c.databaseVaultName(),
-		"operatorObjectId": c.Azure.AssetPublisherObjectID,
+		"operatorObjectId": c.AKS.Operator.ObjectID, "operatorPrincipalType": c.AKS.Operator.PrincipalType,
 	} {
 		params[key] = map[string]string{"value": value}
 	}
@@ -308,7 +308,8 @@ func (a App) databaseCredentials(ctx context.Context, create bool) (databaseSecr
 		return databaseSecrets{}, errors.New("invalid prior database deployment listing; refusing to generate credentials")
 	}
 	if len(existing) != 0 {
-		return databaseSecrets{}, errors.New("database credentials are missing after a deployment was submitted; restore the original Key Vault secret, do not generate new passwords")
+		return databaseSecrets{}, errors.New("database credentials are missing after a deployment was submitted; restore the original Key Vault secret, do not generate new passwords. " +
+			"If the resource group was deleted outside the installer, the database was deleted with it; create a new installation")
 	}
 	s, err := newDatabaseSecrets(c)
 	if err != nil {

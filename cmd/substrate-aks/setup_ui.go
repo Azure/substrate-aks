@@ -358,7 +358,7 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	if c.ManagedDatabase() {
 		u.row("Database region", c.DatabaseLocation())
 		u.rowDetail("Credentials", "Key Vault in the resource group",
-			"Generated passwords are not stored on this machine. The Azure identity receives vault-scoped Secrets Officer access. Teardown deletes the database and its backups; vault secrets stay soft-deleted for seven days.")
+			"Generated passwords are not stored on this machine. The cluster admin receives vault-scoped Secrets Officer access. Teardown deletes the database and its backups; vault secrets stay soft-deleted for seven days.")
 		warnings = append(warnings, "Managed PostgreSQL adds database compute, storage, and backup charges, a Key Vault, and a static egress IP. Its public endpoint accepts only AKS egress, over verified TLS.")
 	}
 

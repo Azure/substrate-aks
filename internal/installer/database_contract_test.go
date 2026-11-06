@@ -395,6 +395,41 @@ func TestManagedBicepVaultContract(t *testing.T) {
 	if !vault || !grant {
 		t.Fatal("database vault or scoped operator grant is missing")
 	}
+	main, err := exec.CommandContext(t.Context(), "az", "bicep", "build",
+		"--file", "../../infra/main.bicep", "--stdout").Output()
+	if err != nil {
+		t.Fatalf("compiling main template: %v", err)
+	}
+	var root struct {
+		Resources []struct {
+			Name       string
+			Properties struct {
+				Parameters map[string]json.RawMessage
+			}
+		}
+	}
+	if err := json.Unmarshal(main, &root); err != nil {
+		t.Fatal(err)
+	}
+	forwarded := false
+	for _, module := range root.Resources {
+		if !strings.Contains(module.Name, "substrate-vault-") {
+			continue
+		}
+		forwarded = true
+		for name, want := range map[string]string{
+			"operatorObjectId":      `{"value":"[parameters('operatorObjectId')]"}`,
+			"operatorPrincipalType": `{"value":"[parameters('operatorPrincipalType')]"}`,
+		} {
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, module.Properties.Parameters[name]); err != nil || compact.String() != want {
+				t.Fatalf("database vault access must follow the AKS operator, not the upload identity: %s = %s", name, compact.String())
+			}
+		}
+	}
+	if !forwarded {
+		t.Fatal("main template no longer deploys the database vault module")
+	}
 }
 
 func TestPinnedDatabaseBootstrapScript(t *testing.T) {
