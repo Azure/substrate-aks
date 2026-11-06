@@ -62,11 +62,16 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
 | `bin/substrate-aks init flex --database flexible-server --database-location westus3` | Save a new installation that uses Azure PostgreSQL Flexible Server |
+| `bin/substrate-aks init horizon --database horizondb --database-location koreacentral` | Save a new installation that uses Azure HorizonDB (preview) |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) for
 identity overrides and [operations](docs/operations.md#guided-installation) for
 automation options.
+
+The [HorizonDB infrastructure can also be deployed directly](docs/infrastructure.md)
+without running the installer; SQL bootstrap and application installation remain
+separate steps.
 
 ## What gets installed
 
@@ -76,7 +81,7 @@ automation options.
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
 | Substrate | API server, controller, networking, and atelet |
-| Database | Bundled PostgreSQL with a 32 GiB Azure Disk by default (no HA or backups); optional Azure PostgreSQL Flexible Server |
+| Database | Bundled PostgreSQL with a 32 GiB Azure Disk by default (no HA or backups); optional Azure PostgreSQL Flexible Server or HorizonDB (preview) |
 | Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |

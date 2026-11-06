@@ -32,9 +32,12 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryOnly bool = false
-@allowed(['bundled', 'flexible-server'])
+@allowed(['bundled', 'flexible-server', 'horizondb'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
+@description('HorizonDB lifecycle operation. Use Create for a fresh cluster and Update for a verified existing cluster. The installer supplies this from Azure state; direct callers must choose it for retries.')
+@allowed(['Create', 'Update'])
+param horizonCreateMode string = 'Create'
 param databaseVaultName string = ''
 @secure()
 param databaseCredentials string = ''
@@ -95,6 +98,7 @@ module resources 'resources.bicep' = if (!registryOnly) {
     registryName: registry.outputs.registryName
     databaseBackend: databaseBackend
     databaseLocation: databaseLocation
+    horizonCreateMode: horizonCreateMode
     databaseAdminPassword: databaseBackend == 'bundled' ? '' : json(databaseCredentials).admin
   }
 }

@@ -391,19 +391,19 @@ func (p *setupPrompt) containerEngine(ctx context.Context) (string, error) {
 
 func (p *setupPrompt) database(ctx context.Context, fallback string) (string, error) {
 	switch fallback {
-	case "bundled", "flexible-server":
+	case "bundled", "flexible-server", "horizondb":
 	default:
-		return "", fmt.Errorf("choose bundled or flexible-server")
+		return "", fmt.Errorf("choose bundled, flexible-server or horizondb")
 	}
 	value := fallback
 	if p.accessible {
-		err := p.run(ctx, huh.NewInput().Title("PostgreSQL backend: bundled, flexible-server ["+fallback+"]").
+		err := p.run(ctx, huh.NewInput().Title("PostgreSQL backend: bundled, flexible-server, horizondb (preview) ["+fallback+"]").
 			Value(&value).Validate(func(s string) error {
 			switch strings.TrimSpace(s) {
-			case "", "bundled", "flexible-server":
+			case "", "bundled", "flexible-server", "horizondb":
 				return nil
 			default:
-				return fmt.Errorf("choose bundled or flexible-server")
+				return fmt.Errorf("choose bundled, flexible-server or horizondb")
 			}
 		}))
 		value = strings.TrimSpace(value)
@@ -416,6 +416,7 @@ func (p *setupPrompt) database(ctx context.Context, fallback string) (string, er
 		Options(
 			huh.NewOption("Bundled PostgreSQL (Kubernetes, default)", "bundled"),
 			huh.NewOption("Azure PostgreSQL Flexible Server", "flexible-server"),
+			huh.NewOption("Azure HorizonDB (preview)", "horizondb"),
 		).Value(&value))
 	return value, err
 }

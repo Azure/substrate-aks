@@ -17,8 +17,23 @@ const flexibleCapabilitiesJSON = `[{
 	"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D2ads_v5"}]}]
 }]`
 
-func databaseRegionReply(DatabaseBackend) reply {
-	return reply{contains: "postgres flexible-server list-skus --location westus3", output: flexibleCapabilitiesJSON}
+const horizonCapabilitiesJSON = `{"value":[{
+	"location":"eastus",
+	"clusterCapabilities":{"supportedPostgreSqlVersions":[{"name":"17"}]},
+	"poolCapabilities":{"supportedProcessors":[{
+		"name":"Intel","supportedGenerations":[{
+			"computeGeneration":1,"supportedComputeModels":[{
+				"type":"Provisioned","supportedComputeSizes":[{"vCores":2}]
+			}]
+		}]
+	}]}
+}]}`
+
+func databaseRegionReply(backend DatabaseBackend) reply {
+	if backend == DatabaseFlexible {
+		return reply{contains: "postgres flexible-server list-skus --location westus3", output: flexibleCapabilitiesJSON}
+	}
+	return reply{contains: "Microsoft.HorizonDB/locations/eastus/capabilities?api-version=2026-10-01-preview", output: horizonCapabilitiesJSON}
 }
 
 // workspaceHasState reports whether anything was written in the installation
@@ -32,8 +47,18 @@ func workspaceHasState(t *testing.T, c Config) bool {
 	return len(entries) != 0
 }
 
+func horizonParameterGroupReply(subscription, region string) reply {
+	id := "/subscriptions/" + subscription + "/providers/Microsoft.HorizonDb/locations/" + region + "/parameterGroups/default_pg17"
+	return reply{contains: "rest --method get --url https://management.azure.com" + id + "?api-version=2026-10-01-preview",
+		output: `{"id":"` + id + `","version":"17","state":"Succeeded"}`}
+}
+
 func databasePreflightReplies(c Config) []reply {
-	return []reply{databaseRegionReply(c.Database.Backend)}
+	replies := []reply{databaseRegionReply(c.Database.Backend)}
+	if c.Database.Backend == DatabaseHorizon {
+		replies = append(replies, horizonParameterGroupReply(c.Azure.SubscriptionID, c.DatabaseLocation()))
+	}
+	return replies
 }
 
 func TestFlexibleDatabaseRegionCapabilities(t *testing.T) {
@@ -64,13 +89,81 @@ func TestFlexibleDatabaseRegionCapabilities(t *testing.T) {
 	}
 }
 
+func TestHorizonDatabaseRegionCapabilities(t *testing.T) {
+	for _, tc := range []struct{ name, data, want string }{
+		{"supported", horizonCapabilitiesJSON, ""},
+		{"wrong region", strings.ReplaceAll(horizonCapabilitiesJSON, `"eastus"`, `"westus3"`), "required PostgreSQL 17"},
+		{"no PostgreSQL 17", strings.ReplaceAll(horizonCapabilitiesJSON, `"17"`, `"18"`), "required PostgreSQL 17"},
+		{"wrong processor", strings.ReplaceAll(horizonCapabilitiesJSON, `"Intel"`, `"AMD"`), "required PostgreSQL 17"},
+		{"wrong generation", strings.ReplaceAll(horizonCapabilitiesJSON, `"computeGeneration":1`, `"computeGeneration":2`), "required PostgreSQL 17"},
+		{"wrong model", strings.ReplaceAll(horizonCapabilitiesJSON, `"Provisioned"`, `"Serverless"`), "required PostgreSQL 17"},
+		{"wrong size", strings.ReplaceAll(horizonCapabilitiesJSON, `"vCores":2`, `"vCores":4`), "required PostgreSQL 17"},
+		{"missing capabilities", `{}`, "reading HorizonDB"},
+		{"null", "null", "reading HorizonDB"},
+		{"wrong shape", `[]`, "reading HorizonDB"},
+		{"malformed", "{", "reading HorizonDB"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHorizonCapabilities([]byte(tc.data), "eastus")
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestHorizonParameterGroupValidation(t *testing.T) {
+	denied := errors.New("parameter group access denied")
+	for _, tc := range []struct {
+		name, output string
+		err          error
+		unavailable  bool
+		want         string
+	}{
+		{name: "present"},
+		{name: "not provided", err: errors.New(`Not Found({"error":{"code":"ResourceNotFound"}})`), unavailable: true, want: "does not provide"},
+		{name: "not ready", output: `{"id":"ID","version":"17","state":"Provisioning"}`, unavailable: true, want: "provisioning state"},
+		{name: "wrong version", output: `{"id":"ID","version":"18","state":"Succeeded"}`, want: "invalid"},
+		{name: "wrong region", output: `{"id":"ID-other","version":"17","state":"Succeeded"}`, want: "invalid"},
+		{name: "malformed", output: "{", want: "invalid"},
+		{name: "access denied", err: denied, want: "reading"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := managedTestConfig(t, DatabaseHorizon)
+			group := horizonParameterGroupReply(c.Azure.SubscriptionID, c.DatabaseLocation())
+			id := "/subscriptions/" + c.Azure.SubscriptionID + "/providers/Microsoft.HorizonDb/locations/" + c.DatabaseLocation() + "/parameterGroups/default_pg17"
+			if tc.output != "" {
+				group.output = strings.ReplaceAll(tc.output, "ID", id)
+			}
+			group.err = tc.err
+			err := (App{Config: c, Runner: script(t, group)}).validateHorizonParameterGroup(t.Context())
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, errDatabaseRegionUnavailable) != tc.unavailable {
+				t.Fatalf("got %v; want %q, unavailable=%v", err, tc.want, tc.unavailable)
+			}
+			if tc.err == denied && !errors.Is(err, denied) {
+				t.Fatalf("Azure error was lost: %v", err)
+			}
+		})
+	}
+}
+
 func TestDatabaseRegionValidationIsReadOnlyAndSubscriptionScoped(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseBundled, DatabaseFlexible} {
+	for _, backend := range []DatabaseBackend{DatabaseBundled, DatabaseFlexible, DatabaseHorizon} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			r := script(t)
 			if c.ManagedDatabase() {
-				r.replies = append(r.replies, databaseRegionReply(backend))
+				r.replies = append(r.replies, databasePreflightReplies(c)...)
 			}
 			if err := ValidateDatabaseRegion(t.Context(), r, c.Azure.SubscriptionID, c.Azure.Location, c.Database); err != nil {
 				t.Fatal(err)
@@ -88,7 +181,7 @@ func TestDatabaseRegionValidationIsReadOnlyAndSubscriptionScoped(t *testing.T) {
 }
 
 func TestDatabaseRegionFailureStopsBeforeProvisioning(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
 		for _, whatIf := range []bool{false, true} {
 			c, _ := managedTestConfig(t, backend)
 			for _, apiError := range []error{nil, errors.New("Azure capability access denied")} {
@@ -114,7 +207,7 @@ func TestDatabaseRegionFailureStopsBeforeProvisioning(t *testing.T) {
 }
 
 func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
 		for _, scenario := range []string{"existing", "absent group", "unowned group", "missing outputs",
 			"missing resource", "wrong resource", "wrong region", "unowned resource", "invalid response"} {
 			t.Run(string(backend)+"/"+scenario, func(t *testing.T) {
@@ -127,6 +220,9 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 				}
 				capability := databaseRegionReply(backend)
 				capability.output = "[]"
+				if backend == DatabaseHorizon {
+					capability.output = `{"value":[]}`
+				}
 				replies := []reply{capability}
 				if scenario == "absent group" {
 					replies = append(replies, reply{contains: "group exists", output: "false"})
@@ -156,6 +252,9 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 								t.Fatal(err)
 							}
 							apiVersion := "2025-08-01"
+							if backend == DatabaseHorizon {
+								apiVersion = "2026-10-01-preview"
+							}
 							response := reply{contains: "resource show --ids " + db.ResourceID + " --api-version " + apiVersion, output: string(resource)}
 							if scenario == "missing resource" {
 								response.err = errors.New("ResourceNotFound")
@@ -189,7 +288,7 @@ func TestDatabaseRegionRestrictionsRequireVerifiedExistingResource(t *testing.T)
 }
 
 func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
 		for _, whatIf := range []bool{false, true} {
 			t.Run(string(backend)+map[bool]string{false: "/provision", true: "/preview"}[whatIf], func(t *testing.T) {
 				c, db := managedTestConfig(t, backend)
@@ -213,11 +312,17 @@ func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
 				}
 				capability := databaseRegionReply(backend)
 				capability.output = "[]"
+				if backend == DatabaseHorizon {
+					capability.output = `{"value":[]}`
+				}
 				replies := []reply{accountReply(c), targetReply(), capability, {contains: "group exists", output: "true"},
 					{contains: "group show", output: string(group)}, {contains: "deployment sub list", output: string(outputs)},
 					{contains: "resource show --ids " + db.ResourceID, output: string(resource)}}
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)},
 					reply{contains: "aks list", output: "[]"})
+				if backend == DatabaseHorizon {
+					replies = append(replies, horizonExistingReplies(t, c, db)...)
+				}
 				action := "create"
 				if whatIf {
 					action = "what-if"
@@ -241,7 +346,7 @@ func (r databaseRunnerFunc) Run(ctx context.Context, command Command) ([]byte, e
 }
 
 func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing.T) {
-	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
+	for _, backend := range []DatabaseBackend{DatabaseFlexible, DatabaseHorizon} {
 		t.Run(string(backend), func(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			var mu sync.Mutex
@@ -251,8 +356,15 @@ func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing
 				if !strings.Contains(args, "--subscription "+c.Azure.SubscriptionID) {
 					t.Errorf("discovery lost subscription binding: %v", command.Args)
 				}
+				if strings.Contains(args, "/parameterGroups/default_pg17?") {
+					id := args[strings.Index(args, "/subscriptions/"):strings.Index(args, "?api-version")]
+					return []byte(`{"id":"` + id + `","version":"17","state":"Succeeded"}`), nil
+				}
 				if strings.Contains(args, "provider show") {
 					namespace := "Microsoft.DBforPostgreSQL"
+					if backend == DatabaseHorizon {
+						namespace = "Microsoft.HorizonDB"
+					}
 					if !strings.Contains(args, "--namespace "+namespace) {
 						t.Errorf("discovery used the wrong provider: %v", command.Args)
 					}
@@ -273,9 +385,15 @@ func TestAvailableDatabaseRegionsFiltersServiceSubscriptionAndProfile(t *testing
 				checked[region]++
 				mu.Unlock()
 				profile := flexibleCapabilitiesJSON
+				if backend == DatabaseHorizon {
+					profile = strings.ReplaceAll(horizonCapabilitiesJSON, `"eastus"`, `"`+region+`"`)
+				}
 				switch region {
 				case "southcentralus":
-					return []byte(`[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
+					if backend == DatabaseFlexible {
+						return []byte(`[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
+					}
+					return []byte(`{"value":[]}`), nil
 				case "northeurope":
 					profile = strings.ReplaceAll(profile, `"17"`, `"16"`)
 				}
