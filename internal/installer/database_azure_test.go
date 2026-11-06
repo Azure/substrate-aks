@@ -72,6 +72,8 @@ func TestAzureDatabaseVaultContract(t *testing.T) {
 			c, _ := managedTestConfig(t, backend)
 			c.Azure.SubscriptionID = *vaultContractSubscription
 			c.Azure.AssetPublisherObjectID = *vaultContractOperator
+			// The vault grant goes to the AKS operator, so the signed-in user must be it to read back credentials.
+			c.AKS.Operator = &OperatorConfig{ObjectID: *vaultContractOperator, PrincipalType: "User"}
 			c.Azure.Location = "eastus"
 			c.Azure.ResourceGroup = fmt.Sprintf("subpg-contract-%d", time.Now().UnixNano())
 			id := make([]byte, 16)
