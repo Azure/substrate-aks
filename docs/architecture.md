@@ -77,6 +77,17 @@ only it is allowed through the database firewall. The cluster's user-assigned
 identity receives Network Contributor on that IP before AKS creation, avoiding
 a dependency cycle with a system-assigned cluster identity.
 
+HorizonDB deployment uses API `2026-10-01-preview`: cluster, `default` pool with
+the regional `default_pg17` parameter group, password then disabled Entra
+authentication, and the pool firewall, deployed in that order. The host comes
+from the cluster's read/write endpoint. A constrained `horizonCreateMode`
+parameter flows from `main.bicep` through `resources.bicep` to the leaf's
+`createMode`; `Update` omits the write-once administrator login. The installer
+selects the mode from live owned-cluster and authentication metadata, including
+resources left by partial deployments. The Bicep modules themselves perform no
+installer-specific state discovery: [direct callers](infrastructure.md) supply
+the same parameters independently.
+
 Each full infrastructure deployment has a unique installation-scoped attempt
 name. Resource discovery selects the latest successful full attempt in Azure,
 including the legacy unsuffixed deployment name, then validates ownership and

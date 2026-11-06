@@ -95,7 +95,7 @@ exports. On failure it prints recovery commands instead.
 
 ### Options and automation
 
-Setup also offers bundled PostgreSQL or Azure Database for PostgreSQL Flexible Server.
+Setup also offers bundled PostgreSQL, Azure Database for PostgreSQL Flexible Server, or Azure HorizonDB (preview).
 Managed database regions are filtered by subscription-specific capabilities.
 Setup rechecks the chosen region before billing approval.
 
@@ -493,8 +493,8 @@ the shared client remain. If `destroy` fails, local state is kept for a retry.
 
 Managed PostgreSQL servers and clusters are created in the installation's
 resource group, even when the database region differs from AKS, so group
-deletion removes them. If group deletion fails, `destroy` keeps local state
-for a retry. The database Key Vault
+deletion removes them. If group deletion fails, for example while a preview
+HorizonDB deletion is still in progress, `destroy` keeps local state for a retry. The database Key Vault
 stays soft-deleted for seven days (purge protection is off); the installer
 does not purge or recover it. Vault names derive from the installation ID, so
 a new installation with the same name uses a different vault.
@@ -558,14 +558,14 @@ The image-check tests use local registries, and publisher tests use controlled
 engine commands. They do not prove live ACR access or real image builds.
 
 Additional opt-in contracts check external PostgreSQL selection/secret
-reconciliation, compiled network/Key Vault configuration, deployment
+reconciliation, compiled network/Key Vault/HorizonDB configuration, deployment
 history selection, and the real bootstrap shell twice in an isolated Docker
 PostgreSQL instance. These also require Docker and Bicep, but no working
 kubeconfig or Azure resource deployment:
 
 ```sh
 go test -tags=integration ./internal/installer \
-  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestInfrastructureDeploymentHistorySelection' \
+  -run 'TestPinnedManagedPostgresContract|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract)|TestHorizonBicep(APIContract|CreateModeWiring)|TestHorizonStandaloneParameterExamples|TestHorizonInventoryPreservesForeignClusters|TestInfrastructureDeploymentHistorySelection' \
   -args -contract-root /absolute/path/to/pinned/substrate
 ```
 
@@ -574,8 +574,8 @@ under `deploy/` and the embedded Go checker/publisher sources as well as ordinar
 These tests do not provision Azure.
 
 The read-only Azure capability contracts check the configured fixed profiles
-against Flexible Server in `westus3`, and discover the subscription-supported
-choices across the service region catalog. They require
+against Flexible Server in `westus3` and HorizonDB in `eastus`, and discover the
+subscription-supported choices across the service region catalogs. They require
 subscription access but create no resources and read no credentials:
 
 ```sh
@@ -710,12 +710,32 @@ are absent. Access errors and invalid/mismatched metadata remain errors.
 
 **Still unverified:** cross-node restore, sustained load, egress IP stability
 after sizing/network changes, unauthorized-IP rejection, live component retries,
-database reconnection after pod restarts and renewable Entra database
+database reconnection after pod restarts, recovery from HorizonDB failover or
+scaling resets (the installer offers no HA variant) and renewable Entra database
 credentials. These are not established by the scoped live runs, SQL probes,
 Docker bootstrap execution or Azure previews.
 
-Azure HorizonDB is not offered yet. Support will target its
-`2026-10-01-preview` API in a follow-up change.
+HorizonDB on `2026-10-01-preview` passed a fresh installation with the database
+in `koreacentral` and AKS in `southcentralus`. The cluster, `default` pool,
+password and Entra authentication and firewall rule were created in order. Live
+inspection confirmed PostgreSQL 17, Intel generation 1 with two vCores, one node,
+HA disabled, `default_pg17`, seven-day backups without geo-redundancy, and a
+single firewall rule for the static AKS egress IP. SQL bootstrap, migrations,
+two API replicas and two demo workers passed with `sslmode=verify-full` against
+the cluster's `.rw.` endpoint. Two counter actors passed synchronous MEMORY
+snapshots and both HTTP-triggered and explicit resume. Same-config `plan` showed
+only modifications, and `provision` selected `Update` and passed. Cluster and
+egress identities and API pods were unchanged, and counters continued afterwards.
+The first cold actor activation returned one router 504 before succeeding.
+Guarded teardown removed the installation and AKS node groups, independently
+confirmed absent.
+
+HorizonDB pool creation failed in `eastus` with an internal server error during
+earlier probes, even though the region advertises the required profile and
+parameter group. Region checks can't detect that; choose another region if it
+recurs. The installer's Bicep emits BCP081 warnings because the installed type
+catalog doesn't include this preview API; compiled-template contracts check the
+deployed shape.
 
 Existing-cluster support, managed database migration/adoption/rotation, other
 private actor registries, actor-scoped Blob authorization, autoscaling, dashboards,

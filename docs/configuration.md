@@ -27,7 +27,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1); see [microVM worker pool](#microvm-worker-pool) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
-| PostgreSQL | `bundled`; managed `flexible-server` is opt-in |
+| PostgreSQL | `bundled`; managed `flexible-server` and `horizondb` (preview) are opt-in |
 
 Each installation is saved as `installations/NAME/installation.json` in the
 installer's home directory, a per-user state directory:
@@ -197,6 +197,8 @@ Choose during guided setup, or when creating a new installation:
 
 ```sh
 bin/substrate-aks init flex --database flexible-server --database-location westus3
+# Alternatively, for HorizonDB preview:
+bin/substrate-aks init horizon --database horizondb --database-location koreacentral
 ```
 
 The selection is saved in the new installation record:
@@ -216,6 +218,7 @@ Records without `database` use bundled PostgreSQL.
 | --- | --- |
 | `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
 | `flexible-server` | PostgreSQL 17, General Purpose `Standard_D2ads_v5`, 32 GiB, seven-day locally redundant backups, no HA |
+| `horizondb` | Preview, PostgreSQL 17, one pool with two Intel generation-1 vCores, one node, no HA; service-default seven-day backups |
 
 Optional `database.location` defaults to `azure.location` and applies only to
 managed backends. It can differ from AKS, with cross-region latency and transfer
@@ -242,7 +245,26 @@ Other validation failures stop noninteractive commands and saved installations;
 no region is changed without user selection. Advertised support does **not**
 guarantee quota, live SKU capacity or successful provisioning. Live SQL probes succeeded
 in `westus3`; advertised regions and SKUs were not all deployable. Register
-`Microsoft.DBforPostgreSQL` in the target subscription before provisioning.
+`Microsoft.DBforPostgreSQL` or `Microsoft.HorizonDB` in the target subscription
+before provisioning.
+
+HorizonDB uses API `2026-10-01-preview`. Bicep creates the cluster, a `default`
+pool, password authentication (Microsoft Entra disabled) and the pool's firewall
+rule, in that order; the connection host is the cluster's read/write endpoint.
+Backup settings are omitted, so the service applies seven-day retention without
+geo-redundancy. The pool uses the service-provided regional parameter group
+`default_pg17`, so region checks and the picker also require that group to exist
+and be ready. Full `plan`/`provision` inspect the installation-owned cluster and
+select `Create` when there is no cluster or its password authentication isn't
+enabled yet (for example after a partial deployment), or `Update` otherwise.
+`Update` omits the administrator login, which the API treats as write-once.
+Busy, failed, foreign or unverifiable resources stop deployment rather than being
+treated as absent. Retries reuse the Key Vault password. Direct Bicep callers
+choose the mode themselves; see [standalone infrastructure deployment](infrastructure.md).
+
+HorizonDB clears UNLOGGED tables, which Substrate's outbox uses, on failover and
+when the pool is scaled up or down. Substrate detects this through the changed
+`pg_postmaster_start_time()`, but treat scaling as a reset event.
 
 **Acceptance:** fresh Flexible Server installations passed managed bootstrap,
 verified TLS, same-config reprovisioning and durable counter continuity.
