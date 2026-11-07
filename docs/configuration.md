@@ -190,7 +190,7 @@ Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools; request more quota before provisioning
 a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
-[live acceptance and limitations](operations.md#live-acceptance-and-limitations).
+[memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
 ## Azure identity and permissions
 

@@ -116,27 +116,6 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 
 ## How it works
 
-```mermaid
-flowchart LR
-    cli(["bin/substrate-aks setup"])
-    ghcr[("ghcr.io<br/>Substrate release images")]
-
-    subgraph rg["Dedicated Azure resource group"]
-        acr[("Container Registry")]
-        subgraph aks["AKS 1.37"]
-            direction TB
-            sys["System pool<br/>Substrate control plane · PostgreSQL"]
-            vm["microVM pool<br/>actors in Kata / Cloud Hypervisor"]
-        end
-        blob[("Blob Storage<br/>snapshots · runtime assets")]
-    end
-
-    cli -- "Bicep, after preview + approval" --> rg
-    ghcr -- "import by digest" --> acr
-    acr -- "AcrPull" --> aks
-    vm <-- "suspend / resume<br/>(workload identity)" --> blob
-```
-
 Bicep creates the Azure resources, Kustomize components adapt Substrate's
 manifests for Azure, and the installer runs the pinned upstream `ate-setup` to
 deploy them. See [architecture](docs/architecture.md) for the full picture.
@@ -161,7 +140,7 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 
 Setup checks quota and VM availability before billing, but Azure capacity is
 not reserved. Check the
-[tested configurations and remaining limits](docs/operations.md#live-acceptance-and-limitations)
+[validation status and known limits](docs/operations.md#validation-and-limitations)
 before choosing a different region or VM size.
 
 ## Try the demo
@@ -278,7 +257,7 @@ Work in progress includes:
 - Local NVMe snapshot disks ([#18](https://github.com/Azure/substrate-aks/issues/18)) and guarding against mixed CPU generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
 
 See [open issues](https://github.com/Azure/substrate-aks/issues) for more, and
-[live acceptance and limitations](docs/operations.md#live-acceptance-and-limitations)
+[validation and limitations](docs/operations.md#validation-and-limitations)
 for what has been validated on Azure.
 
 ## Related projects

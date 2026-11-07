@@ -18,7 +18,7 @@ installations. Settings are stored in a per-user state directory; see
 - [Private actor images](#private-actor-images)
 - [Progress and diagnostics](#progress-and-diagnostics)
 - [Retry and teardown](#retry-and-teardown)
-- [Live acceptance and limitations](#live-acceptance-and-limitations)
+- [Validation and limitations](#validation-and-limitations)
 
 ## Guided installation
 
@@ -481,47 +481,42 @@ before resetting. Do not remove install records to force a rebuild.
 Alternatively, restore the exact configured images and retry, or use a fresh
 config after teardown.
 
-## Live acceptance and limitations
+## Validation and limitations
 
-These scenarios have been validated against real Azure resources:
+The installer has been run end to end many times on real Azure subscriptions,
+in multiple regions, with several VM sizes and multi-node microVM pools:
 
-| Area | Validated |
-| --- | --- |
-| Baseline | AKS 1.37 in `southcentralus`, one system and one microVM node, both `Standard_D4s_v3` |
-| Setup | Private image publication, infrastructure, Substrate, runtime assets, demo, and client |
-| Actor state | Suspend and resume preserved memory, file, and rootfs counters |
-| Cold Blob restore | Memory restored on a new node with a compatible CPU model |
-| Component operations | Image checks, cluster checks and status, single-component reinstall, and demo redeployment |
-| Managed Entra | `eastus2` install with managed Entra, Azure RBAC, and local accounts disabled |
-| Podman | Podman-only build, publication, and installation |
-| Guided workspace | Interactive `eastus2` install through both approvals, demo, client, and context import; both contexts reached Ready nodes |
-| Teardown | Ownership-checked deletion; installation and managed node resource groups confirmed absent |
+- Guided and non-interactive installs: release image import and source builds
+  with Docker or Podman, infrastructure, Substrate, the demo, the client, and
+  kube-context import
+- Managed Entra sign-in with Azure RBAC and local accounts disabled
+- Actor suspend and resume preserving memory, file, and root filesystem state,
+  including cold restore from Blob storage onto a new node
+- Multi-hour runs of upstream Substrate benchmark workloads
+- Component reinstalls, image and cluster checks, and ownership-checked teardown
 
-Changes made after these runs, including later workspace polish, are covered by
-race-enabled unit tests, pseudo-terminal tests, pinned-source contracts, Bicep
-compilation, and read-only Azure preflight, but not by another full cloud install.
+Every change is also covered by race-enabled unit tests, pseudo-terminal tests
+of the setup workspace, pinned-source contract tests, and Bicep compilation.
 
-**The same VM size can have different CPU models.** A cold restore onto an
-incompatible CPU lost actor memory, although file and disk state survived. A
-successful restore does not guarantee migration across heterogeneous nodes.
-Older series such as Dsv3 span several CPU generations with different TSC
-rates, and Cloud Hypervisor refuses to restore a memory snapshot across them
-(`SetTscKhz` fails). New installations therefore default to `Standard_D4s_v6`,
-which runs on one CPU generation. Keep that series, or another x86 D/E/F
-`_v6`/`_v7` size, when you run more than one microVM node; see
-[#12](https://github.com/Azure/substrate-aks/issues/12). Dsv6 costs about 5%
-more than Dsv3 (about $0.202/hour versus $0.192/hour per `D4s` node in
-`eastus2`). AKS cannot change an existing pool's VM size, so rerunning
-`provision` fails for installations created with the earlier Dsv3 default;
-destroy and recreate them.
+### Memory restore needs matching CPUs
 
-Changing the snapshot reader on an existing installation once needed a manual
-grant. The fix is covered by tests; a clean live update has not been repeated.
+**The same VM size can run on different CPU models.** Cloud Hypervisor refuses
+to restore a memory snapshot onto a CPU with a different TSC rate
+(`SetTscKhz` fails); the actor's file and disk state survive, but its memory
+resets. Older series such as Dsv3 span several CPU generations, so new
+installations default to `Standard_D4s_v6`, which runs on one. Keep that series,
+or another x86 D/E/F `_v6` or `_v7` size, when you run more than one microVM
+node; see [#12](https://github.com/Azure/substrate-aks/issues/12). AKS cannot
+change an existing pool's VM size, so destroy and recreate installations created
+with the earlier Dsv3 default.
 
-Not yet validated: long-running credential renewal, multiple operators, native
-macOS installation, automatic node-image replacement and recovery, broader
-recovery from interrupted installs, and other regions, SKUs, Kubernetes versions,
-and CPU architectures.
+### Not yet validated
+
+- Automatic node image upgrades, and actor recovery through them
+- Credential renewal over days or weeks
+- Several operators sharing one installation
+- Native macOS installation hosts
+- Arm64 nodes
 
 Not part of this quickstart: installing into an existing cluster, managed
 PostgreSQL, upgrades, autoscaling, dashboards, and shared filesystems.
