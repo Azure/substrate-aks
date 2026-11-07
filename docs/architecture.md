@@ -76,8 +76,8 @@ providers; the installer should move to them once released, without rewriting a
 source checkout.
 
 > [!IMPORTANT]
-> There is no supported standalone Kustomize, Helm, or GitOps installation yet.
-> `kubectl kustomize deploy` is not an installation command.
+> There is no supported standalone Kustomize, Helm, or GitOps installation yet;
+> [#25](https://github.com/Azure/substrate-aks/issues/25) tracks one. `kubectl kustomize deploy` is not an installation command.
 
 ## Current deployment flow
 
@@ -103,8 +103,8 @@ needed. Upstream `ate-setup` handles the base installation and component redeplo
 | Snapshot storage | The plugin's Blob sidecars with separate node and control-plane identities |
 | MicroVM assets | Content-addressed blobs in the assets container, served by the node sidecar |
 | Actor image access | Native AKS ACR credential provider using the node's identity |
-| PostgreSQL | One replica with a 32 GiB Azure Disk; no backups or HA |
-| Telemetry | GKE monitoring removed; exporters disabled |
+| PostgreSQL | One replica with a 32 GiB Azure Disk; no backups or HA (managed PostgreSQL: [#2](https://github.com/Azure/substrate-aks/pull/2)) |
+| Telemetry | GKE monitoring removed; exporters disabled (managed monitoring: [#14](https://github.com/Azure/substrate-aks/pull/14)) |
 | Demo workers | Scheduled on the dedicated microVM node pool |
 
 The sandbox runtime assets are adapted separately in Go. The counter demo
@@ -129,8 +129,8 @@ Each installation gets a new cluster in a dedicated resource group. Teardown
 deletes that entire group, not just Substrate. The installation ID links the
 configuration, local state, and resource tags; it is not an access credential.
 
-Existing-cluster installation, application-only uninstall, and recovery from a
-fresh workstation are not implemented. Each installation's settings and local
+Existing-cluster installation, application-only uninstall ([#10](https://github.com/Azure/substrate-aks/issues/10)), and
+recovery from a fresh workstation are not implemented. Each installation's settings and local
 state are saved by name in the user state directory; keep them while the
 installation exists, because they contain more than disposable build cache.
 

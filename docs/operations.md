@@ -519,4 +519,5 @@ with the earlier Dsv3 default.
 - Arm64 nodes
 
 Not part of this quickstart: installing into an existing cluster, managed
-PostgreSQL, upgrades, autoscaling, dashboards, and shared filesystems.
+PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)), upgrades, autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared
+filesystems.

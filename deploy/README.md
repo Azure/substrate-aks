@@ -19,7 +19,8 @@ identities, account and containers, and renders before these.
 **This is not a standalone installation package.** The templates need the
 [pinned upstream source](../docs/configuration.md#source-and-image-settings) and
 deployment values. Use the [installer](../README.md#quickstart), not
-`kubectl kustomize deploy`.
+`kubectl kustomize deploy`. [#25](https://github.com/Azure/substrate-aks/issues/25) tracks a standalone Component,
+kustomization, and Helm chart.
 
 ## Working on the components
 

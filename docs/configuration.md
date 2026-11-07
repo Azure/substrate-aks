@@ -129,7 +129,7 @@ deleted images before reusing the installation. See [retry and teardown](operati
 ## MicroVM worker pool
 
 Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
-always one `Standard_D4s_v6` node. Set the worker pool in `installation.json`
+always one `Standard_D4s_v6` node; [#23](https://github.com/Azure/substrate-aks/issues/23) tracks making it configurable. Set the worker pool in `installation.json`
 before running `plan` and `provision`:
 
 | Field | Default | Limits |
@@ -174,6 +174,9 @@ sizes, and `/var/lib/ate` with it:
   Azure caps ephemeral OS disks at 2,040 GB.
 - Sizes without local storage, such as `Standard_D8s_v7`, cannot use
   `Ephemeral`; preflight rejects them.
+
+A dedicated NVMe snapshot disk, separate from the OS disk, is tracked in
+[#18](https://github.com/Azure/substrate-aks/issues/18).
 
 ### Pods per node
 
@@ -358,7 +361,7 @@ skip `images`:
 Only amd64 runtime assets are configured. Their checksums must match the selected
 source revision. A source change may also require
 [adapter changes](architecture.md#current-deployment-flow); it is not an upgrade
-mechanism.
+mechanism. Choosing from a catalog of supported releases is tracked in [#17](https://github.com/Azure/substrate-aks/issues/17).
 
 `setup` and `install` check that saved images are still available. You can check
 separately with `images --check`. After teardown, use
