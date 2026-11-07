@@ -24,13 +24,14 @@ for snapshot storage.
 - **Preview before you pay.** Setup checks your tools, quota, and permissions,
   then shows every billable Azure change and waits for your approval.
 - **MicroVM actors on AKS.** Actors run in Kata / Cloud Hypervisor microVMs on a
-  dedicated node pool; KVM support is verified before installation.
+  dedicated node pool; KVM support is tested on that pool before Substrate is
+  installed.
 - **Snapshots in Azure Blob.** Memory, file, and disk state survive suspend and
   resume, stored through workload identity rather than keys.
 - **Secure defaults.** Microsoft Entra sign-in with Azure RBAC, local accounts
   disabled, and the Kubernetes API limited to your IP address.
-- **One-command teardown.** Everything lives in one resource group that
-  `destroy` deletes.
+- **One-command teardown.** Everything the installer creates lives in one
+  resource group that `destroy` deletes.
 
 > [!WARNING]
 > **Experimental, single-tenant, and billable.** Setup creates a new AKS cluster
@@ -55,10 +56,11 @@ And an Azure subscription with:
 | Requirement | Notes |
 | --- | --- |
 | Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator**, on the subscription |
-| AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
+| AKS capacity | AKS 1.37 and VM quota in your region |
 
-Setup checks these before creating anything, and prints an install command or
-link for any missing tool. Docker with buildx or Podman is needed only to
+Setup checks your tools, quota, and permissions before creating anything, and
+prints an install command or link for any missing tool. KVM support is tested on
+the microVM node once the cluster exists. Docker with buildx or Podman is needed only to
 [build images from source](docs/configuration.md#image-source).
 
 ### 2. Run setup
@@ -112,7 +114,8 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 > [!TIP]
 > **What it costs:** the default cluster has two `Standard_D4s_v6` nodes, about
 > $0.40/hour combined at `eastus2` pay-as-you-go rates, plus disks, a Basic
-> container registry, and Blob storage. [Tear down](#tear-down) when you are done.
+> container registry, Blob storage, and a Standard load balancer with its
+> outbound public IP. [Tear down](#tear-down) when you are done.
 
 ## How it works
 
@@ -124,7 +127,7 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 | --- | --- |
 | AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v6` |
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
-| Runtime | Kata / Cloud Hypervisor microVMs; KVM is checked before installation |
+| Runtime | Kata / Cloud Hypervisor microVMs; KVM is tested on the microVM node before Substrate is installed |
 | Substrate | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0): API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built with ko and pushed there |
@@ -138,10 +141,17 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 > and Blob permissions are installation-wide, not per actor or tenant. See
 > [network and authorization boundaries](docs/configuration.md#network-and-authorization-boundaries).
 
+> [!NOTE]
+> **Choosing a VM size:** use an x86 D, E, or F series `_v6` or `_v7` size, such
+> as the default `Standard_D4s_v6`. Each of these series runs on a single CPU
+> generation, so an actor's memory snapshot can restore on any node in the pool.
+> Older series such as Dsv3 mix CPU generations, and memory restores between
+> them fail. See [microVM worker pool](docs/configuration.md#microvm-worker-pool).
+
 Setup checks quota and VM availability before billing, but Azure capacity is
-not reserved. Check the
-[validation status and known limits](docs/operations.md#validation-and-limitations)
-before choosing a different region or VM size.
+not reserved. See
+[validation and limitations](docs/operations.md#validation-and-limitations)
+for what has been tested.
 
 ## Try the demo
 
@@ -157,7 +167,8 @@ kubectl ate create actor my-counter \
   -a ate-demo-counter-microvm --template counter-microvm
 ```
 
-In a second terminal, forward local port 8000 to the actor:
+In a second terminal, apply the same exports, then forward local port 8000 to
+the actor:
 
 ```sh
 kubectl ate proxy actor my-counter -a ate-demo-counter-microvm
@@ -185,7 +196,8 @@ for how `kubectl ate` reaches the cluster.
 ## Manage your installation
 
 Commands take an installation `NAME`, which is optional when only one is saved.
-`destroy` always requires it.
+The exceptions: without a name, `init` and `setup --yes` create `substrate-dev`,
+interactive `setup` asks for a name, and `destroy` refuses to run.
 
 | Command | Purpose |
 | --- | --- |
@@ -257,6 +269,8 @@ cluster, and the CLI is the only supported way to install. Planned work:
   generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
 - **Managed services:** Azure Database for PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)) and managed
   Prometheus and Grafana monitoring ([#14](https://github.com/Azure/substrate-aks/pull/14))
+- **Continuous testing:** pull request checks and a scheduled live install on
+  AKS ([#27](https://github.com/Azure/substrate-aks/issues/27))
 - **Benchmarks:** upstream's suite and Azure-recommended tests, run on AKS
   ([#26](https://github.com/Azure/substrate-aks/issues/26))
 - **Lifecycle:** choosing from supported Substrate releases ([#17](https://github.com/Azure/substrate-aks/issues/17)), and

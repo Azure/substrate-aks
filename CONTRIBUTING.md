@@ -78,29 +78,36 @@ planned choices, compact/destructive previews, bounded activity, and tiny window
 
 ## Updating the README images
 
-The animations in [`docs/images`](docs/images) are recorded from the installer's
+The images in [`docs/images`](docs/images) are recorded from the installer's
 simulated tour (`zz_tour_linux_test.go`), which runs the real setup workspace
 with Azure operations stubbed out. Regenerate them after visible changes to the
 welcome screen or the setup flow. You need Linux,
-[VHS](https://github.com/charmbracelet/vhs), and `ffmpeg`; `gifsicle` and
-`pngquant` shrink the output.
+[VHS](https://github.com/charmbracelet/vhs), `ffmpeg`, `gifsicle`, and
+`pngquant`.
 
 ```sh
 mkdir -p /tmp/substrate-aks-tour/bin
 go test -c -tags tour -o /tmp/substrate-aks-tour/bin/substrate-aks ./cmd/substrate-aks
 cp docs/images/*.tape /tmp/substrate-aks-tour/
 cd /tmp/substrate-aks-tour
-vhs hero.tape
-vhs setup.tape
+vhs hero.tape    # hero.mp4, at twice the terminal size for a sharp crop
+vhs setup.tape   # setup.mp4 and setup-preview-full.png
 ```
 
 The tour binary is named `substrate-aks` so the printed commands read naturally.
-Convert the recordings to GIFs, cropping the hero to the logo and tagline:
+Crop and convert the recordings, then copy the results into `docs/images`:
 
 ```sh
-ffmpeg -ss 0.3 -t 5.4 -i hero.mp4 -vf "crop=920:210:160:138,fps=15,split[a][b];[a]palettegen=max_colors=48:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" -loop 0 hero.gif
-ffmpeg -i setup.mp4 -vf "fps=10,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" -loop 0 setup.gif
+palette='split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle'
+# Hero: the logo, title, and tagline, at 1880x480.
+ffmpeg -ss 0.5 -t 6 -i hero.mp4 -vf "crop=1880:480:300:246,fps=12,$palette" -loop 0 hero.gif
+# Setup walkthrough, at the recorded 1240x780.
+ffmpeg -i setup.mp4 -vf "fps=10,$palette" -loop 0 setup.gif
 gifsicle -O3 -b hero.gif setup.gif
+# Infrastructure preview: the top of the screenshot VHS took.
+ffmpeg -i setup-preview-full.png -vf crop=1240:600:0:0 setup-preview-crop.png
+pngquant --quality=70-95 --output setup-preview.png setup-preview-crop.png
 ```
 
-Keep `setup.gif` well under 5 MB so GitHub renders it inline.
+Check that the crops still frame the content if the layout changed, and keep
+`setup.gif` well under 5 MB so GitHub renders it inline.

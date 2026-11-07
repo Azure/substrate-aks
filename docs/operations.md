@@ -495,8 +495,20 @@ in multiple regions, with several VM sizes and multi-node microVM pools:
 - Multi-hour runs of upstream Substrate benchmark workloads
 - Component reinstalls, image and cluster checks, and ownership-checked teardown
 
-Every change is also covered by race-enabled unit tests, pseudo-terminal tests
-of the setup workspace, pinned-source contract tests, and Bicep compilation.
+Recent runs recorded in pull requests:
+
+| Run | Region | Nodes | Covered |
+| --- | --- | --- | --- |
+| Current pins, from [#22](https://github.com/Azure/substrate-aks/pull/22) | `eastus2` | Default: 1 system and 1 microVM, `Standard_D4s_v6` | `setup --yes --with-demo`, counter suspend and resume, `destroy` |
+| Substrate v1.0.0, [#16](https://github.com/Azure/substrate-aks/pull/16) | `westus3` | 1 microVM, `Standard_D8ds_v7` | Release image import, install, demo, suspend and resume with Blob snapshots, `destroy` |
+| Substrate v1.0.0-rc.3, [#16](https://github.com/Azure/substrate-aks/pull/16) | `westus3` | 2 microVM, `Standard_D8s_v7` | Install and demo; resume from Blob after the node-local snapshot was deleted |
+| Substrate v1.0.0-rc.3, [#16](https://github.com/Azure/substrate-aks/pull/16) | | 1 microVM, `Standard_D8ds_v7`, `Ephemeral` 400 GB OS disk | Snapshots on local NVMe, suspend and resume |
+| Earlier pin, [#1](https://github.com/Azure/substrate-aks/pull/1) | `southcentralus`, `eastus2` | `Standard_D4s_v3` | Guided workspace, managed Entra, Podman builds, cold restore on a new node |
+
+There is no CI yet: contributors run the unit, pseudo-terminal, and
+pinned-source contract tests and compile the Bicep templates before each change
+(see [development checks](../CONTRIBUTING.md#development-checks)), and live
+installs are run by hand. [#27](https://github.com/Azure/substrate-aks/issues/27) tracks automating both.
 
 ### Memory restore needs matching CPUs
 

@@ -134,7 +134,7 @@ before running `plan` and `provision`:
 
 | Field | Default | Limits |
 | --- | --- | --- |
-| `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization |
+| `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization; use an x86 D, E, or F series `_v6` or `_v7` size (see [quota and CPU compatibility](#quota-and-cpu-compatibility)) |
 | `aks.workerPool.count` | `1` | 1-100 nodes |
 | `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
 | `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage, up to 2,040 GB |

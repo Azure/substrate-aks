@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
+	"github.com/charmbracelet/x/term"
 )
 
 func slowRunner(r installer.Runner, d time.Duration) installer.Runner {
@@ -24,6 +25,34 @@ func slowRunner(r installer.Runner, d time.Duration) installer.Runner {
 		}
 		return r.Run(ctx, c)
 	})
+}
+
+// tourOutput gives setup a terminal for its closing commands and copies what
+// it prints to stdout, rewriting the test's temporary paths to ones a real run
+// would print. A terminal, unlike a pipe, keeps the output styled.
+func tourOutput(t *testing.T, paths *strings.Replacer) (out *os.File, wait func()) {
+	width, height, err := term.GetSize(os.Stdout.Fd())
+	if err != nil {
+		width, height = 120, 40
+	}
+	p := newSetupPTY(t, width, height)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var pending string
+		for chunk := range p.chunks {
+			pending += chunk
+			if i := strings.LastIndexByte(pending, '\n'); i >= 0 {
+				io.WriteString(os.Stdout, paths.Replace(pending[:i+1]))
+				pending = pending[i+1:]
+			}
+		}
+		io.WriteString(os.Stdout, paths.Replace(pending))
+	}()
+	return p.slave, func() {
+		p.slave.Close()
+		<-done
+	}
 }
 
 func TestTour(t *testing.T) {
@@ -50,13 +79,18 @@ func TestTour(t *testing.T) {
 	o.azure = slowRunner(successfulCloudRunner(o.home), delay/6)
 	fails := os.Getenv("TOUR_FAIL")
 	attempts := 0
-	err = setupForTest(t.Context(), o, tty, os.Stdout, tty, func(ctx context.Context, args []string, _, _ io.Writer) error {
+	out, flush := tourOutput(t, strings.NewReplacer(
+		"'"+o.home+"/installations/", "'/home/you/.local/state/substrate-aks/installations/",
+		"'"+o.home+"/operator-kubeconfig'", "'/home/you/.kube/config'",
+		"'"+o.home+"'", "'/home/you/go/bin'",
+	))
+	err = setupForTest(t.Context(), o, tty, out, tty, func(ctx context.Context, args []string, _, _ io.Writer) error {
 		s := setupSessionFrom(ctx)
 		steps := map[string][]string{
 			"plan":      {"Validating Bicep template", "Running subscription what-if"},
 			"provision": {"Submitting deployment substrate-tui-1030", "Waiting for Microsoft.ContainerService/managedClusters (3m12s)", "Waiting for role assignments to propagate"},
 			"images":    {"Importing ghcr.io/agent-substrate/substrate/atelet:v1.0.0", "Building counter demo and Azure Blob plugin with ko", "Assembling microVM rootfs.img"},
-			"install":   {"Applying ate-system CRDs", "Waiting for deployment/ate-apiserver rollout"},
+			"install":   {"Applying ate-system CRDs", "Waiting for deployment/ate-api-server rollout"},
 			"demo":      {"Deploying ate-demo-counter-microvm", "Warming counter template"},
 			"client":    {"Building kubectl-ate", "Writing private kubeconfig"},
 		}
@@ -107,11 +141,12 @@ func TestTour(t *testing.T) {
 		if args[0] == fails && !strings.Contains(strings.Join(args, " "), "--check") {
 			attempts++
 			if attempts == 1 {
-				return errors.New("pushing atelet:sha-4f2a1c: denied: client with IP 203.0.113.8 is not allowed access")
+				return errors.New("importing ghcr.io/agent-substrate/substrate/atelet:v1.0.0: denied: client with IP 203.0.113.8 is not allowed access")
 			}
 		}
 		return nil
 	})
+	flush()
 	fmt.Fprintf(os.Stderr, "\nTOUR RESULT: %v\n", err)
 	time.Sleep(30 * time.Second)
 }

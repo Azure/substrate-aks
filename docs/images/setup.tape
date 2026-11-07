@@ -24,10 +24,11 @@ Wait+Screen@20s /2 to create/
 Sleep 2s
 Type "y"
 Wait+Screen@40s /11 to create/
-Sleep 3s
+Sleep 1s
+Screenshot setup-preview-full.png
+Sleep 2s
 Type "y"
 Wait+Screen@40s /Import and select this kube-context/
 Sleep 1.5s
 Type "y"
-Sleep 2s
-Sleep 6s
+Sleep 8s
