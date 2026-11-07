@@ -328,8 +328,9 @@ the installer checks this on every fetch and never follows a moved tag.
 
 Both build the counter demo image, which releases do not publish, and the Azure
 Blob plugin image from `substrate.pluginSource` with ko into the same ACR.
-Guided setup always uses `release`; to build from source, run `init`, set
-`"imageSource": "source"`, then run `setup`, or run the
+New guided installations default to `release`. To build from source, run
+`init NAME`, set `"imageSource": "source"` in that installation's configuration,
+then run `setup NAME`, or run the
 [registry and image bootstrap](operations.md#registry-and-image-bootstrap)
 steps yourself.
 
