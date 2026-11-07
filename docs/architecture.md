@@ -21,10 +21,11 @@ installer code.
 
 ## Implemented today versus target architecture
 
-Today, the installer needs an exact upstream release and plugin revision. It
-renders the plugin's components and the Azure components into a private copy of
-the release source and invokes its `ate-setup`. It imports that release's
-published images; runtime assets and the client must match the same revision.
+Today, the installer needs exact upstream and plugin commits; by default the
+upstream commit is a tagged release. It renders the plugin's components and the
+Azure components into a private copy of that source and invokes its
+`ate-setup`. By default it imports the release's published images; runtime
+assets and the client must match the same revision.
 
 `ate-setup` still assumes Google Cloud Storage on any cluster other than kind,
 so the installer applies the microVM SandboxConfig itself and passes

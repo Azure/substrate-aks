@@ -44,7 +44,7 @@ are; the main pane lists each stage's operations as they run.
 
 | Stage | What happens |
 | --- | --- |
-| Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
+| Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
 | Images and assets | Previews and creates the private registry, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and publishes runtime assets. Skipped when the config already has published images; they are only verified. |
 | AKS cluster | Previews and provisions AKS, storage, and identities, then checks the cluster. |
 | Substrate | Renders the Azure settings and installs Substrate. |
@@ -362,7 +362,7 @@ curl -X POST http://localhost:8000
 The proxy reaches the actor through `atenet-router` with a pod certificate for
 the `ate-system/atenet-client` ServiceAccount, which the installer allows; anyone
 who can request that certificate, such as a cluster admin, can reach every
-actor. Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
+actor. Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
 to compare the actor's state before and after suspension.
 
 `kubectl ate` talks directly to Substrate and can port-forward its API.
@@ -473,7 +473,7 @@ make bicep
 | --- | --- |
 | `make verify` | Formatting, vet, and module consistency |
 | `make test-unit` | Race-enabled unit tests |
-| `make test-contract` | Compatibility with a disposable checkout of the exact source pin |
+| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins |
 | `make test` | Unit tests and contracts |
 | `make bicep` | Compile the infrastructure template |
 

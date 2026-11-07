@@ -152,7 +152,7 @@ node can suspend and resume actors.
 | Choice | Snapshot disk | Trade-offs |
 | --- | --- | --- |
 | `Managed`, 128 GB (default) | Premium SSD P10, about 500 IOPS and 100 MB/s | Saturates with a few active actors per node |
-| `Managed`, larger `osDiskSizeGB` | Scales with the disk tier, for example 1,024 GB is P30, about 5,000 IOPS and 200 MB/s | Also capped per VM (`Standard_D8s_v7`: 16,000 IOPS, 472 MB/s) |
+| `Managed`, larger `osDiskSizeGB` | Scales with the disk tier, for example 1,024 GB is P30, about 5,000 IOPS and 200 MB/s | Also capped per VM (`Standard_D8s_v7`: 16,000 IOPS and 460 MB/s for uncached Premium SSD) |
 | `Ephemeral` on a size with local NVMe, such as `Standard_D8ds_v7` | Local NVMe, about 560 MB/s on `Standard_D8ds_v7` | Also lost when the VM moves hosts; shared with container images and OS I/O |
 
 Both OS disk types survive a reboot. A reimage or node image upgrade resets the
@@ -215,8 +215,9 @@ the overrides; `init` and `setup --yes` require them. For another tenant, sign i
 to that tenant and select its subscription first.
 
 Whoever runs image and asset uploads needs the publisher grant, directly or
-through group membership. The older `--asset-publisher-object-id` flag and
-`azure.assetPublisherObjectId` field still work.
+through group membership. The older `--asset-publisher-object-id` flag still
+works as an alias for `--identity-object-id`; either one is saved as
+`azure.assetPublisherObjectId`.
 
 Principal types are saved as `azure.assetPublisherPrincipalType` and
 `azure.snapshotReaderPrincipalType`. Discovered identities record their type,
@@ -323,12 +324,14 @@ the installer checks this on every fetch and never follows a moved tag.
 | Value | Behavior |
 | --- | --- |
 | `release` (default) | Imports the release images upstream publishes for `substrate.source.tag` from `ghcr.io/agent-substrate/substrate` into the installation's ACR, by digest, after checking that each image is labelled as built from `substrate.source.commit` (`org.opencontainers.image.revision`). Needs no Docker or Podman. |
-| `source` | Builds the release images from `substrate.source.commit` with the pinned `ate-setup publish release-images`, which needs Docker with buildx or Podman. Tags are `<tag>-azure.<commit>.<timestamp>`, so rebuilds never overwrite earlier images. |
+| `source` | Builds the release images from `substrate.source.commit` with the pinned `ate-setup publish release-images`, which needs Docker with buildx or Podman. Tags are `<tag>-azure.<commit prefix>.<UTC timestamp>`, using the first 12 characters of the commit and `v0.0.0` when no tag is set, so rebuilds never overwrite earlier images. |
 
 Both build the counter demo image, which releases do not publish, and the Azure
 Blob plugin image from `substrate.pluginSource` with ko into the same ACR.
 Guided setup always uses `release`; to build from source, run `init`, set
-`"imageSource": "source"`, then run `setup` or `images`.
+`"imageSource": "source"`, then run `setup`, or run the
+[registry and image bootstrap](operations.md#registry-and-image-bootstrap)
+steps yourself.
 
 To install images you published yourself, set `substrate.images` directly and
 skip `images`:
@@ -364,6 +367,3 @@ generated infrastructure files.
 rebuildable cache. Deleting it does not delete Azure resources; remove those
 with `az group delete --name RESOURCE_GROUP`. A successful `destroy` removes the
 directory; the shared Go-installed client stays in place.
-
-Installations from the earlier `substrate-azure` prototype cannot be adopted.
-Start with a fresh configuration.

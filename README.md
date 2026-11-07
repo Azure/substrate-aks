@@ -77,7 +77,7 @@ automation options.
 | Substrate | API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
 | Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
-| Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built there |
+| Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built with ko and pushed there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |
 
@@ -109,7 +109,7 @@ kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
 kubectl ate resume actor my-counter -a ate-demo-counter-microvm
 ```
 
-Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
+Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
 to call the actor over HTTP and compare its state before and after suspension.
 See [client setup and authentication](docs/operations.md#client-and-counter-demo) for details.
 
