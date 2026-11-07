@@ -19,6 +19,45 @@ installer code.
 | [Bicep](../infra) | AKS, ACR, Blob containers, identities, and permissions |
 | Installer CLI | Configuration, approval, validation, sequencing, and diagnostics |
 
+## Azure resources
+
+Each installation's [Bicep templates](../infra) create one resource group. Every
+grant is scoped to the resource it covers, and storage access uses workload
+identity rather than account keys.
+
+```mermaid
+flowchart LR
+    you(["Operator<br/>(Entra identity)"])
+
+    subgraph rg["Dedicated resource group"]
+        acr[("Container Registry<br/>Basic")]
+        subgraph aks["AKS cluster"]
+            direction TB
+            sys["system pool"]
+            vm["microvm pool<br/>tainted for sandboxes"]
+        end
+        subgraph sa["Storage account"]
+            snaps[("snapshots")]
+            assets[("assets")]
+        end
+        node_id["node-store identity<br/>(atelet)"]
+        ctl_id["control-store identity<br/>(ate-api-server)"]
+    end
+
+    you -- "AKS RBAC Cluster Admin" --> aks
+    you -- "AcrPush · import" --> acr
+    you -- "publish runtime assets" --> assets
+    aks -- "kubelet AcrPull" --> acr
+    node_id -- "read/write" --> snaps
+    node_id -- "read" --> assets
+    ctl_id -- "read/write" --> snaps
+```
+
+The operator grants go to the configured upload and operator identities, which
+default to the signed-in user. An optional snapshot reader gets read-only access
+to the snapshots container. See
+[Azure identity and permissions](configuration.md#azure-identity-and-permissions).
+
 ## Implemented today versus target architecture
 
 Today, the installer needs exact upstream and plugin commits; by default the
@@ -42,16 +81,18 @@ source checkout.
 
 ## Current deployment flow
 
-```text
-Pinned upstream manifests + plugin components + Azure components + settings
-                              |
-                     In-memory rendering
-                              |
-                    Managed source checkout
-                              |
-                     Upstream ate-setup
-                              |
-                     Kubernetes workloads
+```mermaid
+flowchart TB
+    upstream["Pinned upstream manifests"]
+    plugin["Azure Blob plugin components"]
+    azure["Azure components<br/>(deploy/components)"]
+    settings["Installation settings"]
+    render["In-memory rendering"]
+    checkout["Managed source checkout"]
+    setup["Upstream ate-setup"]
+    k8s["Kubernetes workloads"]
+
+    upstream & plugin & azure & settings --> render --> checkout --> setup --> k8s
 ```
 
 The components are embedded in the binary; no external Kustomize executable is

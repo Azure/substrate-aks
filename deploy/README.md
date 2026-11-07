@@ -29,7 +29,7 @@ Edit the YAML under [`components/`](components). The renderer is in
 upstream compatibility and handles inputs that are not Kubernetes resources.
 
 When changing patches or the source pin, run the
-[development checks](../docs/operations.md#development-checks), including the
+[development checks](../CONTRIBUTING.md#development-checks), including the
 pinned-source contracts. Patches are tied to the reviewed upstream structure;
 a pin update can require adapter changes.
 

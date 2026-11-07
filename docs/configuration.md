@@ -48,6 +48,9 @@ installations. Unknown JSON fields and extra JSON documents are rejected.
 in the image and runtime settings. This example shows the structure; the
 placeholders are not valid deployment values.
 
+<details>
+<summary><b>Example <code>installation.json</code></b></summary>
+
 ```json
 {
   "installation": {
@@ -102,6 +105,8 @@ placeholders are not valid deployment values.
   }
 }
 ```
+
+</details>
 
 ### Saved settings are authoritative
 
@@ -190,8 +195,10 @@ so memory snapshots can restore on any node; see
 ## Azure identity and permissions
 
 The operator needs permission to list resource groups, create subscription-scope
-deployments, provision the resources, and assign roles.
-**Contributor alone is insufficient** because it cannot assign roles.
+deployments, provision the resources, and assign roles. Use **Owner**, or
+**Contributor** plus **User Access Administrator** or **Role Based Access
+Control Administrator**, on the subscription. Contributor alone cannot assign
+roles.
 
 Select your subscription before creating a config:
 

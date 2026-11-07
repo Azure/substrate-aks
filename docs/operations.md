@@ -18,7 +18,6 @@ installations. Settings are stored in a per-user state directory; see
 - [Private actor images](#private-actor-images)
 - [Progress and diagnostics](#progress-and-diagnostics)
 - [Retry and teardown](#retry-and-teardown)
-- [Development checks](#development-checks)
 - [Live acceptance and limitations](#live-acceptance-and-limitations)
 
 ## Guided installation
@@ -42,6 +41,15 @@ installation.
 Setup works through a fixed sequence of stages. The left rail shows where you
 are; the main pane lists each stage's operations as they run.
 
+```mermaid
+flowchart LR
+    prep["1 · Preparation<br/><i>confirm installation</i>"] --> images["2 · Images and assets<br/><i>approve registry</i>"]
+    images --> aks["3 · AKS cluster<br/><i>approve infrastructure</i>"] --> substrate["4 · Substrate"]
+    substrate --> demo["5 · Counter demo<br/>(optional)"] --> connect["6 · Connect"]
+```
+
+Stages with an approval in italics pause for you before anything is billed.
+
 | Stage | What happens |
 | --- | --- |
 | Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
@@ -52,7 +60,15 @@ are; the main pane lists each stage's operations as they run.
 | Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
 
 Each billable step shows an Azure preview first and waits for your approval.
-The registry and the full infrastructure are approved separately. Previews
+The registry and the full infrastructure are approved separately.
+
+<p align="center">
+  <img src="images/setup-preview.png" alt="The setup workspace paused at stage 3 of 6, showing an infrastructure preview grouped by resource type with counts of resources to create, and an Apply these planned changes prompt" width="820">
+  <br>
+  <sub>An infrastructure preview awaiting approval (simulated; real previews list more identities and role assignments).</sub>
+</p>
+
+Previews
 summarize changes by resource type; press `d` for full resource IDs. When a
 preview deletes resources or contains unknown changes, scroll to the end and
 press `a` to acknowledge it before approving. Use standalone `plan` for previews
@@ -138,8 +154,11 @@ check the command's exit status and error output.
 The [Go linker warning](https://github.com/golang/go/issues/63154) comes from
 upstream tooling, not installer linker flags.
 
-For a failure report, capture the failing command, its exit status, and these
-diagnostics **from the affected checkout**:
+<details>
+<summary><b>Reporting a macOS failure</b></summary>
+
+Capture the failing command, its exit status, and these diagnostics
+**from the affected checkout**:
 
 ```sh
 sw_vers
@@ -149,6 +168,8 @@ xcode-select -p
 xcrun clang --version
 az version
 ```
+
+</details>
 
 With `GOTOOLCHAIN=auto`, Go can select a newer toolchain for this module.
 Native macOS assembly, publication, and installation remain unvalidated;
@@ -459,72 +480,6 @@ If stale config has already recreated an empty registry or cluster, destroy it
 before resetting. Do not remove install records to force a rebuild.
 Alternatively, restore the exact configured images and retry, or use a fresh
 config after teardown.
-
-## Development checks
-
-```sh
-make verify
-make test
-make build
-make bicep
-```
-
-| Command | Coverage |
-| --- | --- |
-| `make verify` | Formatting, vet, and module consistency |
-| `make test-unit` | Race-enabled unit tests |
-| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins |
-| `make test` | Unit tests and contracts |
-| `make bicep` | Compile the infrastructure template |
-
-Contract tests need Git, Go, `kubectl`, and network access to the Substrate and
-plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
-GitHub. Missing prerequisites fail the tests rather than skipping them.
-No check above provisions Azure resources.
-
-To use existing pristine checkouts of the pins:
-
-```sh
-go test -race -tags=integration ./internal/installer \
-  -run 'TestPinned.*Contract' -count=1 -args \
-  -contract-root /absolute/path/to/pinned/substrate \
-  -plugin-contract-root /absolute/path/to/pinned/objectstore-azure-blob
-```
-
-The contracts render the plugin's own kustomize components into the pinned
-manifests, run the pinned `ate-setup` with every flag the installer passes,
-verify the published release inventory, and assemble the pinned runtime assets.
-The image-check tests use local registries, and publisher tests use controlled
-engine commands. They do not prove live ACR access or real image builds.
-
-### Extending guided setup
-
-Feature work should extend the operation flow, not the terminal renderer:
-
-- Add configuration questions in `setupFlow` (`setup.go`) through
-  `setupPrompt.run` or its typed helpers. They automatically use embedded forms
-  in the workspace and existing line-oriented prompts in accessible mode.
-  Do not call another top-level form/program or write directly to the terminal.
-- Add review rows/warnings in `setupUI.summary`. The same summary feeds both
-  presenters, so new database/monitoring settings do not need root-model fields.
-  Keep saved configuration authoritative; never rebuild it from visible fields.
-- Report slow work through `installer.App.Progress` or `setupUI.step`.
-  The existing command runner keeps locking, private logs, and retry semantics.
-  Structured previews use `App.Preview`; do not parse terminal tables.
-- For preparation checklists, declare applicable rows with `setupUI.checklist`
-  and run each operation through `setupUI.check`. Results come from the returned
-  error, not progress text. Questions and approvals remain separate from checks.
-- New lifecycle operations should be assigned to an existing conceptual phase
-  in `setupPhase` when possible. Keep phase IDs separate from display titles.
-  Business policy belongs in installer operations, not `setupWorkspace.Update`.
-- Preserve the setup context when invoking a command: it carries the internal
-  presentation session. Standalone commands have no session and retain their
-  normal output. Keep raw/sensitive subprocess output out of progress messages.
-
-The Linux `TestWorkspacePTY*` tests use real pseudo-terminals with fake operations,
-including input/filtering, resize, retries, subprocess cancellation, restoration,
-and post-exit shell handoff. They do not contact Azure. Model tests also cover
-planned choices, compact/destructive previews, bounded activity, and tiny windows.
 
 ## Live acceptance and limitations
 

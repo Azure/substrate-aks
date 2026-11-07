@@ -55,7 +55,7 @@ func TestTour(t *testing.T) {
 		steps := map[string][]string{
 			"plan":      {"Validating Bicep template", "Running subscription what-if"},
 			"provision": {"Submitting deployment substrate-tui-1030", "Waiting for Microsoft.ContainerService/managedClusters (3m12s)", "Waiting for role assignments to propagate"},
-			"images":    {"Building ate-apiserver with ko", "Pushing atelet:sha-4f2a1c (412 MB)", "Assembling microVM rootfs.img"},
+			"images":    {"Importing ghcr.io/agent-substrate/substrate/atelet:v1.0.0", "Building counter demo and Azure Blob plugin with ko", "Assembling microVM rootfs.img"},
 			"install":   {"Applying ate-system CRDs", "Waiting for deployment/ate-apiserver rollout"},
 			"demo":      {"Deploying ate-demo-counter-microvm", "Warming counter template"},
 			"client":    {"Building kubectl-ate", "Writing private kubeconfig"},
@@ -68,7 +68,7 @@ func TestTour(t *testing.T) {
 		if s != nil {
 			s.send(setupLogMsg(logFile.Name()))
 		}
-		fmt.Fprintf(logFile, "[command] %s\n[installation] %s\n[target] substrate-test / southcentralus\n", args[0], o.name)
+		fmt.Fprintf(logFile, "[command] %s\n[installation] %s\n[target] substrate-test / eastus2\n", args[0], o.name)
 		for _, step := range steps[args[0]] {
 			if s != nil {
 				s.send(setupStepMsg(step))

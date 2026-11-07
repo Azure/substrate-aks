@@ -1,35 +1,68 @@
+<div align="center">
+
+<img src="docs/images/hero.gif" alt="Animated Agent Substrate on AKS logo: agents light up and fade on top of a cube whose layers represent Agent Substrate and AKS" width="760">
+
 # Substrate on AKS
 
-Run [Agent Substrate](https://github.com/agent-substrate/substrate) on Azure
-Kubernetes Service (AKS). The guided installer creates the Azure resources,
-imports the Substrate release images, and installs Substrate with the
-[Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob).
+**Run [Agent Substrate](https://github.com/agent-substrate/substrate) on Azure Kubernetes Service with one guided command.**
+
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange)](#status-and-roadmap)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Agent Substrate v1.0.0](https://img.shields.io/badge/Agent_Substrate-v1.0.0-61d76b)](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0)
+[![AKS 1.37](https://img.shields.io/badge/AKS-1.37-0078d4)](https://learn.microsoft.com/azure/aks/)
+
+[Quickstart](#quickstart) · [How it works](#how-it-works) · [Try the demo](#try-the-demo) ·
+[Tear down](#tear-down) · [Documentation](#documentation)
+
+</div>
+
+Agent Substrate snapshots idle agents out of memory and resumes them on request
+onto a small pool of warm workers, each actor isolated in its own sandbox.
+This repository packages it for Azure: a guided installer creates a dedicated
+AKS cluster, registry, Blob storage, and identities, then installs Substrate with
+the [Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob).
+
+- **Preview before you pay.** Setup checks your tools, quota, and permissions,
+  then shows every billable Azure change and waits for your approval.
+- **MicroVM actors on AKS.** Actors run in Kata / Cloud Hypervisor microVMs on a
+  dedicated node pool; KVM support is verified before installation.
+- **Snapshots in Azure Blob.** Memory, file, and disk state survive suspend and
+  resume, stored through workload identity rather than keys.
+- **Secure defaults.** Microsoft Entra sign-in with Azure RBAC, local accounts
+  disabled, and the Kubernetes API limited to your IP address.
+- **One-command teardown.** Everything lives in one resource group that
+  `destroy` deletes.
 
 > [!WARNING]
-> **Experimental, single-tenant, and billable.** This quickstart creates a new AKS
-> cluster in a dedicated resource group. [Teardown](#tearing-down) deletes the
-> entire group and all installation data. Do not add unrelated resources to it.
-
-[Quickstart](#quickstart) · [What gets installed](#what-gets-installed) ·
-[Try the demo](#try-the-demo) · [Manage](#manage-your-installation) ·
-[Tear down](#tearing-down) · [Documentation](#documentation)
+> **Experimental, single-tenant, and billable.** Setup creates a new AKS cluster
+> in a dedicated resource group. [Teardown](#tear-down) deletes the entire group
+> and all installation data. Do not add unrelated resources to it.
 
 ## Quickstart
 
-**Prerequisites**
+### 1. Check the prerequisites
+
+You need a Linux or macOS workstation with these tools:
+
+| Tool | Install |
+| --- | --- |
+| [Go](https://go.dev/dl/) 1.27.3+ | Go 1.21 or later downloads the required version automatically |
+| [Git](https://git-scm.com/downloads) | |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) | Then run `az bicep install` |
+| [`kubectl`](https://kubernetes.io/docs/tasks/tools/) and [`kubelogin`](https://azure.github.io/kubelogin/install.html) | Run `az aks install-cli` to install both |
+
+And an Azure subscription with:
 
 | Requirement | Notes |
 | --- | --- |
-| Linux or macOS | Installer host; cluster workloads use Linux/amd64 |
-| Go 1.27.3+ and Git | Go can download the required toolchain automatically |
-| Azure CLI | Sign in to the target subscription; install Bicep with `az bicep install` |
-| `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
-| Azure `kubelogin` | Signs `kubectl` in to the cluster with your Azure CLI login |
-| Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
+| Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator**, on the subscription |
 | AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
 
-Docker with buildx or Podman is needed only to
+Setup checks these before creating anything, and prints an install command or
+link for any missing tool. Docker with buildx or Podman is needed only to
 [build images from source](docs/configuration.md#image-source).
+
+### 2. Run setup
 
 ```sh
 git clone https://github.com/Azure/substrate-aks.git
@@ -39,21 +72,23 @@ az bicep install
 make setup
 ```
 
-`make setup` builds `bin/substrate-aks` and runs `bin/substrate-aks setup`. Pass
-setup flags with `ARGS`, for example `make setup ARGS="--accessible"`.
+Setup asks for a name and region, shows a review of the installation, and then
+works through six stages. Nothing is billed until you confirm, and the registry
+and the cluster each wait for you to approve an Azure preview:
 
-Setup checks your tools and Azure access, asks for a name and region, and
-saves your choices as a named installation in your user state directory
-(`~/.local/state/substrate-aks` on Linux, `~/Library/Application Support/substrate-aks`
-on macOS).
-It previews every billable change and waits for your approval before creating
-anything. Press `?` in the workspace for keys.
+<p align="center">
+  <img src="docs/images/setup.gif" alt="The guided setup workspace: choosing a name and region, reviewing the installation, approving the registry and infrastructure previews, progressing through images, AKS, Substrate, the counter demo, and kube-context handoff, then printing connection commands" width="900">
+  <br>
+  <sub>A simulated run with Azure operations stubbed and shortened. Press <code>?</code> in the workspace for keys.</sub>
+</p>
 
-**When setup finishes, run the shell exports it prints.** They point `kubectl`
-at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
-cluster to your regular kubeconfig; it asks first, and never edits shell profiles.
+`make setup` builds `bin/substrate-aks` and runs `bin/substrate-aks setup`;
+pass flags with `ARGS`, for example `make setup ARGS="--accessible"`. Your
+choices are saved as a named installation in your user state directory, so
+`bin/substrate-aks setup NAME` resumes it after a failure.
 
-**Useful variants**
+<details>
+<summary><b>Useful variants</b></summary>
 
 | Command | Use |
 | --- | --- |
@@ -63,20 +98,57 @@ cluster to your regular kubeconfig; it asks first, and never edits shell profile
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
-Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md) for
-identity overrides and [operations](docs/operations.md#guided-installation) for
-automation options.
+Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md)
+for identity overrides and [operations](docs/operations.md#guided-installation)
+for automation options.
 
-## What gets installed
+</details>
+
+### 3. Connect
+
+**When setup finishes, run the shell exports it prints.** They point `kubectl`
+at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
+cluster to your regular kubeconfig; it asks first, and never edits shell profiles.
+
+> [!TIP]
+> **What it costs:** the default cluster has two `Standard_D4s_v6` nodes, about
+> $0.40/hour combined at `eastus2` pay-as-you-go rates, plus disks, a Basic
+> container registry, and Blob storage. [Tear down](#tear-down) when you are done.
+
+## How it works
+
+```mermaid
+flowchart LR
+    cli(["bin/substrate-aks setup"])
+    ghcr[("ghcr.io<br/>Substrate release images")]
+
+    subgraph rg["Dedicated Azure resource group"]
+        acr[("Container Registry")]
+        subgraph aks["AKS 1.37"]
+            direction TB
+            sys["System pool<br/>Substrate control plane · PostgreSQL"]
+            vm["microVM pool<br/>actors in Kata / Cloud Hypervisor"]
+        end
+        blob[("Blob Storage<br/>snapshots · runtime assets")]
+    end
+
+    cli -- "Bicep, after preview + approval" --> rg
+    ghcr -- "import by digest" --> acr
+    acr -- "AcrPull" --> aks
+    vm <-- "suspend / resume<br/>(workload identity)" --> blob
+```
+
+Bicep creates the Azure resources, Kustomize components adapt Substrate's
+manifests for Azure, and the installer runs the pinned upstream `ate-setup` to
+deploy them. See [architecture](docs/architecture.md) for the full picture.
 
 | Component | Default |
 | --- | --- |
 | AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v6` |
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
-| Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
-| Substrate | API server, controller, networking, and atelet |
+| Runtime | Kata / Cloud Hypervisor microVMs; KVM is checked before installation |
+| Substrate | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0): API server, controller, networking, and atelet |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
-| Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built with ko and pushed there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |
@@ -85,40 +157,57 @@ automation options.
 > **This is not a production or multi-tenant deployment.** The AKS API is public
 > and IP-restricted by default; Substrate has no public ingress. ACR and Blob
 > endpoints are publicly reachable but require authentication. Actor image access
-> and Blob permissions are installation-wide, not per actor or tenant.
-
-Snapshot inspection is optional and read-only. Snapshots can contain memory,
-files, and secrets. Removing the reader from your config does not revoke an
-existing grant; remove it in Azure IAM or tear down.
+> and Blob permissions are installation-wide, not per actor or tenant. See
+> [network and authorization boundaries](docs/configuration.md#network-and-authorization-boundaries).
 
 Setup checks quota and VM availability before billing, but Azure capacity is
-not reserved. See the
+not reserved. Check the
 [tested configurations and remaining limits](docs/operations.md#live-acceptance-and-limitations)
 before choosing a different region or VM size.
 
 ## Try the demo
 
+The counter demo shows an actor keeping its state across suspend and resume.
+Each request increments three counters: one in process memory, one in a file on
+a durable volume, and one on the root filesystem.
+
 Apply setup's printed shell exports first. If you skipped the optional demo,
-deploy it with `bin/substrate-aks demo`.
+deploy it with `bin/substrate-aks demo`. Then create an actor:
 
 ```sh
 kubectl ate create actor my-counter \
   -a ate-demo-counter-microvm --template counter-microvm
-kubectl ate get actor my-counter -a ate-demo-counter-microvm
-kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
-kubectl ate resume actor my-counter -a ate-demo-counter-microvm
 ```
 
-Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
-to call the actor over HTTP and compare its state before and after suspension.
-See [client setup and authentication](docs/operations.md#client-and-counter-demo) for details.
+In a second terminal, forward local port 8000 to the actor:
+
+```sh
+kubectl ate proxy actor my-counter -a ate-demo-counter-microvm
+```
+
+Back in the first terminal, increment the counters, suspend the actor, and call
+it again. The next request resumes the actor from its snapshot, and every
+counter continues where it left off:
+
+```console
+$ curl -X POST http://localhost:8000
+preserved memory count: 1 | preserved file counter: 1 | preserved rootfs counter: 1
+
+$ kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
+
+$ curl -X POST http://localhost:8000
+preserved memory count: 2 | preserved file counter: 2 | preserved rootfs counter: 2
+```
+
+`--mode=sync` waits until the snapshot is uploaded to Blob storage. See the
+[upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
+for more, and [client setup and authentication](docs/operations.md#client-and-counter-demo)
+for how `kubectl ate` reaches the cluster.
 
 ## Manage your installation
 
-Commands take an installation `NAME`. When you have only one installation, the
-name is optional, except for `init`, `setup` and `destroy`: without a name,
-`init` and `setup --yes` create `substrate-dev`, interactive `setup` asks for a
-name, and `destroy` refuses to run.
+Commands take an installation `NAME`, which is optional when only one is saved.
+`destroy` always requires it.
 
 | Command | Purpose |
 | --- | --- |
@@ -130,31 +219,21 @@ name, and `destroy` refuses to run.
 | `bin/substrate-aks client` | Install the matching `kubectl ate` and print shell exports |
 | `bin/substrate-aks setup --verbose` | Show underlying commands and detailed output |
 
-**Retry:** fix the reported error and rerun `setup NAME`. Resources
-and logs remain after a failure; there is no automatic rollback.
+- **Failures keep resources.** Fix the reported error and rerun `setup NAME`;
+  there is no automatic rollback. See [retry and teardown](docs/operations.md#retry-and-teardown).
+- **Saved settings win.** They take precedence over setup flags and your active
+  Azure subscription. Use a new name for a different installation. See
+  [saved settings](docs/configuration.md#saved-settings-are-authoritative).
+- **Your IP changed?** Update the API allowlist as described in
+  [region and API access](docs/configuration.md#region-and-api-access).
+- **Keep local state private.** Each installation's directory holds its
+  kubeconfig, logs, and the only local record of its billable resources. See
+  [local workspace](docs/configuration.md#local-workspace).
 
-**Keep the target unchanged:** saved settings take precedence over setup flags
-and your active Azure subscription. Run setup with a new name for a different
-installation. Declining the billing confirmation for a new installation
-discards it; nothing is left in `list`.
-If your public IP changes, kubectl loses access to the cluster. Put the new
-address in `aks.apiAuthorizedCidrs` in the installation's `installation.json`,
-then run `substrate-aks plan NAME` and `substrate-aks provision NAME`.
-
-**Keep local state private:** each installation's directory under
-`installations/NAME/` in the state directory contains its saved settings,
-kubeconfig, logs, and deployment records as well as caches. Set
-`SUBSTRATE_AKS_HOME` to use a different location. Deleting this directory does
-not delete Azure resources; remove those with
-`az group delete --name RESOURCE_GROUP`.
-
-See [operations](docs/operations.md) for individual lifecycle commands and
-diagnostics, and [configuration](docs/configuration.md) for settings and permissions.
-
-## Tearing down
+## Tear down
 
 Use the exact command printed by setup, or substitute your installation name
-and resource group below:
+and resource group:
 
 ```sh
 bin/substrate-aks destroy substrate-dev --confirm-delete substrate-dev
@@ -181,24 +260,44 @@ Reset is refused while the resource group exists. See
 
 | Guide | Contents |
 | --- | --- |
-| [Installation architecture](docs/architecture.md) | How Bicep, Kustomize, and the pinned upstream `ate-setup` fit together; no standalone Helm or GitOps install yet |
-| [Configuration](docs/configuration.md) | Config fields, identities, permissions, networking, and image/source settings |
-| [Operations](docs/operations.md) | Lifecycle commands, client setup, diagnostics, retries, teardown, and validation limits |
+| [Architecture](docs/architecture.md) | How Bicep, Kustomize, and the pinned upstream `ate-setup` fit together |
+| [Configuration](docs/configuration.md) | Settings, node pools, identities, permissions, networking, and image sources |
+| [Operations](docs/operations.md) | Lifecycle commands, the demo, diagnostics, retries, teardown, and validation status |
 | [Azure deployment components](deploy/README.md) | Where to change Azure workload settings |
+
+## Status and roadmap
+
+This is an early, experimental release. Each installation creates its own
+cluster; there is no supported Helm, GitOps, or standalone Kustomize install yet.
+Work in progress includes:
+
+- Installing into existing clusters and resource groups
+- Choosing from supported Substrate releases ([#17](https://github.com/Azure/substrate-aks/issues/17))
+- Reusable Bicep modules and deployment examples ([#7](https://github.com/Azure/substrate-aks/issues/7))
+- Separate uninstall, data retention, and infrastructure destruction ([#10](https://github.com/Azure/substrate-aks/issues/10))
+- An account-free installation tour ([#8](https://github.com/Azure/substrate-aks/issues/8)) and a richer durability demo ([#9](https://github.com/Azure/substrate-aks/issues/9))
+- Local NVMe snapshot disks ([#18](https://github.com/Azure/substrate-aks/issues/18)) and guarding against mixed CPU generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
+
+See [open issues](https://github.com/Azure/substrate-aks/issues) for more, and
+[live acceptance and limitations](docs/operations.md#live-acceptance-and-limitations)
+for what has been validated on Azure.
+
+## Related projects
+
+- [Agent Substrate](https://github.com/agent-substrate/substrate): the runtime this repository installs
+- [Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob): snapshot and asset storage on Azure Blob
+- [ate.dev](https://ate.dev): Agent Substrate documentation and project site
 
 ## Development
 
 ```sh
-make test
-make verify
-make build
-make bicep
+make build verify test-unit   # build, lint, and unit tests
+make test                     # adds pinned-source contract tests (needs network)
+make bicep                    # compile the infrastructure templates
 ```
 
-These checks do not provision Azure resources. `make test` includes
-pinned-source integration contracts and downloads source and Go modules;
-use `make test-unit` for unit tests only. See
-[development checks](docs/operations.md#development-checks) for details.
+None of these provision Azure resources. See
+[development checks](CONTRIBUTING.md#development-checks) for details.
 
 ## Contributing
 
