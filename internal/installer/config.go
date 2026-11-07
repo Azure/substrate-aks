@@ -23,9 +23,9 @@ const (
 	// DefaultReleaseImages is where upstream publishes DefaultTag's images.
 	DefaultReleaseImages = "ghcr.io/agent-substrate/substrate"
 
-	// The plugin is pinned to an unreleased pull request head until it is tagged.
+	// The plugin is pinned to a commit on its main branch.
 	DefaultPluginRepository = "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git"
-	DefaultPluginCommit     = "b21387e82cee399c65f49178a665727534e1c073"
+	DefaultPluginCommit     = "5639af04ad429cf51d2dbf452c80709d3b68e48b"
 
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"

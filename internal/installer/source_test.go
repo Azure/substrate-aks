@@ -10,7 +10,7 @@ import (
 )
 
 func TestFingerprintDeploymentContract(t *testing.T) {
-	const expected = "1448f6d91894aa0a20c395b010919c2b45b20c874bfe5c7726671de8ddc5c777"
+	const expected = "10c1894326773f77630e1daa58cf85dbde0cd5764b4c86324ffc3657d2db2463"
 	if got := fingerprint(testConfig(t), testInfrastructure()); got != expected {
 		t.Fatalf("deployment contract changed the installation fingerprint: %s", got)
 	}

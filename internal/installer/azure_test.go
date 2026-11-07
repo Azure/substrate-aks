@@ -188,8 +188,8 @@ func TestStatusReportsInstalledRevisionsFromTheRecord(t *testing.T) {
 			`{"data":{"repository":"` + DefaultRepository + `","tag":"v1.0.0","commit":"` + DefaultCommit + `","pluginRepository":"` + DefaultPluginRepository + `","pluginCommit":"` + DefaultPluginCommit + `","phase":"deployed"}}`,
 			[]string{"v1.0.0 (" + DefaultCommit[:12] + ")", "plugin " + DefaultPluginCommit[:12], "phase deployed"}},
 		{"record from the previous pin",
-			`{"data":{"repository":"https://github.com/aramase/substrate.git","commit":"c3b44aa46312e073a6384f68723a7b14dffd5518","phase":"deployed"}}`,
-			[]string{"c3b44aa46312 from https://github.com/aramase/substrate.git", "plugin not recorded"}},
+			`{"data":{"repository":"https://example.invalid/substrate.git","commit":"c3b44aa46312e073a6384f68723a7b14dffd5518","phase":"deployed"}}`,
+			[]string{"c3b44aa46312 from https://example.invalid/substrate.git", "plugin not recorded"}},
 		{"no installation", "", []string{"No Substrate installation is recorded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
