@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in Substrate on AKS. Contributions are covered by the
+Thanks for your interest in Agent Substrate on AKS. Contributions are covered by the
 Microsoft Contributor License Agreement and Code of Conduct; see
 [Contributing](README.md#contributing) in the README. Report security issues
 as described in [SECURITY.md](SECURITY.md), never in public issues.

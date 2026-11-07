@@ -2,7 +2,7 @@
 
 <img src="docs/images/hero.gif" alt="Animated Agent Substrate on AKS logo: agents light up and fade on top of a cube whose layers represent Agent Substrate and AKS" width="760">
 
-# Substrate on AKS
+# Agent Substrate on AKS
 
 **Run [Agent Substrate](https://github.com/agent-substrate/substrate) on Azure Kubernetes Service with one guided command.**
 
@@ -16,11 +16,10 @@
 
 </div>
 
-Agent Substrate snapshots idle agents out of memory and resumes them on request
-onto a small pool of warm workers, each actor isolated in its own sandbox.
-This repository packages it for Azure: a guided installer creates a dedicated
-AKS cluster, registry, Blob storage, and identities, then installs Substrate with
-the [Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob).
+A guided installer creates a dedicated AKS cluster, container registry, Blob
+storage, and identities, then installs Agent Substrate with the
+[Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob)
+for snapshot storage.
 
 - **Preview before you pay.** Setup checks your tools, quota, and permissions,
   then shows every billable Azure change and waits for your approval.
