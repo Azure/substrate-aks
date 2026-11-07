@@ -246,15 +246,23 @@ Reset is refused while the resource group exists. See
 ## Status and roadmap
 
 This is an early, experimental release. Each installation creates its own
-cluster; there is no supported Helm, GitOps, or standalone Kustomize install yet.
-Work in progress includes:
+cluster, and the CLI is the only supported way to install. Planned work:
 
-- Installing into existing clusters and resource groups
-- Choosing from supported Substrate releases ([#17](https://github.com/Azure/substrate-aks/issues/17))
-- Reusable Bicep modules and deployment examples ([#7](https://github.com/Azure/substrate-aks/issues/7))
-- Separate uninstall, data retention, and infrastructure destruction ([#10](https://github.com/Azure/substrate-aks/issues/10))
-- An account-free installation tour ([#8](https://github.com/Azure/substrate-aks/issues/8)) and a richer durability demo ([#9](https://github.com/Azure/substrate-aks/issues/9))
-- Local NVMe snapshot disks ([#18](https://github.com/Azure/substrate-aks/issues/18)) and guarding against mixed CPU generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
+- **Install without the CLI:** an AKS kustomize Component, kustomization,
+  and Helm chart over upstream's release ([#25](https://github.com/Azure/substrate-aks/issues/25)), and reusable Bicep modules
+  ([#7](https://github.com/Azure/substrate-aks/issues/7))
+- **Existing clusters and resource groups**, not only ones setup creates
+- **Sizing:** configurable system node pool ([#23](https://github.com/Azure/substrate-aks/issues/23)) and control plane
+  ([#24](https://github.com/Azure/substrate-aks/issues/24)), local NVMe snapshot disks ([#18](https://github.com/Azure/substrate-aks/issues/18)), and a guard against mixed CPU
+  generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
+- **Managed services:** Azure Database for PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)) and managed
+  Prometheus and Grafana monitoring ([#14](https://github.com/Azure/substrate-aks/pull/14))
+- **Benchmarks:** upstream's suite and Azure-recommended tests, run on AKS
+  ([#26](https://github.com/Azure/substrate-aks/issues/26))
+- **Lifecycle:** choosing from supported Substrate releases ([#17](https://github.com/Azure/substrate-aks/issues/17)), and
+  separate uninstall, data retention, and infrastructure destruction ([#10](https://github.com/Azure/substrate-aks/issues/10))
+- **Demos:** an account-free installation tour ([#8](https://github.com/Azure/substrate-aks/issues/8)) and a richer
+  durability demo ([#9](https://github.com/Azure/substrate-aks/issues/9))
 
 See [open issues](https://github.com/Azure/substrate-aks/issues) for more, and
 [validation and limitations](docs/operations.md#validation-and-limitations)
