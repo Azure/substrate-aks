@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="920" viewBox="0 0 1120 920" role="img" aria-labelledby="title description">
+  <title id="title">Where Substrate actors run and their state lives</title>
+  <desc id="description">Your workstation uses kubectl ate to reach the Substrate API in AKS. Substrate manages actor microVMs on a dedicated worker pool and uses PostgreSQL, whose data persists on Azure Disk. Azure Container Registry supplies cluster images. Actor suspension stages snapshots on the worker disk, separate from the database disk. Blob plugin sidecars transfer snapshots and fetch runtime assets from Azure Blob Storage. Arrows show logical relationships, not network routes or resource-group boundaries.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#435b73"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #142d46; }
+      .heading { font-size: 23px; font-weight: 650; }
+      .detail { font-size: 20px; fill: #384e63; }
+      .label { font-size: 18px; fill: #384e63; }
+      .line { fill: none; stroke: #435b73; stroke-width: 3; marker-end: url(#arrow); }
+      .storage { fill: #eaf7f1; stroke: #4a8b70; stroke-width: 2; }
+    </style>
+  </defs>
+  <rect width="1120" height="920" rx="16" fill="#ffffff"/>
+  <text x="32" y="46" font-size="31" font-weight="700">Where actors run and their state lives</text>
+  <text x="32" y="80" class="detail">Database data and actor snapshots use different storage.</text>
+
+  <rect x="330" y="112" width="758" height="532" rx="18" fill="#eef5fc" stroke="#1768a9" stroke-width="2"/>
+  <text x="354" y="150" class="heading">AKS cluster</text>
+
+  <rect x="32" y="184" width="234" height="148" rx="12" fill="#f3f5f8" stroke="#91a2b3"/>
+  <path d="M 52 204 H 86 V 227 H 52 Z M 69 227 V 234 M 58 234 H 80" fill="none" stroke="#435b73" stroke-width="2"/>
+  <text x="100" y="224" font-size="21" font-weight="650">Your shell</text>
+  <text x="52" y="260" class="detail">kubectl ate</text>
+  <text x="52" y="285" class="label">No public</text>
+  <text x="52" y="310" class="label">Substrate ingress</text>
+
+  <rect x="354" y="184" width="306" height="142" rx="12" fill="#ffffff" stroke="#9bbbd8"/>
+  <text x="374" y="220" class="heading">Substrate services</text>
+  <text x="374" y="254" class="detail">API + controller</text>
+  <text x="374" y="286" class="detail">Actor networking</text>
+  <path d="M 266 244 H 344" class="line"/>
+  <text x="275" y="224" class="label">API</text>
+
+  <rect x="730" y="184" width="334" height="430" rx="12" fill="#dfeefa" stroke="#1768a9" stroke-width="2"/>
+  <text x="750" y="220" class="heading">MicroVM worker pool</text>
+  <text x="750" y="251" class="detail">Dedicated AKS nodes</text>
+  <text x="750" y="281" class="detail">Kata / cloud-hypervisor</text>
+  <path d="M 660 246 H 720" class="line"/>
+  <text x="696" y="338" class="label" text-anchor="middle" transform="rotate(-90 696 338)">Manage actors</text>
+
+  <rect x="754" y="311" width="286" height="114" rx="10" fill="#ffffff" stroke="#5995c5" stroke-width="2"/>
+  <rect x="766" y="323" width="262" height="90" rx="6" fill="none" stroke="#9bbbd8" stroke-dasharray="5 4"/>
+  <text x="897" y="355" class="heading" text-anchor="middle">Actor microVM</text>
+  <text x="897" y="389" class="detail" text-anchor="middle">Memory + files</text>
+  <path d="M 897 425 V 484" class="line"/>
+  <text x="914" y="462" class="label">Suspend</text>
+  <rect x="754" y="494" width="286" height="90" rx="10" fill="#fff5df" stroke="#b37a17"/>
+  <text x="897" y="529" font-size="21" font-weight="650" text-anchor="middle">Snapshot staging</text>
+  <text x="897" y="560" class="detail" text-anchor="middle">On the worker's local disk</text>
+
+  <rect x="32" y="423" width="234" height="134" rx="12" fill="#f1edfc" stroke="#aa94cf"/>
+  <path d="M 52 443 H 82 V 473 H 52 Z M 58 451 H 76 M 58 459 H 76 M 58 467 H 70" fill="none" stroke="#705291" stroke-width="2"/>
+  <text x="52" y="509" font-size="21" font-weight="650">Container Registry</text>
+  <text x="52" y="539" class="detail">Private images</text>
+  <path d="M 266 460 H 320" class="line"/>
+  <text x="274" y="404" class="label">Cluster</text>
+  <text x="274" y="429" class="label">image pulls</text>
+
+  <rect x="354" y="452" width="306" height="132" rx="12" fill="#ffffff" stroke="#9bbbd8"/>
+  <text x="374" y="490" class="heading">PostgreSQL</text>
+  <text x="374" y="525" class="detail">Substrate database</text>
+  <text x="374" y="557" class="detail">No HA or backups</text>
+  <path d="M 507 326 V 442" class="line"/>
+  <text x="525" y="391" class="label">Database access</text>
+
+  <path d="M 507 584 V 758" class="line"/>
+  <text x="525" y="701" class="label">Persist database data</text>
+  <path d="M 897 594 V 758" class="line" marker-start="url(#arrow)"/>
+  <rect x="766" y="659" width="262" height="82" rx="8" fill="#ffffff" stroke="#b3c2cf"/>
+  <text x="897" y="690" class="label" text-anchor="middle">Azure Blob plugin sidecars</text>
+  <text x="897" y="716" class="label" text-anchor="middle">Snapshots + runtime assets</text>
+
+  <path d="M 354 792 V 838 C 354 865 660 865 660 838 V 792 Z" class="storage"/>
+  <ellipse cx="507" cy="792" rx="153" ry="24" class="storage"/>
+  <text x="507" y="840" font-size="21" font-weight="650" text-anchor="middle">Azure Disk: 32 GiB</text>
+
+  <path d="M 744 792 V 838 C 744 865 1050 865 1050 838 V 792 Z" class="storage"/>
+  <ellipse cx="897" cy="792" rx="153" ry="24" class="storage"/>
+  <text x="897" y="840" font-size="21" font-weight="650" text-anchor="middle">Azure Blob Storage</text>
+
+  <text x="32" y="690" class="label">MicroVMs isolate actors.</text>
+  <text x="32" y="720" class="label">Storage permissions are</text>
+  <text x="32" y="750" class="label">installation-wide, not per actor.</text>
+  <text x="32" y="896" class="label">Logical relationships only. Arrows are not network routes or resource-group boundaries.</text>
+</svg>

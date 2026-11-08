@@ -5,6 +5,9 @@ Kubernetes Service (AKS). The guided installer creates the Azure resources,
 imports the Substrate release images, and installs Substrate with the
 [Azure Blob object-store plugin](https://github.com/agent-substrate-plugins/objectstore-azure-blob).
 
+Substrate runs workloads called *actors*. The counter demo runs an actor in a
+microVM, a lightweight virtual machine, and lets you suspend and resume it.
+
 > [!WARNING]
 > **Experimental, single-tenant, and billable.** This quickstart creates a new AKS
 > cluster in a dedicated resource group. [Teardown](#tearing-down) deletes the
@@ -20,22 +23,46 @@ imports the Substrate release images, and installs Substrate with the
 
 | Requirement | Notes |
 | --- | --- |
+| AKS Version | 1.37 or above |
 | Linux or macOS | Installer host; cluster workloads use Linux/amd64 |
 | Go 1.27.3+ and Git | Go can download the required toolchain automatically |
 | Azure CLI | Sign in to the target subscription; install Bicep with `az bicep install` |
-| `kubectl` 1.36–1.38 | Within one minor version of AKS 1.37 |
 | Azure `kubelogin` | Signs `kubectl` in to the cluster with your Azure CLI login |
 | Azure permissions | Subscription-scope deployments, resource creation, and role assignments; Contributor alone is insufficient |
-| AKS capacity | AKS 1.37, VM quota, and nested virtualization in your region |
+| Docker with buildx or Podman | [build images from source](docs/configuration.md#image-source)|
 
-Docker with buildx or Podman is needed only to
-[build images from source](docs/configuration.md#image-source).
+### 2. Clone the repository and sign in
 
 ```sh
 git clone https://github.com/Azure/substrate-aks.git
 cd substrate-aks
+```
+
+```sh
 az login
+```
+
+Check the active subscription before starting setup:
+
+```sh
+az account show --query "{name:name, id:id}" --output table
+```
+
+To select a different subscription:
+
+```sh
+az account set --subscription SUBSCRIPTION_UUID
+```
+
+Install Bicep for Azure resource deployments:
+
+```sh
 az bicep install
+```
+
+### 3. Run guided setup
+
+```sh
 make setup
 ```
 
@@ -53,11 +80,14 @@ anything. Press `?` in the workspace for keys.
 at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
 cluster to your regular kubeconfig; it asks first, and never edits shell profiles.
 
-**Useful variants**
+You're now ready to [try the demo](#try-the-demo).
+
+### Setup options
+
+After the first build, run the binary directly to use these options:
 
 | Command | Use |
 | --- | --- |
-| `az account set --subscription SUBSCRIPTION_UUID` | Select a different subscription **before** creating an installation |
 | `bin/substrate-aks setup NAME` | Resume or reconcile a saved installation |
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
@@ -69,12 +99,21 @@ automation options.
 
 ## What gets installed
 
+Actors run in microVMs on a dedicated AKS worker pool. Their snapshots go to
+Blob Storage through the Azure Blob plugin; PostgreSQL uses a separate Azure
+Disk for database data. ACR supplies the container images:
+
+![Substrate on AKS architecture showing actor microVMs, snapshot storage in Azure Blob Storage, and PostgreSQL persistence on Azure Disk.](docs/images/installation-overview.svg)
+
+The diagram shows logical relationships, not network routes or resource-group
+boundaries.
+
 | Component | Default |
 | --- | --- |
 | AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v6` |
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
 | Runtime | Kata / cloud-hypervisor microVMs; KVM is checked before installation |
-| Substrate | API server, controller, networking, and atelet |
+| Substrate | API server, controller, networking, and the atelet node agent |
 | Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
 | Substrate version | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0) |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built there |
@@ -99,15 +138,36 @@ before choosing a different region or VM size.
 ## Try the demo
 
 Apply setup's printed shell exports first. If you skipped the optional demo,
-deploy it with `bin/substrate-aks demo`.
+deploy it now:
 
 ```sh
-kubectl ate create actor my-counter \
-  -a ate-demo-counter-microvm --template counter-microvm
-kubectl ate get actor my-counter -a ate-demo-counter-microvm
-kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
-kubectl ate resume actor my-counter -a ate-demo-counter-microvm
+bin/substrate-aks demo
 ```
+
+1. Create a counter actor:
+
+   ```sh
+   kubectl ate create actor my-counter \
+     -a ate-demo-counter-microvm --template counter-microvm
+   ```
+
+1. Inspect the actor:
+
+   ```sh
+   kubectl ate get actor my-counter -a ate-demo-counter-microvm
+   ```
+
+1. Suspend the actor:
+
+   ```sh
+   kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
+   ```
+
+1. Resume the actor:
+
+   ```sh
+   kubectl ate resume actor my-counter -a ate-demo-counter-microvm
+   ```
 
 Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
 to call the actor over HTTP and compare its state before and after suspension.
@@ -115,10 +175,20 @@ See [client setup and authentication](docs/operations.md#client-and-counter-demo
 
 ## Manage your installation
 
-Commands take an installation `NAME`. When you have only one installation, the
-name is optional, except for `init`, `setup` and `destroy`: without a name,
-`init` and `setup --yes` create `substrate-dev`, interactive `setup` asks for a
-name, and `destroy` refuses to run.
+### Select an installation
+
+Use `bin/substrate-aks list` to find saved installation names. Commands take an
+installation `NAME`; most let you omit it when only one installation is saved.
+The exceptions are:
+
+- `init` and `setup --yes` use `substrate-dev` when you omit the name.
+- Interactive `setup` without a name asks for a new installation name.
+- `destroy` always requires an explicit name.
+
+### Run common commands
+
+Add your installation name to target it explicitly, for example
+`bin/substrate-aks status substrate-dev`.
 
 | Command | Purpose |
 | --- | --- |
@@ -130,22 +200,45 @@ name, and `destroy` refuses to run.
 | `bin/substrate-aks client` | Install the matching `kubectl ate` and print shell exports |
 | `bin/substrate-aks setup --verbose` | Show underlying commands and detailed output |
 
-**Retry:** fix the reported error and rerun `setup NAME`. Resources
+### Retry a failed setup
+
+Fix the reported error and rerun `bin/substrate-aks setup NAME`. Resources
 and logs remain after a failure; there is no automatic rollback.
 
-**Keep the target unchanged:** saved settings take precedence over setup flags
+### Keep the deployment target unchanged
+
+Saved settings take precedence over setup flags
 and your active Azure subscription. Run setup with a new name for a different
 installation. Declining the billing confirmation for a new installation
 discards it; nothing is left in `list`.
-If your public IP changes, kubectl loses access to the cluster. Put the new
-address in `aks.apiAuthorizedCidrs` in the installation's `installation.json`,
-then run `substrate-aks plan NAME` and `substrate-aks provision NAME`.
+If your public IP changes, `kubectl` loses access to the cluster. Update
+`aks.apiAuthorizedCidrs` in the installation's `installation.json` with the new
+address, then run:
 
-**Keep local state private:** each installation's directory under
+```sh
+bin/substrate-aks plan NAME
+```
+
+```sh
+bin/substrate-aks provision NAME
+```
+
+### Protect local state
+
+Each installation's directory under
 `installations/NAME/` in the state directory contains its saved settings,
 kubeconfig, logs, and deployment records as well as caches. Set
-`SUBSTRATE_AKS_HOME` to use a different location. Deleting this directory does
-not delete Azure resources; remove those with
+`SUBSTRATE_AKS_HOME` to use a different location.
+
+| Platform | Default state directory |
+| --- | --- |
+| Linux | `$XDG_STATE_HOME/substrate-aks`, or `~/.local/state/substrate-aks` if unset |
+| macOS | `~/Library/Application Support/substrate-aks` |
+
+Keep this directory private and retain it while the installation exists.
+Deleting local state does **not** delete Azure resources. Use
+[teardown](#tearing-down) to remove both resources and local state. If local
+state is already lost, delete the resource group with
 `az group delete --name RESOURCE_GROUP`.
 
 See [operations](docs/operations.md) for individual lifecycle commands and
@@ -154,7 +247,7 @@ diagnostics, and [configuration](docs/configuration.md) for settings and permiss
 ## Tearing down
 
 Use the exact command printed by setup, or substitute your installation name
-and resource group below:
+and resource group for the two `substrate-dev` values below:
 
 ```sh
 bin/substrate-aks destroy substrate-dev --confirm-delete substrate-dev
