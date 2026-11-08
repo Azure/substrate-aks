@@ -200,7 +200,11 @@ so memory snapshots can restore on any node; see
 The operator needs permission to list resource groups, create subscription-scope
 deployments, provision the resources, and assign roles. Use **Owner**, or
 **Contributor** plus **User Access Administrator** or **Role Based Access
-Control Administrator**, on the subscription. Contributor alone cannot assign
+Control Administrator**, on the subscription. A Role Based Access Control
+Administrator assignment must not carry a condition that excludes the roles
+setup assigns (`AcrPush`, `AcrPull`, `Container Registry Data Importer and Data
+Reader`, `Storage Blob Data Contributor`, `Storage Blob Data Reader`, and
+`Azure Kubernetes Service RBAC Cluster Admin`). Contributor alone cannot assign
 roles.
 
 Select your subscription before creating a config:

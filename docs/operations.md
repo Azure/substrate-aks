@@ -48,7 +48,7 @@ flowchart LR
     substrate --> demo["5 · Counter demo<br/>(optional)"] --> connect["6 · Connect"]
 ```
 
-Stages with an approval in italics pause for you before anything is billed.
+Stages with an approval in italics pause for your approval before each billable step.
 
 | Stage | What happens |
 | --- | --- |
@@ -65,7 +65,7 @@ The registry and the full infrastructure are approved separately.
 <p align="center">
   <img src="images/setup-preview.png" alt="The setup workspace paused at stage 3 of 6, showing an infrastructure preview grouped by resource type with counts of resources to create, and an Apply these planned changes prompt" width="820">
   <br>
-  <sub>An infrastructure preview awaiting approval (simulated; real previews list more identities and role assignments).</sub>
+  <sub>An infrastructure preview awaiting approval (simulated; counts differ from a real run).</sub>
 </p>
 
 Previews
@@ -492,7 +492,6 @@ in multiple regions, with several VM sizes and multi-node microVM pools:
 - Managed Entra sign-in with Azure RBAC and local accounts disabled
 - Actor suspend and resume preserving memory, file, and root filesystem state,
   including cold restore from Blob storage onto a new node
-- Multi-hour runs of upstream Substrate benchmark workloads
 - Component reinstalls, image and cluster checks, and ownership-checked teardown
 
 Recent runs recorded in pull requests:
@@ -529,6 +528,9 @@ with the earlier Dsv3 default.
 - Several operators sharing one installation
 - Native macOS installation hosts
 - Arm64 nodes
+- Recovery from interrupted installs beyond rerunning `setup NAME`
+- Changing the snapshot reader on an existing installation
+- Regions and VM sizes other than those in the runs above
 
 Not part of this quickstart: installing into an existing cluster, managed
 PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)), upgrades, autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared

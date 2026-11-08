@@ -12,7 +12,7 @@
 [![AKS 1.37](https://img.shields.io/badge/AKS-1.37-0078d4)](https://learn.microsoft.com/azure/aks/)
 
 [Quickstart](#quickstart) · [How it works](#how-it-works) · [Try the demo](#try-the-demo) ·
-[Tear down](#tear-down) · [Documentation](#documentation)
+[Manage](#manage-your-installation) · [Tear down](#tear-down) · [Documentation](#documentation)
 
 </div>
 
@@ -22,7 +22,8 @@ storage, and identities, then installs Agent Substrate with the
 for snapshot storage.
 
 - **Preview before you pay.** Setup checks your tools, quota, and permissions,
-  then shows every billable Azure change and waits for your approval.
+  then previews the Azure infrastructure and waits for your approval before each
+  deployment. Image imports and asset uploads follow the approvals.
 - **MicroVM actors on AKS.** Actors run in Kata / Cloud Hypervisor microVMs on a
   dedicated node pool; KVM support is tested on that pool before Substrate is
   installed.
@@ -55,13 +56,19 @@ And an Azure subscription with:
 
 | Requirement | Notes |
 | --- | --- |
-| Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator**, on the subscription |
+| Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator** (without a condition that excludes the roles setup assigns), on the subscription |
 | AKS capacity | AKS 1.37 and VM quota in your region |
 
 Setup checks your tools, quota, and permissions before creating anything, and
 prints an install command or link for any missing tool. KVM support is tested on
 the microVM node once the cluster exists. Docker with buildx or Podman is needed only to
 [build images from source](docs/configuration.md#image-source).
+
+> [!TIP]
+> **What it costs:** the default cluster has two `Standard_D4s_v6` nodes, about
+> $0.40/hour combined at `eastus2` pay-as-you-go rates, plus disks, a Basic
+> container registry, Blob storage, and a Standard load balancer with its
+> outbound public IP. [Tear down](#tear-down) when you are done.
 
 ### 2. Run setup
 
@@ -110,12 +117,6 @@ for automation options.
 **When setup finishes, run the shell exports it prints.** They point `kubectl`
 at the new cluster and put `kubectl ate` on your `PATH`. Setup can also add the
 cluster to your regular kubeconfig; it asks first, and never edits shell profiles.
-
-> [!TIP]
-> **What it costs:** the default cluster has two `Standard_D4s_v6` nodes, about
-> $0.40/hour combined at `eastus2` pay-as-you-go rates, plus disks, a Basic
-> container registry, Blob storage, and a Standard load balancer with its
-> outbound public IP. [Tear down](#tear-down) when you are done.
 
 ## How it works
 
@@ -191,7 +192,9 @@ preserved memory count: 2 | preserved file counter: 2 | preserved rootfs counter
 `--mode=sync` waits until the snapshot is uploaded to Blob storage. See the
 [upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
 for more, and [client setup and authentication](docs/operations.md#client-and-counter-demo)
-for how `kubectl ate` reaches the cluster.
+for how `kubectl ate` reaches the cluster. Setup's closing output shows the
+same steps with `kubectl port-forward` and an `ate-target-actor` header instead
+of `kubectl ate proxy`; either works.
 
 ## Manage your installation
 
