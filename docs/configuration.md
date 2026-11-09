@@ -204,8 +204,13 @@ Control Administrator**, on the subscription. A Role Based Access Control
 Administrator assignment must not carry a condition that excludes the roles
 setup assigns (`AcrPush`, `AcrPull`, `Container Registry Data Importer and Data
 Reader`, `Storage Blob Data Contributor`, `Storage Blob Data Reader`, and
-`Azure Kubernetes Service RBAC Cluster Admin`). Contributor alone cannot assign
-roles.
+`Azure Kubernetes Service RBAC Cluster Admin`), the principal types it assigns
+them to, or those principals. Setup assigns roles to the managed identities it
+creates, as service principals, and to the operator, upload, and optional
+snapshot reader identities, each as its own principal type. A condition that
+only allows specific named principals fails on a new installation, because
+setup creates the managed identities and their object IDs are not known in
+advance. Contributor alone cannot assign roles.
 
 Select your subscription before creating a config:
 

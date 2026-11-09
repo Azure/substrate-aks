@@ -56,7 +56,7 @@ And an Azure subscription with:
 
 | Requirement | Notes |
 | --- | --- |
-| Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator** (without a condition that excludes the roles setup assigns), on the subscription |
+| Permissions | **Owner**, or **Contributor** plus **User Access Administrator** or **Role Based Access Control Administrator** (without a condition that excludes the roles setup assigns, the principal types it assigns them to, or the managed identities it creates), on the subscription |
 | AKS capacity | AKS 1.37 and VM quota in your region |
 
 Setup checks your tools, quota, and permissions before creating anything, and
