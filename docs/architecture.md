@@ -27,7 +27,7 @@ identity rather than account keys.
 
 ```mermaid
 flowchart LR
-    you(["Operator<br/>(Entra identity)"])
+    you(["You<br/>(operator and upload<br/>identity by default)"])
 
     subgraph rg["Dedicated resource group"]
         acr[("Container Registry<br/>Basic")]
@@ -53,9 +53,11 @@ flowchart LR
     ctl_id -- "read/write" --> snaps
 ```
 
-The operator grants go to the configured upload and operator identities, which
-default to the signed-in user. An optional snapshot reader gets read-only access
-to the snapshots container. See
+The registry grants (`AcrPush` and Container Registry Data Importer and Data
+Reader) and Storage Blob Data Contributor on the assets container go to the
+upload identity (`--identity-object-id`). The operator (`--operator-object-id`)
+gets only AKS RBAC Cluster Admin. Both default to the signed-in user. An
+optional snapshot reader gets read-only access to the snapshots container. See
 [Azure identity and permissions](configuration.md#azure-identity-and-permissions).
 
 ## Implemented today versus target architecture

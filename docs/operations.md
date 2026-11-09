@@ -48,19 +48,20 @@ flowchart LR
     substrate --> demo["5 · Counter demo<br/>(optional)"] --> connect["6 · Connect"]
 ```
 
-Stages with an approval in italics pause for your approval before each billable step.
+Italics mark where a stage waits for your confirmation or approval.
 
 | Stage | What happens |
 | --- | --- |
 | Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
-| Images and assets | Previews and creates the private registry, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and publishes runtime assets. Skipped when the config already has published images; they are only verified. |
-| AKS cluster | Previews and provisions AKS, storage, and identities, then checks the cluster. |
-| Substrate | Renders the Azure settings and installs Substrate. |
+| Images and assets | Previews the private registry and creates it after your approval, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and prepares runtime assets. Skipped when the config already has published images; they are only verified. |
+| AKS cluster | Previews AKS, storage, and identities, provisions them after your approval, then checks the cluster. |
+| Substrate | Renders the Azure settings, uploads the runtime assets to Blob storage, and installs Substrate. |
 | Counter demo | Optional; deploys the counter microVM demo. |
 | Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
 
-Each billable step shows an Azure preview first and waits for your approval.
-The registry and the full infrastructure are approved separately.
+Setup previews the registry and the full infrastructure separately and waits
+for your approval before each deployment. Image imports and asset uploads
+follow those approvals without a preview of their own.
 
 <p align="center">
   <img src="images/setup-preview.png" alt="The setup workspace paused at stage 3 of 6, showing an infrastructure preview grouped by resource type with counts of resources to create, and an Apply these planned changes prompt" width="820">
