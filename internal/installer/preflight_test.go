@@ -14,18 +14,18 @@ type prerequisiteRunner func(context.Context, Command) ([]byte, error)
 func (r prerequisiteRunner) Run(ctx context.Context, c Command) ([]byte, error) { return r(ctx, c) }
 
 func TestDoctorPreservesFailuresAndIncludesRemedies(t *testing.T) {
-	missing := errors.New("bicep is missing")
+	missing := errors.New("tool is missing")
 	app := App{Runner: prerequisiteRunner(func(_ context.Context, cmd Command) ([]byte, error) {
-		if cmd.Args[0] == "az" && cmd.Args[1] == "bicep" {
+		if cmd.Args[0] == "kubectl" || cmd.Args[0] == "az" && cmd.Args[1] == "bicep" {
 			return nil, missing
 		}
-		return []byte(`{"clientVersion":{"major":"1","minor":"33"}}`), nil
+		return nil, nil
 	})}
 	err := app.Doctor(t.Context())
 	if !errors.Is(err, missing) {
 		t.Fatalf("doctor lost the underlying failure: %v", err)
 	}
-	for _, want := range []string{"Azure Bicep", "az bicep install", "kubectl compatibility", "Install kubectl 1.36-1.38"} {
+	for _, want := range []string{"Azure Bicep", "az bicep install", "kubectl:", "az aks install-cli"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("doctor lost the failed check or remedy %q: %v", want, err)
 		}

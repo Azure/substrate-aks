@@ -515,7 +515,6 @@ func TestKVMCleanupOnFailure(t *testing.T) {
 
 func TestClusterRejectsMissingCertificateAPI(t *testing.T) {
 	r := script(t,
-		reply{contains: "version --client", output: `{"clientVersion":{"major":"1","minor":"37"}}`},
 		reply{contains: "get --raw /version", output: `{"gitVersion":"v1.37.1"}`},
 		reply{contains: "api-resources", output: "certificatesigningrequests.certificates.k8s.io\n"},
 	)
@@ -525,26 +524,8 @@ func TestClusterRejectsMissingCertificateAPI(t *testing.T) {
 	}
 }
 
-func TestKubectlVersionSkew(t *testing.T) {
-	for _, tc := range []struct {
-		version   string
-		wantError bool
-	}{
-		{`{"clientVersion":{"major":"1","minor":"34"}}`, true},
-		{`{"clientVersion":{"major":"1","minor":"37"}}`, false},
-		{`{"clientVersion":{"major":"1","minor":"38+"}}`, false},
-		{`{"clientVersion":{"major":"1","minor":"39"}}`, true},
-		{`{}`, true},
-	} {
-		if err := checkKubectlVersion([]byte(tc.version)); (err != nil) != tc.wantError {
-			t.Fatalf("version %s: %v", tc.version, err)
-		}
-	}
-}
-
 func TestClusterRejectsWrongRuntimeArchitecture(t *testing.T) {
 	r := script(t,
-		reply{contains: "version --client", output: `{"clientVersion":{"major":"1","minor":"37"}}`},
 		reply{contains: "get --raw /version", output: `{"gitVersion":"v1.37.1"}`},
 		reply{contains: "api-resources", output: "podcertificaterequests.certificates.k8s.io\nclustertrustbundles.certificates.k8s.io\n"},
 		reply{contains: "wait node"},

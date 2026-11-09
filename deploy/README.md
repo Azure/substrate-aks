@@ -19,7 +19,8 @@ identities, account and containers, and renders before these.
 **This is not a standalone installation package.** The templates need the
 [pinned upstream source](../docs/configuration.md#source-and-image-settings) and
 deployment values. Use the [installer](../README.md#quickstart), not
-`kubectl kustomize deploy`.
+`kubectl kustomize deploy`. [#25](https://github.com/Azure/substrate-aks/issues/25) tracks a standalone Component,
+kustomization, and Helm chart.
 
 ## Working on the components
 
@@ -29,7 +30,7 @@ Edit the YAML under [`components/`](components). The renderer is in
 upstream compatibility and handles inputs that are not Kubernetes resources.
 
 When changing patches or the source pin, run the
-[development checks](../docs/operations.md#development-checks), including the
+[development checks](../CONTRIBUTING.md#development-checks), including the
 pinned-source contracts. Patches are tied to the reviewed upstream structure;
 a pin update can require adapter changes.
 

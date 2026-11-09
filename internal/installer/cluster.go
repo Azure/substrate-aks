@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -24,18 +23,15 @@ func (a App) Doctor(ctx context.Context) error {
 		{"AKS kubelogin (Azure CLI authentication)", []string{"kubelogin", "--version"}, "Run az aks install-cli, then make sure kubelogin is on PATH."},
 		{"Azure Bicep", []string{"az", "bicep", "version"}, "Run az bicep install."},
 		{"Go toolchain", []string{"go", "version"}, "Install the Go version required by go.mod: https://go.dev/dl/"},
-		{"kubectl compatibility with AKS 1.37", []string{"kubectl", "version", "--client", "--output=json"}, "Install kubectl 1.36-1.38 and make sure it is on PATH."},
+		{"kubectl", []string{"kubectl", "version", "--client"}, "Run az aks install-cli, or install kubectl: https://kubernetes.io/docs/tasks/tools/"},
 	} {
 		if check.args[0] == "kubelogin" && a.Config.Installation.ID != "" && a.Config.AKS.Operator == nil {
 			continue
 		}
 		a.progress("Checking %s", check.name)
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		data, err := a.Runner.Run(probeCtx, Command{Args: check.args})
+		_, err := a.Runner.Run(probeCtx, Command{Args: check.args})
 		cancel()
-		if err == nil && check.args[0] == "kubectl" {
-			err = checkKubectlVersion(data)
-		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w\nFix: %s", check.name, err, check.fix))
 		}
@@ -70,23 +66,6 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 		return errors.New("prebuilt images require substrate.runtime.assetsDir with the four matching amd64 runtime assets")
 	}
 	// The pinned source's ate-setup assembles the assets in Go; Doctor checks Go.
-	return nil
-}
-
-func checkKubectlVersion(data []byte) error {
-	var version struct {
-		ClientVersion struct {
-			Major string `json:"major"`
-			Minor string `json:"minor"`
-		} `json:"clientVersion"`
-	}
-	if err := json.Unmarshal(data, &version); err != nil {
-		return fmt.Errorf("reading kubectl client version: %w", err)
-	}
-	minor, err := strconv.Atoi(strings.TrimSuffix(version.ClientVersion.Minor, "+"))
-	if err != nil || version.ClientVersion.Major != "1" || minor < 36 || minor > 38 {
-		return errors.New("AKS 1.37 requires a supported kubectl client within one minor version (1.36-1.38)")
-	}
 	return nil
 }
 
@@ -146,14 +125,7 @@ func (a App) waitOperatorAccess(ctx context.Context) error {
 }
 
 func (a App) checkCluster(ctx context.Context) error {
-	a.progress("Checking kubectl compatibility and AKS version")
-	client, err := a.kubectl(ctx, nil, "version", "--client", "--output=json")
-	if err != nil {
-		return err
-	}
-	if err := checkKubectlVersion(client); err != nil {
-		return err
-	}
+	a.progress("Checking AKS version")
 	data, err := a.kubectl(ctx, nil, "get", "--raw", "/version")
 	if err != nil {
 		return err

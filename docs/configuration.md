@@ -48,6 +48,9 @@ installations. Unknown JSON fields and extra JSON documents are rejected.
 in the image and runtime settings. This example shows the structure; the
 placeholders are not valid deployment values.
 
+<details>
+<summary><b>Example <code>installation.json</code></b></summary>
+
 ```json
 {
   "installation": {
@@ -103,6 +106,8 @@ placeholders are not valid deployment values.
 }
 ```
 
+</details>
+
 ### Saved settings are authoritative
 
 Setup uses saved settings, not newly discovered defaults or configuration flags.
@@ -124,12 +129,12 @@ deleted images before reusing the installation. See [retry and teardown](operati
 ## MicroVM worker pool
 
 Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
-always one `Standard_D4s_v6` node. Set the worker pool in `installation.json`
+always one `Standard_D4s_v6` node; [#23](https://github.com/Azure/substrate-aks/issues/23) tracks making it configurable. Set the worker pool in `installation.json`
 before running `plan` and `provision`:
 
 | Field | Default | Limits |
 | --- | --- | --- |
-| `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization |
+| `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization; use an x86 D, E, or F series `_v6` or `_v7` size (see [quota and CPU compatibility](#quota-and-cpu-compatibility)) |
 | `aks.workerPool.count` | `1` | 1-100 nodes |
 | `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
 | `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage, up to 2,040 GB |
@@ -170,6 +175,9 @@ sizes, and `/var/lib/ate` with it:
 - Sizes without local storage, such as `Standard_D8s_v7`, cannot use
   `Ephemeral`; preflight rejects them.
 
+A dedicated NVMe snapshot disk, separate from the OS disk, is tracked in
+[#18](https://github.com/Azure/substrate-aks/issues/18).
+
 ### Pods per node
 
 AKS reserves node memory for each pod a node may run: about 20 MiB per pod plus
@@ -185,13 +193,19 @@ Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools; request more quota before provisioning
 a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
-[live acceptance and limitations](operations.md#live-acceptance-and-limitations).
+[memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
 ## Azure identity and permissions
 
 The operator needs permission to list resource groups, create subscription-scope
-deployments, provision the resources, and assign roles.
-**Contributor alone is insufficient** because it cannot assign roles.
+deployments, provision the resources, and assign roles. Use **Owner**, or
+**Contributor** plus **User Access Administrator** or **Role Based Access
+Control Administrator**, on the subscription. A Role Based Access Control
+Administrator assignment must not carry a condition that excludes the roles
+setup assigns (`AcrPush`, `AcrPull`, `Container Registry Data Importer and Data
+Reader`, `Storage Blob Data Contributor`, `Storage Blob Data Reader`, and
+`Azure Kubernetes Service RBAC Cluster Admin`). Contributor alone cannot assign
+roles.
 
 Select your subscription before creating a config:
 
@@ -351,7 +365,7 @@ skip `images`:
 Only amd64 runtime assets are configured. Their checksums must match the selected
 source revision. A source change may also require
 [adapter changes](architecture.md#current-deployment-flow); it is not an upgrade
-mechanism.
+mechanism. Choosing from a catalog of supported releases is tracked in [#17](https://github.com/Azure/substrate-aks/issues/17).
 
 `setup` and `install` check that saved images are still available. You can check
 separately with `images --check`. After teardown, use

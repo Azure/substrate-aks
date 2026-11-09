@@ -18,8 +18,7 @@ installations. Settings are stored in a per-user state directory; see
 - [Private actor images](#private-actor-images)
 - [Progress and diagnostics](#progress-and-diagnostics)
 - [Retry and teardown](#retry-and-teardown)
-- [Development checks](#development-checks)
-- [Live acceptance and limitations](#live-acceptance-and-limitations)
+- [Validation and limitations](#validation-and-limitations)
 
 ## Guided installation
 
@@ -42,6 +41,15 @@ installation.
 Setup works through a fixed sequence of stages. The left rail shows where you
 are; the main pane lists each stage's operations as they run.
 
+```mermaid
+flowchart LR
+    prep["1 · Preparation<br/><i>confirm installation</i>"] --> images["2 · Images and assets<br/><i>approve registry</i>"]
+    images --> aks["3 · AKS cluster<br/><i>approve infrastructure</i>"] --> substrate["4 · Substrate"]
+    substrate --> demo["5 · Counter demo<br/>(optional)"] --> connect["6 · Connect"]
+```
+
+Stages with an approval in italics pause for your approval before each billable step.
+
 | Stage | What happens |
 | --- | --- |
 | Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
@@ -52,7 +60,15 @@ are; the main pane lists each stage's operations as they run.
 | Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
 
 Each billable step shows an Azure preview first and waits for your approval.
-The registry and the full infrastructure are approved separately. Previews
+The registry and the full infrastructure are approved separately.
+
+<p align="center">
+  <img src="images/setup-preview.png" alt="The setup workspace paused at stage 3 of 6, showing an infrastructure preview grouped by resource type with counts of resources to create, and an Apply these planned changes prompt" width="820">
+  <br>
+  <sub>An infrastructure preview awaiting approval (simulated; counts differ from a real run).</sub>
+</p>
+
+Previews
 summarize changes by resource type; press `d` for full resource IDs. When a
 preview deletes resources or contains unknown changes, scroll to the end and
 press `a` to acknowledge it before approving. Use standalone `plan` for previews
@@ -138,8 +154,11 @@ check the command's exit status and error output.
 The [Go linker warning](https://github.com/golang/go/issues/63154) comes from
 upstream tooling, not installer linker flags.
 
-For a failure report, capture the failing command, its exit status, and these
-diagnostics **from the affected checkout**:
+<details>
+<summary><b>Reporting a macOS failure</b></summary>
+
+Capture the failing command, its exit status, and these diagnostics
+**from the affected checkout**:
 
 ```sh
 sw_vers
@@ -149,6 +168,8 @@ xcode-select -p
 xcrun clang --version
 az version
 ```
+
+</details>
 
 With `GOTOOLCHAIN=auto`, Go can select a newer toolchain for this module.
 Native macOS assembly, publication, and installation remain unvalidated;
@@ -460,113 +481,57 @@ before resetting. Do not remove install records to force a rebuild.
 Alternatively, restore the exact configured images and retry, or use a fresh
 config after teardown.
 
-## Development checks
+## Validation and limitations
 
-```sh
-make verify
-make test
-make build
-make bicep
-```
+The installer has been run end to end many times on real Azure subscriptions,
+in multiple regions, with several VM sizes and multi-node microVM pools:
 
-| Command | Coverage |
-| --- | --- |
-| `make verify` | Formatting, vet, and module consistency |
-| `make test-unit` | Race-enabled unit tests |
-| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins |
-| `make test` | Unit tests and contracts |
-| `make bicep` | Compile the infrastructure template |
+- Guided and non-interactive installs: release image import and source builds
+  with Docker or Podman, infrastructure, Substrate, the demo, the client, and
+  kube-context import
+- Managed Entra sign-in with Azure RBAC and local accounts disabled
+- Actor suspend and resume preserving memory, file, and root filesystem state,
+  including cold restore from Blob storage onto a new node
+- Component reinstalls, image and cluster checks, and ownership-checked teardown
 
-Contract tests need Git, Go, `kubectl`, and network access to the Substrate and
-plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
-GitHub. Missing prerequisites fail the tests rather than skipping them.
-No check above provisions Azure resources.
+Recent runs recorded in pull requests:
 
-To use existing pristine checkouts of the pins:
+| Run | Region | Nodes | Covered |
+| --- | --- | --- | --- |
+| Current pins, from [#22](https://github.com/Azure/substrate-aks/pull/22) | `eastus2` | Default: 1 system and 1 microVM, `Standard_D4s_v6` | `setup --yes --with-demo`, counter suspend and resume, `destroy` |
+| Substrate v1.0.0, [#16](https://github.com/Azure/substrate-aks/pull/16) | `westus3` | 1 microVM, `Standard_D8ds_v7` | Release image import, install, demo, suspend and resume with Blob snapshots, `destroy` |
+| Substrate v1.0.0-rc.3, [#16](https://github.com/Azure/substrate-aks/pull/16) | `westus3` | 2 microVM, `Standard_D8s_v7` | Install and demo; resume from Blob after the node-local snapshot was deleted |
+| Substrate v1.0.0-rc.3, [#16](https://github.com/Azure/substrate-aks/pull/16) | | 1 microVM, `Standard_D8ds_v7`, `Ephemeral` 400 GB OS disk | Snapshots on local NVMe, suspend and resume |
+| Earlier pin, [#1](https://github.com/Azure/substrate-aks/pull/1) | `southcentralus`, `eastus2` | `Standard_D4s_v3` | Guided workspace, managed Entra, Podman builds, cold restore on a new node |
 
-```sh
-go test -race -tags=integration ./internal/installer \
-  -run 'TestPinned.*Contract' -count=1 -args \
-  -contract-root /absolute/path/to/pinned/substrate \
-  -plugin-contract-root /absolute/path/to/pinned/objectstore-azure-blob
-```
+There is no CI yet: contributors run the unit, pseudo-terminal, and
+pinned-source contract tests and compile the Bicep templates before each change
+(see [development checks](../CONTRIBUTING.md#development-checks)), and live
+installs are run by hand. [#27](https://github.com/Azure/substrate-aks/issues/27) tracks automating both.
 
-The contracts render the plugin's own kustomize components into the pinned
-manifests, run the pinned `ate-setup` with every flag the installer passes,
-verify the published release inventory, and assemble the pinned runtime assets.
-The image-check tests use local registries, and publisher tests use controlled
-engine commands. They do not prove live ACR access or real image builds.
+### Memory restore needs matching CPUs
 
-### Extending guided setup
+**The same VM size can run on different CPU models.** Cloud Hypervisor refuses
+to restore a memory snapshot onto a CPU with a different TSC rate
+(`SetTscKhz` fails); the actor's file and disk state survive, but its memory
+resets. Older series such as Dsv3 span several CPU generations, so new
+installations default to `Standard_D4s_v6`, which runs on one. Keep that series,
+or another x86 D/E/F `_v6` or `_v7` size, when you run more than one microVM
+node; see [#12](https://github.com/Azure/substrate-aks/issues/12). AKS cannot
+change an existing pool's VM size, so destroy and recreate installations created
+with the earlier Dsv3 default.
 
-Feature work should extend the operation flow, not the terminal renderer:
+### Not yet validated
 
-- Add configuration questions in `setupFlow` (`setup.go`) through
-  `setupPrompt.run` or its typed helpers. They automatically use embedded forms
-  in the workspace and existing line-oriented prompts in accessible mode.
-  Do not call another top-level form/program or write directly to the terminal.
-- Add review rows/warnings in `setupUI.summary`. The same summary feeds both
-  presenters, so new database/monitoring settings do not need root-model fields.
-  Keep saved configuration authoritative; never rebuild it from visible fields.
-- Report slow work through `installer.App.Progress` or `setupUI.step`.
-  The existing command runner keeps locking, private logs, and retry semantics.
-  Structured previews use `App.Preview`; do not parse terminal tables.
-- For preparation checklists, declare applicable rows with `setupUI.checklist`
-  and run each operation through `setupUI.check`. Results come from the returned
-  error, not progress text. Questions and approvals remain separate from checks.
-- New lifecycle operations should be assigned to an existing conceptual phase
-  in `setupPhase` when possible. Keep phase IDs separate from display titles.
-  Business policy belongs in installer operations, not `setupWorkspace.Update`.
-- Preserve the setup context when invoking a command: it carries the internal
-  presentation session. Standalone commands have no session and retain their
-  normal output. Keep raw/sensitive subprocess output out of progress messages.
-
-The Linux `TestWorkspacePTY*` tests use real pseudo-terminals with fake operations,
-including input/filtering, resize, retries, subprocess cancellation, restoration,
-and post-exit shell handoff. They do not contact Azure. Model tests also cover
-planned choices, compact/destructive previews, bounded activity, and tiny windows.
-
-## Live acceptance and limitations
-
-These scenarios have been validated against real Azure resources:
-
-| Area | Validated |
-| --- | --- |
-| Baseline | AKS 1.37 in `southcentralus`, one system and one microVM node, both `Standard_D4s_v3` |
-| Setup | Private image publication, infrastructure, Substrate, runtime assets, demo, and client |
-| Actor state | Suspend and resume preserved memory, file, and rootfs counters |
-| Cold Blob restore | Memory restored on a new node with a compatible CPU model |
-| Component operations | Image checks, cluster checks and status, single-component reinstall, and demo redeployment |
-| Managed Entra | `eastus2` install with managed Entra, Azure RBAC, and local accounts disabled |
-| Podman | Podman-only build, publication, and installation |
-| Guided workspace | Interactive `eastus2` install through both approvals, demo, client, and context import; both contexts reached Ready nodes |
-| Teardown | Ownership-checked deletion; installation and managed node resource groups confirmed absent |
-
-Changes made after these runs, including later workspace polish, are covered by
-race-enabled unit tests, pseudo-terminal tests, pinned-source contracts, Bicep
-compilation, and read-only Azure preflight, but not by another full cloud install.
-
-**The same VM size can have different CPU models.** A cold restore onto an
-incompatible CPU lost actor memory, although file and disk state survived. A
-successful restore does not guarantee migration across heterogeneous nodes.
-Older series such as Dsv3 span several CPU generations with different TSC
-rates, and Cloud Hypervisor refuses to restore a memory snapshot across them
-(`SetTscKhz` fails). New installations therefore default to `Standard_D4s_v6`,
-which runs on one CPU generation. Keep that series, or another x86 D/E/F
-`_v6`/`_v7` size, when you run more than one microVM node; see
-[#12](https://github.com/Azure/substrate-aks/issues/12). Dsv6 costs about 5%
-more than Dsv3 (about $0.202/hour versus $0.192/hour per `D4s` node in
-`eastus2`). AKS cannot change an existing pool's VM size, so rerunning
-`provision` fails for installations created with the earlier Dsv3 default;
-destroy and recreate them.
-
-Changing the snapshot reader on an existing installation once needed a manual
-grant. The fix is covered by tests; a clean live update has not been repeated.
-
-Not yet validated: long-running credential renewal, multiple operators, native
-macOS installation, automatic node-image replacement and recovery, broader
-recovery from interrupted installs, and other regions, SKUs, Kubernetes versions,
-and CPU architectures.
+- Automatic node image upgrades, and actor recovery through them
+- Credential renewal over days or weeks
+- Several operators sharing one installation
+- Native macOS installation hosts
+- Arm64 nodes
+- Recovery from interrupted installs beyond rerunning `setup NAME`
+- Changing the snapshot reader on an existing installation
+- Regions and VM sizes other than those in the runs above
 
 Not part of this quickstart: installing into an existing cluster, managed
-PostgreSQL, upgrades, autoscaling, dashboards, and shared filesystems.
+PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)), upgrades, autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared
+filesystems.
