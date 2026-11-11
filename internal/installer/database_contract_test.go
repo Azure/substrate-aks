@@ -142,10 +142,13 @@ func TestManagedBicepNetworkGrantScope(t *testing.T) {
 }
 
 func TestManagedBicepVaultContract(t *testing.T) {
-	output, err := exec.CommandContext(t.Context(), "az", "bicep", "build",
-		"--file", "../../infra/vault.bicep", "--stdout").CombinedOutput()
+	// Keep stderr separate: az prints upgrade notices there.
+	command := exec.CommandContext(t.Context(), "az", "bicep", "build", "--file", "../../infra/vault.bicep", "--stdout")
+	var diagnostics bytes.Buffer
+	command.Stderr = &diagnostics
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("compiling database Key Vault: %v\n%s", err, output)
+		t.Fatalf("compiling database Key Vault: %v\n%s", err, diagnostics.String())
 	}
 	var template struct {
 		Resources []struct {
