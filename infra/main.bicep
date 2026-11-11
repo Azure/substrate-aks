@@ -35,6 +35,10 @@ param registryOnly bool = false
 @allowed(['bundled', 'flexible-server'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
+@description('Flexible Server compute SKU name. Changing it after the server exists is not supported by the installer.')
+param databaseSkuName string = 'Standard_D2ads_v5'
+@allowed(['Burstable', 'GeneralPurpose', 'MemoryOptimized'])
+param databaseSkuTier string = 'GeneralPurpose'
 param databaseVaultName string = ''
 @secure()
 param databaseCredentials string = ''
@@ -46,6 +50,7 @@ resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
     'substrate-aks-installation': installationId
     'substrate-aks-database': databaseBackend
     'substrate-aks-database-location': databaseBackend == 'bundled' ? '' : databaseLocation
+    'substrate-aks-database-sku': databaseBackend == 'bundled' ? '' : databaseSkuName
   }
 }
 
@@ -95,6 +100,8 @@ module resources 'resources.bicep' = if (!registryOnly) {
     registryName: registry.outputs.registryName
     databaseBackend: databaseBackend
     databaseLocation: databaseLocation
+    databaseSkuName: databaseSkuName
+    databaseSkuTier: databaseSkuTier
     databaseAdminPassword: databaseBackend == 'bundled' ? '' : json(databaseCredentials).admin
   }
 }

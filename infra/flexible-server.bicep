@@ -1,6 +1,10 @@
 param location string
 param installationId string
 param egressIP string
+@description('Compute SKU name, such as Standard_D2ads_v5. It must belong to skuTier and be offered in this region.')
+param skuName string = 'Standard_D2ads_v5'
+@allowed(['Burstable', 'GeneralPurpose', 'MemoryOptimized'])
+param skuTier string = 'GeneralPurpose'
 @secure()
 param adminPassword string
 
@@ -11,8 +15,8 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
     'substrate-aks-installation': installationId
   }
   sku: {
-    name: 'Standard_D2ads_v5'
-    tier: 'GeneralPurpose'
+    name: skuName
+    tier: skuTier
   }
   properties: {
     version: '17'

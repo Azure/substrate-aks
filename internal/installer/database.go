@@ -97,7 +97,8 @@ func (a App) provisionDatabaseVault(ctx context.Context, dir string) error {
 	for key, value := range map[string]string{
 		"location": c.Azure.Location, "resourceGroupName": c.Azure.ResourceGroup,
 		"installationId": c.Installation.ID, "databaseBackend": string(c.Database.Backend),
-		"databaseLocation": c.DatabaseLocation(), "vaultName": c.databaseVaultName(),
+		"databaseLocation": c.DatabaseLocation(), "databaseSkuName": c.Database.ComputeSKU().Name,
+		"vaultName":        c.databaseVaultName(),
 		"operatorObjectId": c.AKS.Operator.ObjectID, "operatorPrincipalType": c.AKS.Operator.PrincipalType,
 	} {
 		params[key] = map[string]string{"value": value}

@@ -125,9 +125,15 @@ func (a App) inspectOwnedGroup(ctx context.Context, required bool) (bool, error)
 		if requested == "" {
 			requested = DatabaseBundled
 		}
+		// Groups from builds before the SKU tag could only use the default SKU.
+		recordedSKU, tagged := group.Tags["substrate-aks-database-sku"]
+		if !tagged {
+			recordedSKU = DefaultDatabaseSKU.Name
+		}
 		if recorded != string(requested) || (a.Config.ManagedDatabase() &&
-			group.Tags["substrate-aks-database-location"] != a.Config.DatabaseLocation()) {
-			return false, errors.New("database backend or region differs from the provisioned installation; switching/adoption is not supported, use the original config or a fresh installation")
+			(group.Tags["substrate-aks-database-location"] != a.Config.DatabaseLocation() ||
+				recordedSKU != a.Config.Database.ComputeSKU().Name)) {
+			return false, errors.New("database backend, region or SKU differs from the provisioned installation; switching, resizing and adoption are not supported, use the original config or a fresh installation")
 		}
 	}
 	return true, nil
@@ -250,6 +256,8 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"registryOnly":                registryOnly,
 		"databaseBackend":             databaseBackend(c),
 		"databaseLocation":            c.DatabaseLocation(),
+		"databaseSkuName":             c.Database.ComputeSKU().Name,
+		"databaseSkuTier":             c.Database.ComputeSKU().Tier,
 	} {
 		params[key] = map[string]any{"value": value}
 	}

@@ -126,7 +126,7 @@ func ValidateDatabaseRegion(ctx context.Context, runner Runner, subscription, lo
 	case DatabaseFlexible:
 		data, err = a.az(ctx, "postgres", "flexible-server", "list-skus", "--location", c.DatabaseLocation())
 		if err == nil {
-			err = validateFlexibleCapabilities(data)
+			err = validateFlexibleCapabilities(data, database.ComputeSKU())
 		}
 	default:
 		err = fmt.Errorf("unknown database backend %q", database.Backend)
@@ -177,7 +177,7 @@ func (a App) CheckDatabaseRegion(ctx context.Context) error {
 	return nil
 }
 
-func validateFlexibleCapabilities(data []byte) error {
+func validateFlexibleCapabilities(data []byte, want DatabaseSKU) error {
 	var capabilities []struct {
 		databaseCapability
 		Features []struct {
@@ -218,15 +218,15 @@ func validateFlexibleCapabilities(data []byte) error {
 			continue
 		}
 		for _, edition := range capability.Editions {
-			if edition.Name != "GeneralPurpose" || !edition.available() {
+			if edition.Name != want.Tier || !edition.available() {
 				continue
 			}
 			for _, sku := range edition.SKUs {
-				if sku.Name == "Standard_D2ads_v5" && sku.available() {
+				if sku.Name == want.Name && sku.available() {
 					return nil
 				}
 			}
 		}
 	}
-	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 GeneralPurpose Standard_D2ads_v5 profile", errDatabaseRegionUnavailable)
+	return fmt.Errorf("%w: Azure does not advertise the required PostgreSQL 17 %s %s profile", errDatabaseRegionUnavailable, want.Tier, want.Name)
 }

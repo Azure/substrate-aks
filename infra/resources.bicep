@@ -27,6 +27,9 @@ param registryName string
 @allowed(['bundled', 'flexible-server'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
+param databaseSkuName string = 'Standard_D2ads_v5'
+@allowed(['Burstable', 'GeneralPurpose', 'MemoryOptimized'])
+param databaseSkuTier string = 'GeneralPurpose'
 @secure()
 param databaseAdminPassword string = ''
 
@@ -185,6 +188,8 @@ module flexible 'flexible-server.bicep' = if (databaseBackend == 'flexible-serve
     installationId: installationId
     adminPassword: databaseAdminPassword
     egressIP: egress!.properties.ipAddress
+    skuName: databaseSkuName
+    skuTier: databaseSkuTier
   }
 }
 

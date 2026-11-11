@@ -298,3 +298,94 @@ func TestPinnedDatabaseBootstrapScript(t *testing.T) {
 		t.Fatalf("bootstrap did not establish a dedicated database and separated schema roles: %v\n%s", err, output)
 	}
 }
+
+func TestManagedBicepDatabaseSKU(t *testing.T) {
+	type template struct {
+		Parameters map[string]struct {
+			DefaultValue  any
+			AllowedValues []string
+		}
+		Resources []struct {
+			Type, Name string
+			// Expressions can replace any of these objects, so decode them where needed.
+			Tags, SKU, Properties json.RawMessage
+		}
+	}
+	compiled := map[string]template{}
+	compile := func(name string) template {
+		t.Helper()
+		if cached, ok := compiled[name]; ok {
+			return cached
+		}
+		output, err := exec.CommandContext(t.Context(), "az", "bicep", "build", "--file", "../../infra/"+name, "--stdout").Output()
+		if err != nil {
+			t.Fatalf("compiling %s: %v", name, err)
+		}
+		var result template
+		if err := json.Unmarshal(output, &result); err != nil {
+			t.Fatal(err)
+		}
+		compiled[name] = result
+		return result
+	}
+	tiers := []string{"Burstable", "GeneralPurpose", "MemoryOptimized"}
+	// Direct deployers get the installer's default SKU and a constrained tier from every entrypoint.
+	for name, prefix := range map[string]string{"main.bicep": "databaseSku", "resources.bicep": "databaseSku", "flexible-server.bicep": "sku"} {
+		p := compile(name).Parameters
+		if p[prefix+"Name"].DefaultValue != DefaultDatabaseSKU.Name || p[prefix+"Tier"].DefaultValue != DefaultDatabaseSKU.Tier ||
+			!reflect.DeepEqual(p[prefix+"Tier"].AllowedValues, tiers) {
+			t.Fatalf("%s SKU parameters differ from the installer default or tiers: %+v %+v", name, p[prefix+"Name"], p[prefix+"Tier"])
+		}
+	}
+	forwards := func(name, module string, want map[string]string) {
+		t.Helper()
+		for _, resource := range compile(name).Resources {
+			if resource.Type != "Microsoft.Resources/deployments" || !strings.Contains(resource.Name, module) {
+				continue
+			}
+			var properties struct{ Parameters map[string]json.RawMessage }
+			if err := json.Unmarshal(resource.Properties, &properties); err != nil {
+				t.Fatalf("%s module parameters: %v", name, err)
+			}
+			parameters := properties.Parameters
+			for parameter, value := range want {
+				var got struct{ Value any }
+				if err := json.Unmarshal(parameters[parameter], &got); err != nil || got.Value != value {
+					t.Fatalf("%s does not forward %s to %s: %s", name, value, parameter, parameters[parameter])
+				}
+			}
+			return
+		}
+		t.Fatalf("%s has no %s module", name, module)
+	}
+	forwards("main.bicep", "substrate-aks-", map[string]string{
+		"databaseSkuName": "[parameters('databaseSkuName')]", "databaseSkuTier": "[parameters('databaseSkuTier')]"})
+	forwards("resources.bicep", "postgres-flexible-", map[string]string{
+		"skuName": "[parameters('databaseSkuName')]", "skuTier": "[parameters('databaseSkuTier')]"})
+	server := false
+	for _, resource := range compile("flexible-server.bicep").Resources {
+		var sku map[string]string
+		if resource.Type == "Microsoft.DBforPostgreSQL/flexibleServers" && json.Unmarshal(resource.SKU, &sku) == nil {
+			server = reflect.DeepEqual(sku, map[string]string{"name": "[parameters('skuName')]", "tier": "[parameters('skuTier')]"})
+		}
+	}
+	if !server {
+		t.Fatal("the server does not deploy the SKU parameters")
+	}
+	// The installer rejects SKU changes by comparing this group tag; both group deployments must write it.
+	for name, want := range map[string]string{
+		"main.bicep":           "[if(equals(parameters('databaseBackend'), 'bundled'), '', parameters('databaseSkuName'))]",
+		"database-vault.bicep": "[parameters('databaseSkuName')]",
+	} {
+		tagged := false
+		for _, resource := range compile(name).Resources {
+			var tags map[string]string
+			if resource.Type == "Microsoft.Resources/resourceGroups" && json.Unmarshal(resource.Tags, &tags) == nil {
+				tagged = tags["substrate-aks-database-sku"] == want
+			}
+		}
+		if !tagged {
+			t.Fatalf("%s does not record the database SKU on the resource group", name)
+		}
+	}
+}

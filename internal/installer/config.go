@@ -52,6 +52,33 @@ const (
 type DatabaseConfig struct {
 	Backend  DatabaseBackend `json:"backend"`
 	Location string          `json:"location,omitempty"`
+	// SKU is the Flexible Server compute SKU; it can't change after creation.
+	SKU DatabaseSKU `json:"sku,omitzero"`
+}
+
+// DatabaseSKU names a Flexible Server compute SKU and its tier, as ARM does.
+type DatabaseSKU struct {
+	Name string `json:"name"`
+	Tier string `json:"tier"`
+}
+
+// DefaultDatabaseSKU is used when a managed database record does not choose a SKU.
+var DefaultDatabaseSKU = DatabaseSKU{Name: "Standard_D2ads_v5", Tier: "GeneralPurpose"}
+
+// ComputeSKU returns the configured SKU, or the default when none is set.
+func (d DatabaseConfig) ComputeSKU() DatabaseSKU {
+	if d.SKU == (DatabaseSKU{}) {
+		return DefaultDatabaseSKU
+	}
+	return d.SKU
+}
+
+// WithDefaults fills the SKU of a managed database that doesn't choose one.
+func (d DatabaseConfig) WithDefaults() DatabaseConfig {
+	if d.Backend != "" && d.Backend != DatabaseBundled {
+		d.SKU = d.ComputeSKU()
+	}
+	return d
 }
 
 func (c Config) ManagedDatabase() bool {
@@ -282,6 +309,7 @@ func readConfig(path string) (Config, error) {
 	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("%s must contain exactly one JSON object", path)
 	}
+	c.Database = c.Database.WithDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -302,9 +330,21 @@ func (c Config) Validate() error {
 		if c.Database.Location != "" {
 			return errors.New("database.location is only valid for managed PostgreSQL")
 		}
+		if c.Database.SKU != (DatabaseSKU{}) {
+			return errors.New("database.sku is only valid for managed PostgreSQL")
+		}
 	case DatabaseFlexible:
 		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
 			return errors.New("database.location must be an Azure region name")
+		}
+		sku := c.Database.ComputeSKU()
+		if !regexp.MustCompile(`^Standard_[A-Z][A-Za-z0-9]*(_v[0-9]+)?$`).MatchString(sku.Name) {
+			return fmt.Errorf("database.sku.name %q must be a Flexible Server compute SKU such as %s", sku.Name, DefaultDatabaseSKU.Name)
+		}
+		switch sku.Tier {
+		case "Burstable", "GeneralPurpose", "MemoryOptimized":
+		default:
+			return fmt.Errorf("database.sku.tier %q must be Burstable, GeneralPurpose or MemoryOptimized", sku.Tier)
 		}
 		// The database credential vault grants access to the AKS operator.
 		if c.AKS.Operator == nil {

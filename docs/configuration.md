@@ -212,7 +212,11 @@ The selection is saved in the new installation record:
 ```json
 "database": {
   "backend": "flexible-server",
-  "location": "westus3"
+  "location": "westus3",
+  "sku": {
+    "name": "Standard_D2ads_v5",
+    "tier": "GeneralPurpose"
+  }
 }
 ```
 
@@ -223,7 +227,18 @@ Records without `database` use bundled PostgreSQL.
 | `database.backend` | Initial profile |
 | --- | --- |
 | `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
-| `flexible-server` | PostgreSQL 17, General Purpose `Standard_D2ads_v5`, 32 GiB, seven-day locally redundant backups, no HA |
+| `flexible-server` | PostgreSQL 17, `database.sku` (default General Purpose `Standard_D2ads_v5`), 32 GiB, seven-day locally redundant backups, no HA |
+
+`database.sku` sets the Flexible Server compute size. `name` is an Azure SKU
+name such as `Standard_D4ads_v5`, and `tier` is `Burstable`, `GeneralPurpose`, or
+`MemoryOptimized`. The region check requires the subscription to offer that SKU
+in that tier. New installations save the default explicitly, and a record without
+`database.sku` loads with it. To choose another size, edit the saved record after
+`init` and before the first `setup`. The SKU can't change once the server exists:
+`plan` and `provision` compare it with the resource group's
+`substrate-aks-database-sku` tag and stop on a difference. Direct Bicep
+deployments set the same values with the `databaseSkuName` and `databaseSkuTier`
+parameters of `infra/main.bicep`.
 
 Optional `database.location` defaults to `azure.location` and applies only to
 managed backends. It can differ from AKS, with cross-region latency and transfer

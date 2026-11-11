@@ -528,7 +528,7 @@ func initialize(home, subscription, publisher, reader, cidr, name, location stri
 	id[8] = id[8]&0x3f | 0x80
 	c := installer.DefaultConfig()
 	if database.Backend != "" {
-		c.Database = database
+		c.Database = database.WithDefaults()
 	}
 	c.Installation.ID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	c.Installation.Name = name

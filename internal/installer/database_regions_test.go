@@ -37,22 +37,31 @@ func databasePreflightReplies(c Config) []reply {
 }
 
 func TestFlexibleDatabaseRegionCapabilities(t *testing.T) {
-	for _, tc := range []struct{ name, data, want string }{
-		{"supported with null status", flexibleCapabilitiesJSON, ""},
-		{"subscription restricted with null status", `[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region.","supportedServerEditions":[]}]`, "Subscriptions are restricted"},
-		{"offer restricted", strings.Replace(flexibleCapabilitiesJSON, `"reason":null`, `"reason":null,"supportedFeatures":[{"name":"OfferRestricted","status":"Enabled"}]`, 1), "OfferRestricted"},
-		{"region disabled", strings.Replace(flexibleCapabilitiesJSON, `"status":null`, `"status":"Disabled"`, 1), "required PostgreSQL 17"},
-		{"no PostgreSQL 17", strings.ReplaceAll(flexibleCapabilitiesJSON, `"17"`, `"16"`), "required PostgreSQL 17"},
-		{"wrong tier", strings.ReplaceAll(flexibleCapabilitiesJSON, `"GeneralPurpose"`, `"Burstable"`), "required PostgreSQL 17"},
-		{"wrong SKU", strings.ReplaceAll(flexibleCapabilitiesJSON, `"Standard_D2ads_v5"`, `"Standard_D4ads_v5"`), "required PostgreSQL 17"},
-		{"restricted SKU", strings.ReplaceAll(flexibleCapabilitiesJSON, `"name":"Standard_D2ads_v5"`, `"name":"Standard_D2ads_v5","restricted":true`), "required PostgreSQL 17"},
-		{"no capabilities", "[]", "required PostgreSQL 17"},
-		{"null", "null", "reading Flexible Server"},
-		{"wrong shape", "{}", "reading Flexible Server"},
-		{"malformed", "{", "reading Flexible Server"},
+	memory := strings.Replace(flexibleCapabilitiesJSON, `]}]`,
+		`]},{"name":"MemoryOptimized","supportedServerSkus":[{"name":"Standard_E4ds_v5"}]}]`, 1)
+	chosen := DatabaseSKU{Name: "Standard_E4ds_v5", Tier: "MemoryOptimized"}
+	for _, tc := range []struct {
+		name, data, want string
+		sku              DatabaseSKU
+	}{
+		{name: "supported with null status", data: flexibleCapabilitiesJSON},
+		{name: "chosen SKU in its tier", data: memory, sku: chosen},
+		{name: "chosen SKU absent", data: flexibleCapabilitiesJSON, sku: chosen, want: "PostgreSQL 17 MemoryOptimized Standard_E4ds_v5"},
+		{name: "chosen SKU under another tier", data: strings.Replace(memory, `"MemoryOptimized"`, `"GeneralPurpose"`, 1), sku: chosen, want: "required PostgreSQL 17"},
+		{name: "subscription restricted with null status", data: `[{"status":null,"restricted":null,"reason":"Subscriptions are restricted from provisioning in this region.","supportedServerEditions":[]}]`, want: "Subscriptions are restricted"},
+		{name: "offer restricted", data: strings.Replace(flexibleCapabilitiesJSON, `"reason":null`, `"reason":null,"supportedFeatures":[{"name":"OfferRestricted","status":"Enabled"}]`, 1), want: "OfferRestricted"},
+		{name: "region disabled", data: strings.Replace(flexibleCapabilitiesJSON, `"status":null`, `"status":"Disabled"`, 1), want: "required PostgreSQL 17"},
+		{name: "no PostgreSQL 17", data: strings.ReplaceAll(flexibleCapabilitiesJSON, `"17"`, `"16"`), want: "required PostgreSQL 17"},
+		{name: "wrong tier", data: strings.ReplaceAll(flexibleCapabilitiesJSON, `"GeneralPurpose"`, `"Burstable"`), want: "required PostgreSQL 17"},
+		{name: "wrong SKU", data: strings.ReplaceAll(flexibleCapabilitiesJSON, `"Standard_D2ads_v5"`, `"Standard_D4ads_v5"`), want: "required PostgreSQL 17"},
+		{name: "restricted SKU", data: strings.ReplaceAll(flexibleCapabilitiesJSON, `"name":"Standard_D2ads_v5"`, `"name":"Standard_D2ads_v5","restricted":true`), want: "required PostgreSQL 17"},
+		{name: "no capabilities", data: "[]", want: "required PostgreSQL 17"},
+		{name: "null", data: "null", want: "reading Flexible Server"},
+		{name: "wrong shape", data: "{}", want: "reading Flexible Server"},
+		{name: "malformed", data: "{", want: "reading Flexible Server"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateFlexibleCapabilities([]byte(tc.data))
+			err := validateFlexibleCapabilities([]byte(tc.data), DatabaseConfig{SKU: tc.sku}.ComputeSKU())
 			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)

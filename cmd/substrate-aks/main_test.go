@@ -123,8 +123,14 @@ esac
 		t.Fatal(err)
 	}
 	c, err := installer.LoadInstallation(recordHome(path), recordName(path))
-	if err != nil || c.Database != (installer.DatabaseConfig{Backend: installer.DatabaseFlexible, Location: "southcentralus"}) {
+	if err != nil || c.Database != (installer.DatabaseConfig{Backend: installer.DatabaseFlexible, Location: "southcentralus",
+		SKU: installer.DefaultDatabaseSKU}) {
 		t.Fatalf("database selection was not saved with the new installation: %+v, %v", c.Database, err)
+	}
+	// The SKU is written explicitly, so a later default change can't resize this installation.
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte(`"name": "Standard_D2ads_v5"`)) || !bytes.Contains(data, []byte(`"tier": "GeneralPurpose"`)) {
+		t.Fatalf("new installation record does not pin its database SKU: %v\n%s", err, data)
 	}
 }
 

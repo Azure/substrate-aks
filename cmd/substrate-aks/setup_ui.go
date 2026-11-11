@@ -346,8 +346,9 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.group("Database")
 	switch c.Database.Backend {
 	case installer.DatabaseFlexible:
+		sku := c.Database.ComputeSKU()
 		u.rowDetail("PostgreSQL", "Azure Database for PostgreSQL Flexible Server",
-			"PostgreSQL 17, General Purpose Standard_D2ads_v5, 32 GiB, seven-day local backups, no HA.")
+			fmt.Sprintf("PostgreSQL 17, %s %s, 32 GiB, seven-day local backups, no HA.", sku.Tier, sku.Name))
 	default:
 		u.rowDetail("PostgreSQL", "Bundled in the cluster", "32 GiB Azure Disk; no backups or HA.")
 	}

@@ -110,6 +110,62 @@ func TestDatabaseSelectionValidationAndLegacyDefault(t *testing.T) {
 	}
 }
 
+func TestDatabaseSKUDefaultsAndValidation(t *testing.T) {
+	load := func(t *testing.T, c Config) (Config, error) {
+		t.Helper()
+		data, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "installation.json")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return LoadConfig(path)
+	}
+	managed, _ := managedTestConfig(t, DatabaseFlexible)
+	if data, err := json.Marshal(managed); err != nil || bytes.Contains(data, []byte(`"sku"`)) {
+		t.Fatalf("a record without a SKU must omit it: %v\n%s", err, data)
+	}
+	if c, err := load(t, managed); err != nil || c.Database.SKU != DefaultDatabaseSKU {
+		t.Fatalf("record without a SKU did not load with the default: %+v, %v", c.Database, err)
+	}
+	if c, err := load(t, testConfig(t)); err != nil || c.Database.SKU != (DatabaseSKU{}) {
+		t.Fatalf("bundled record gained a SKU: %+v, %v", c.Database, err)
+	}
+	for _, tc := range []struct {
+		name string
+		sku  DatabaseSKU
+		want string
+	}{
+		{name: "memory optimized", sku: DatabaseSKU{Name: "Standard_E4ds_v5", Tier: "MemoryOptimized"}},
+		{name: "burstable", sku: DatabaseSKU{Name: "Standard_B2s", Tier: "Burstable"}},
+		{name: "missing tier", sku: DatabaseSKU{Name: "Standard_D4ads_v5"}, want: "database.sku.tier"},
+		{name: "unknown tier", sku: DatabaseSKU{Name: "Standard_D4ads_v5", Tier: "Premium"}, want: "database.sku.tier"},
+		{name: "missing name", sku: DatabaseSKU{Tier: "GeneralPurpose"}, want: "database.sku.name"},
+		{name: "not a SKU name", sku: DatabaseSKU{Name: "D4ads_v5", Tier: "GeneralPurpose"}, want: "database.sku.name"},
+		{name: "injection", sku: DatabaseSKU{Name: "Standard_D4ads_v5'", Tier: "GeneralPurpose"}, want: "database.sku.name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := managed
+			c.Database.SKU = tc.sku
+			got, err := load(t, c)
+			if tc.want == "" {
+				if err != nil || got.Database.SKU != tc.sku {
+					t.Fatalf("valid SKU was not kept: %+v, %v", got.Database, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+	bundled := testConfig(t)
+	bundled.Database.SKU = DefaultDatabaseSKU
+	if err := bundled.Validate(); err == nil || !strings.Contains(err.Error(), "only valid for managed") {
+		t.Fatalf("bundled PostgreSQL accepted a database SKU: %v", err)
+	}
+}
+
 func TestManagedDatabaseOutputsAreBoundToTheInstallation(t *testing.T) {
 	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
 		t.Run(string(backend), func(t *testing.T) {
@@ -339,9 +395,16 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 		for _, registry := range []bool{false, true} {
 			t.Run(string(backend)+"/registry="+map[bool]string{true: "yes", false: "no"}[registry], func(t *testing.T) {
 				c, _ := managedTestConfig(t, backend)
+				// A non-default SKU shows the configured value, not the template default, is deployed.
+				c.Database.SKU = DatabaseSKU{Name: "Standard_E4ds_v5", Tier: "MemoryOptimized"}
 				replies := []reply{accountReply(c), targetReply()}
 				if !registry {
-					replies = append(replies, databasePreflightReplies(c)...)
+					preflight := databasePreflightReplies(c)
+					for i := range preflight {
+						preflight[i].output = strings.ReplaceAll(strings.ReplaceAll(preflight[i].output,
+							DefaultDatabaseSKU.Name, c.Database.SKU.Name), DefaultDatabaseSKU.Tier, c.Database.SKU.Tier)
+					}
+					replies = append(replies, preflight...)
 				}
 				replies = append(replies, reply{contains: "group exists", output: "false"})
 				if !registry {
@@ -372,8 +435,25 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 						vault.Parameters["operatorPrincipalType"].Value != c.AKS.Operator.PrincipalType {
 						t.Fatalf("database vault access was not granted to the AKS operator: %+v", vault.Parameters)
 					}
+					// The vault deployment also writes the group's tags, so it must record the SKU too.
+					if vault.Parameters["databaseSkuName"].Value != c.Database.SKU.Name {
+						t.Fatalf("database vault deployment dropped the SKU tag: %+v", vault.Parameters)
+					}
 				}
 				path := filepath.Join(c.workspace(), "infra", "parameters.json")
+				deployed, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var main struct {
+					Parameters map[string]struct{ Value any }
+				}
+				if err := json.Unmarshal(deployed, &main); err != nil {
+					t.Fatal(err)
+				}
+				if main.Parameters["databaseSkuName"].Value != c.Database.SKU.Name || main.Parameters["databaseSkuTier"].Value != c.Database.SKU.Tier {
+					t.Fatalf("deployment did not receive the configured database SKU: %+v", main.Parameters)
+				}
 				if !registry {
 					s, err := decodeDatabaseSecrets(c, r.secret)
 					if err != nil {
@@ -406,32 +486,51 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 
 func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 	for _, backend := range []DatabaseBackend{DatabaseFlexible} {
+		resized := DatabaseSKU{Name: "Standard_D4ads_v5", Tier: "GeneralPurpose"}
 		for _, tc := range []struct {
-			name, recordedBackend, recordedRegion string
-			reject                                bool
+			name, recordedBackend, recordedRegion, recordedSKU string
+			sku                                                DatabaseSKU
+			reject                                             bool
 		}{
-			{"matching managed retry", string(backend), "", false},
-			{"untagged bundled group", "", "", true},
-			{"backend change", string(DatabaseBundled), "", true},
-			{"region change", string(backend), "anotherregion", true},
-			{"missing managed region", string(backend), "-", true},
+			{name: "matching managed retry", recordedBackend: string(backend)},
+			{name: "matching chosen SKU", recordedBackend: string(backend), sku: resized},
+			{name: "untagged bundled group", reject: true},
+			{name: "backend change", recordedBackend: string(DatabaseBundled), reject: true},
+			{name: "region change", recordedBackend: string(backend), recordedRegion: "anotherregion", reject: true},
+			{name: "missing managed region", recordedBackend: string(backend), recordedRegion: "-", reject: true},
+			{name: "SKU change", recordedBackend: string(backend), recordedSKU: DefaultDatabaseSKU.Name, sku: resized, reject: true},
+			// Groups from builds before the SKU tag could only have the default SKU.
+			{name: "untagged default SKU", recordedBackend: string(backend), recordedSKU: "-"},
+			{name: "untagged group resized", recordedBackend: string(backend), recordedSKU: "-", sku: resized, reject: true},
 		} {
 			t.Run(string(backend)+"/"+tc.name, func(t *testing.T) {
 				c, _ := managedTestConfig(t, backend)
+				c.Database.SKU = tc.sku
 				region := tc.recordedRegion
 				if region == "" {
 					region = c.DatabaseLocation()
 				} else if region == "-" {
 					region = ""
 				}
-				group, err := json.Marshal(object{"location": c.Azure.Location, "tags": map[string]string{
+				tags := map[string]string{
 					ownershipTag: c.Installation.ID, "substrate-aks-database": tc.recordedBackend,
-					"substrate-aks-database-location": region,
-				}})
+					"substrate-aks-database-location": region, "substrate-aks-database-sku": tc.recordedSKU,
+				}
+				switch tc.recordedSKU {
+				case "":
+					tags["substrate-aks-database-sku"] = c.Database.ComputeSKU().Name
+				case "-":
+					delete(tags, "substrate-aks-database-sku")
+				}
+				group, err := json.Marshal(object{"location": c.Azure.Location, "tags": tags})
 				if err != nil {
 					t.Fatal(err)
 				}
-				replies := append([]reply{accountReply(c), targetReply()}, databasePreflightReplies(c)...)
+				preflight := databasePreflightReplies(c)
+				for i := range preflight {
+					preflight[i].output = strings.ReplaceAll(preflight[i].output, DefaultDatabaseSKU.Name, c.Database.ComputeSKU().Name)
+				}
+				replies := append([]reply{accountReply(c), targetReply()}, preflight...)
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
 				if !tc.reject {
 					replies = append(replies, reply{contains: "aks list", output: "[]"})
