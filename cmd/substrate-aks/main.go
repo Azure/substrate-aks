@@ -65,6 +65,8 @@ init flags:
   --snapshot-reader-object-id UUID        Optional read-only snapshot inspection
   --snapshot-reader-principal-type TYPE   Explicit reader type: User, ServicePrincipal, or Group
   --name substrate-dev --location eastus2
+  --database bundled|flexible-server      PostgreSQL backend (default: bundled)
+  --database-location REGION              Managed database region (default: AKS region)
 
 setup flags:
   Same configuration flags as init when creating a new installation; without
@@ -140,6 +142,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	var operatorID, operatorType string
 	var contextFile string
 	var useContext bool
+	var database, databaseLocation string
 	var yes, withDemo, unrestrictedAPI, accessible, skipContextHandoff bool
 	var registryOnly, checkImages, resetImages bool
 	var azureChecks bool
@@ -181,6 +184,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fs.StringVar(&cidr, "api-cidr", "", "AKS API IPv4 CIDR (default: detected public IPv4 /32)")
 		fs.BoolVar(&unrestrictedAPI, "allow-unrestricted-api", false, "allow internet-wide AKS API access instead of an IP allowlist")
 		fs.StringVar(&location, "location", "eastus2", "Azure region")
+		fs.StringVar(&database, "database", "bundled", "bundled or flexible-server")
+		fs.StringVar(&databaseLocation, "database-location", "", "managed database region (default: AKS region)")
 	}
 	if command == "setup" {
 		fs.BoolVar(&yes, "yes", false, "accept billable deployment and select the kube-context without prompts")
@@ -261,6 +266,16 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		if err != nil {
 			return err
 		}
+		if databaseLocation != "" {
+			databaseLocation, err = validateAzureRegion(databaseLocation, regions)
+			if err != nil {
+				return fmt.Errorf("database region: %w", err)
+			}
+		}
+		if err := installer.ValidateDatabaseRegion(ctx, installer.ExecRunner{}, defaults.subscription, location,
+			installer.DatabaseConfig{Backend: installer.DatabaseBackend(database), Location: databaseLocation}); err != nil {
+			return err
+		}
 		cidr, err = resolveAPICIDR(ctx, cidr, unrestrictedAPI, nil)
 		if err != nil {
 			return err
@@ -270,14 +285,15 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		if publisherType == "" && strings.EqualFold(publisher, defaults.signedInObjectID) {
 			publisherType = defaults.signedInType
 		}
-		return initialize(home, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType, out)
+		return initialize(home, subscription, publisher, reader, cidr, name, location, unrestrictedAPI, &defaults.operator, publisherType, readerType,
+			installer.DatabaseConfig{Backend: installer.DatabaseBackend(database), Location: databaseLocation}, out)
 	}
 	if command == "setup" {
 		var client installer.ClientSetup
 		var configFlags bool
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "location":
+			case "subscription", "identity-object-id", "asset-publisher-object-id", "identity-principal-type", "operator-object-id", "operator-principal-type", "snapshot-reader-object-id", "snapshot-reader-principal-type", "api-cidr", "allow-unrestricted-api", "location", "database", "database-location":
 				configFlags = true
 			}
 		})
@@ -293,7 +309,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 			operatorID:      operatorID, operatorType: operatorType,
 			publisherType: publisherType, readerType: readerType,
 			contextFile: contextFile, skipContextHandoff: skipContextHandoff,
-			client: &client,
+			client:   &client,
+			database: database, databaseLocation: databaseLocation,
 		}, os.Stdin, out, stderr, func(ctx context.Context, args []string, out, stderr io.Writer) error {
 			return runCommand(ctx, args, out, stderr, &client)
 		})
@@ -502,7 +519,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	return nil
 }
 
-func initialize(home, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, out io.Writer) error {
+func initialize(home, subscription, publisher, reader, cidr, name, location string, unrestrictedAPI bool, operator *installer.OperatorConfig, publisherType, readerType string, database installer.DatabaseConfig, out io.Writer) error {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return err
@@ -510,6 +527,9 @@ func initialize(home, subscription, publisher, reader, cidr, name, location stri
 	id[6] = id[6]&0x0f | 0x40
 	id[8] = id[8]&0x3f | 0x80
 	c := installer.DefaultConfig()
+	if database.Backend != "" {
+		c.Database = database
+	}
 	c.Installation.ID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	c.Installation.Name = name
 	c.Azure = installer.AzureConfig{

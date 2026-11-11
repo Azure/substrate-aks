@@ -32,12 +32,20 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryOnly bool = false
+@allowed(['bundled', 'flexible-server'])
+param databaseBackend string = 'bundled'
+param databaseLocation string = location
+param databaseVaultName string = ''
+@secure()
+param databaseCredentials string = ''
 
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
   tags: {
     'substrate-aks-installation': installationId
+    'substrate-aks-database': databaseBackend
+    'substrate-aks-database-location': databaseBackend == 'bundled' ? '' : databaseLocation
   }
 }
 
@@ -49,6 +57,18 @@ module registry 'registry.bicep' = {
     installationId: installationId
     publisherObjectId: assetPublisherObjectId
     publisherPrincipalType: assetPublisherPrincipalType
+  }
+}
+
+module vault 'vault.bicep' = if (!registryOnly && databaseBackend != 'bundled') {
+  name: 'substrate-vault-${installationId}'
+  scope: group
+  params: {
+    location: location
+    installationId: installationId
+    vaultName: databaseVaultName
+    operatorObjectId: operatorObjectId
+    operatorPrincipalType: operatorPrincipalType
   }
 }
 
@@ -73,6 +93,9 @@ module resources 'resources.bicep' = if (!registryOnly) {
     operatorObjectId: operatorObjectId
     operatorPrincipalType: operatorPrincipalType
     registryName: registry.outputs.registryName
+    databaseBackend: databaseBackend
+    databaseLocation: databaseLocation
+    databaseAdminPassword: databaseBackend == 'bundled' ? '' : json(databaseCredentials).admin
   }
 }
 

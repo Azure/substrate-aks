@@ -400,6 +400,11 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err := a.uploadAssets(ctx, i, blobs); err != nil {
 		return err
 	}
+	if component != "atelet" {
+		if err := a.bootstrapDatabase(ctx, root, i.Database); err != nil {
+			return err
+		}
+	}
 	a.progress("Recording the installation checkpoint")
 	if err := a.recordInstall(ctx, fp, "installing:"+component); err != nil {
 		return err
@@ -442,8 +447,12 @@ func (a App) Demo(ctx context.Context) error {
 }
 
 func (a App) Status(ctx context.Context) error {
-	if _, err := a.infrastructure(ctx); err != nil {
+	i, err := a.infrastructure(ctx)
+	if err != nil {
 		return err
+	}
+	if i.Database != nil {
+		a.progress("Managed PostgreSQL: %s, %s, database %s (AKS egress %s)", i.Database.Backend, i.Database.Host, i.Database.Name, i.Database.EgressIP)
 	}
 	if err := a.credentials(ctx); err != nil {
 		return err
@@ -452,7 +461,7 @@ func (a App) Status(ctx context.Context) error {
 		return err
 	}
 	a.progress("Fetching Substrate pods and persistent volumes")
-	_, err := a.runKubectl(ctx, nil, true, "get", "pods,pvc", "--namespace=ate-system", "--output=wide")
+	_, err = a.runKubectl(ctx, nil, true, "get", "pods,pvc", "--namespace=ate-system", "--output=wide")
 	return err
 }
 
