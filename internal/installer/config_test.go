@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Azure/substrate-aks/infra"
 )
 
 func testConfig(t *testing.T) Config {
@@ -26,6 +29,7 @@ func testConfig(t *testing.T) Config {
 		},
 		AKS: AKSConfig{
 			ClusterName: "substrate-test", KubernetesVersion: "1.37",
+			SystemPool:         SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1},
 			WorkerPool:         WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128},
 			APIAuthorizedCIDRs: []string{"203.0.113.8/32"},
 		},
@@ -141,6 +145,33 @@ func TestConfigWorkerPoolBoundaries(t *testing.T) {
 	}
 }
 
+func TestConfigSystemPoolBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		size           string
+		system, worker int
+		ok             bool
+	}{
+		{"default", DefaultSystemVMSize, 1, 1, true},
+		{"zero count", DefaultSystemVMSize, 0, 1, false},
+		{"negative count", DefaultSystemVMSize, -1, 1, false},
+		{"bad size", "D4s_v6", 1, 1, false},
+		{"unsafe size", "Standard_D4s v6", 1, 1, false},
+		{"overlay limit", DefaultSystemVMSize, 154, 100, true},
+		{"overlay overflow", DefaultSystemVMSize, 155, 100, false},
+		{"large count", DefaultSystemVMSize, int(^uint(0) >> 1), 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.SystemPool = SystemPoolConfig{VMSize: tc.size, Count: tc.system}
+			c.AKS.WorkerPool.Count = tc.worker
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("system pool validation: %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigWorkerDiskAndPodBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -215,6 +246,7 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Azure.Location != "southcentralus" || c.AKS.KubernetesVersion != "1.37" ||
+		c.AKS.SystemPool != (SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1}) ||
 		c.AKS.WorkerPool != (WorkerPoolConfig{VMSize: "Standard_D4s_v6", Count: 1, OSDiskType: "Managed", OSDiskSizeGB: 128}) ||
 		c.Substrate.Source != (Source{Repository: DefaultRepository, Tag: DefaultTag, Commit: DefaultCommit}) ||
 		c.Substrate.PluginSource != (Source{Repository: DefaultPluginRepository, Commit: DefaultPluginCommit}) ||
@@ -223,6 +255,199 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 		c.Installation.Ownership != (Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}) ||
 		c.Substrate.Runtime.AssetsDir != filepath.Join(dir, "assets") {
 		t.Fatalf("grouped configuration lost settings, defaults or relative paths: %+v", c)
+	}
+}
+
+func TestLoadMainEraRecordPlanDestroyAndResave(t *testing.T) {
+	data, err := os.ReadFile("testdata/installation-main-era.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "installation.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AKS.SystemPool != (SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1}) {
+		t.Fatalf("old record lost system defaults: %+v", c.AKS.SystemPool)
+	}
+	plan := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
+		ownerReply(c), clusterReply(c), operatorRecordReply(c),
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+	if err := (App{Config: c, Runner: plan}).Provision(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	destroy := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
+		ownerReply(c), reply{contains: "group delete"})
+	if err := (App{Config: c, Runner: destroy}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
+		t.Fatal(err)
+	}
+	result := BuildResult{Images: testConfig(t).Substrate.Images, AssetsDir: "/test/assets"}
+	if err := SaveBuildResult(path, c, result); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serialized struct {
+		AKS struct {
+			SystemPool *struct {
+				VMSize *string `json:"vmSize"`
+				Count  *int    `json:"count"`
+			} `json:"systemPool"`
+		} `json:"aks"`
+	}
+	if err := json.Unmarshal(saved, &serialized); err != nil {
+		t.Fatal(err)
+	}
+	pool := serialized.AKS.SystemPool
+	if pool == nil || pool.VMSize == nil || *pool.VMSize != DefaultSystemVMSize || pool.Count == nil || *pool.Count != 1 {
+		t.Fatalf("image re-save did not persist system defaults: %s", saved)
+	}
+	reloaded, err := LoadConfig(path)
+	if err != nil || reloaded.AKS.SystemPool != c.AKS.SystemPool {
+		t.Fatalf("re-saved record lost defaults: %+v, %v", reloaded.AKS.SystemPool, err)
+	}
+}
+
+func TestLoadSystemPoolFieldsAndStrictDecoding(t *testing.T) {
+	record, err := os.ReadFile("testdata/installation-main-era.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, system string
+		want         SystemPoolConfig
+		ok           bool
+	}{
+		{"omitted", "", SystemPoolConfig{DefaultSystemVMSize, 1}, true},
+		{"size only", `"systemPool":{"vmSize":"Standard_F4s_v6"},`, SystemPoolConfig{"Standard_F4s_v6", 1}, true},
+		{"count only", `"systemPool":{"count":3},`, SystemPoolConfig{DefaultSystemVMSize, 3}, true},
+		{"explicit zero", `"systemPool":{"count":0},`, SystemPoolConfig{}, false},
+		{"unknown field", `"systemPool":{"count":1,"unknown":true},`, SystemPoolConfig{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "installation.json")
+			data := strings.Replace(string(record), `"workerPool":`, tc.system+`"workerPool":`, 1)
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadConfig(path)
+			if (err == nil) != tc.ok || tc.ok && c.AKS.SystemPool != tc.want {
+				t.Fatalf("system pool decode: %+v, %v", c.AKS.SystemPool, err)
+			}
+		})
+	}
+}
+
+func TestLoadSystemPoolImageResavePreservesOverride(t *testing.T) {
+	c := testConfig(t)
+	c.AKS.SystemPool = SystemPoolConfig{VMSize: "Standard_F4s_v6", Count: 3}
+	path := filepath.Join(c.workspace(), "installation.json")
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBuildResult(path, expected, BuildResult{Images: c.Substrate.Images, AssetsDir: "/test/assets"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil || got.AKS.SystemPool != c.AKS.SystemPool {
+		t.Fatalf("image re-save changed configured system pool: %+v, %v", got.AKS.SystemPool, err)
+	}
+}
+
+func TestConfigSystemPoolBicepMapping(t *testing.T) {
+	for _, tc := range []struct {
+		file  string
+		parts []string
+	}{
+		{"main.bicep", []string{
+			"param systemVmSize string = 'Standard_D4s_v6'", "@minValue(1)\nparam systemCount int = 1",
+			"systemVmSize: systemVmSize", "systemCount: systemCount",
+		}},
+		{"resources.bicep", []string{
+			"param systemVmSize string = 'Standard_D4s_v6'", "@minValue(1)\nparam systemCount int = 1",
+			"name: 'system'\n        mode: 'System'\n        count: systemCount\n        vmSize: systemVmSize",
+		}},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := infra.Files.ReadFile(tc.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, part := range tc.parts {
+				if !strings.Contains(string(data), part) {
+					t.Fatalf("%s missing system pool default or mapping %q", tc.file, part)
+				}
+			}
+		})
+	}
+}
+
+func TestProvisionSystemPoolParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pool  SystemPoolConfig
+		size  bool
+		count bool
+	}{
+		{"defaults", SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1}, false, false},
+		{"size", SystemPoolConfig{VMSize: "Standard_D8s_v6", Count: 1}, true, false},
+		{"count", SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 3}, false, true},
+		{"both", SystemPoolConfig{VMSize: "Standard_D8s_v6", Count: 3}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.SystemPool = tc.pool
+			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+			if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(c.workspace(), "infra", "parameters.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := map[string]any{
+				"location": c.Azure.Location, "resourceGroupName": c.Azure.ResourceGroup,
+				"installationId": c.Installation.ID, "clusterName": c.AKS.ClusterName,
+				"kubernetesVersion": c.AKS.KubernetesVersion, "workerVmSize": c.AKS.WorkerPool.VMSize,
+				"workerCount": c.AKS.WorkerPool.Count, "apiAuthorizedCidrs": c.AKS.APIAuthorizedCIDRs,
+				"workerOsDiskType": c.AKS.WorkerPool.osDiskType(), "workerOsDiskSizeGB": c.AKS.WorkerPool.osDiskSizeGB(),
+				"workerMaxPods": c.AKS.WorkerPool.MaxPods, "assetPublisherObjectId": c.Azure.AssetPublisherObjectID,
+				"assetPublisherPrincipalType": c.publisherPrincipalType(), "snapshotReaderObjectId": c.Azure.SnapshotReaderObjectID,
+				"snapshotReaderPrincipalType": c.readerPrincipalType(), "registryOnly": false,
+			}
+			if tc.size {
+				params["systemVmSize"] = tc.pool.VMSize
+			}
+			if tc.count {
+				params["systemCount"] = tc.pool.Count
+			}
+			wrapped := map[string]any{}
+			for key, value := range params {
+				wrapped[key] = map[string]any{"value": value}
+			}
+			want, err := json.Marshal(map[string]any{
+				"$schema":        "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+				"contentVersion": "1.0.0.0", "parameters": wrapped,
+			})
+			if err != nil || !bytes.Equal(data, want) {
+				t.Fatalf("parameters changed unexpectedly:\ngot  %s\nwant %s\nerror %v", data, want, err)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,9 @@ param location string
 param installationId string
 param clusterName string
 param kubernetesVersion string
+param systemVmSize string = 'Standard_D4s_v6'
+@minValue(1)
+param systemCount int = 1
 param workerVmSize string
 param workerCount int
 @allowed(['Managed', 'Ephemeral'])
@@ -95,8 +98,8 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
       {
         name: 'system'
         mode: 'System'
-        count: 1
-        vmSize: 'Standard_D4s_v6'
+        count: systemCount
+        vmSize: systemVmSize
         osType: 'Linux'
         osSKU: 'Ubuntu'
         osDiskType: 'Managed'

@@ -21,6 +21,18 @@ type clusterState struct {
 	}
 }
 
+func (a App) guardSystemPool(cluster *clusterState) error {
+	if cluster == nil {
+		return nil
+	}
+	for _, pool := range cluster.AgentPoolProfiles {
+		if pool.Name == "system" && !strings.EqualFold(pool.VMSize, a.Config.AKS.SystemPool.VMSize) {
+			return fmt.Errorf("the existing system pool has vmSize %s, which AKS cannot change; restore it in aks.systemPool, or destroy and recreate the installation", pool.VMSize)
+		}
+	}
+	return nil
+}
+
 // guardWorkerPool rejects changes to settings AKS fixes when the microVM pool
 // is created, before a deployment fails on them partway through.
 func (a App) guardWorkerPool(cluster *clusterState) error {
