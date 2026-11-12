@@ -269,6 +269,64 @@ func TestPinnedUpstreamContract(t *testing.T) {
 			}
 		}
 	}
+	t.Run("individual sizing changes only its surface", func(t *testing.T) {
+		replicas, pool := 3, 10
+		for _, tc := range []struct {
+			name   string
+			target string
+			change func(*Config)
+		}{
+			{"api replicas", paths[1], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Replicas: &replicas, PostgresPoolMaxConns: &pool}}
+			}},
+			{"api resources", paths[1], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "500m"}}}}
+			}},
+			{"pool", "", func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{PostgresPoolMaxConns: &pool}}
+			}},
+			{"router replicas", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Replicas: &replicas}}
+			}},
+			{"router resources", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "250m"}}}}}
+			}},
+			{"envoy resources", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{Envoy: &ResourceRequirements{Limits: map[string]string{"memory": "1Gi"}}}}}
+			}},
+			{"upload delay", paths[0], func(c *Config) {
+				c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("10s")}
+			}},
+			{"detach delay", paths[0], func(c *Config) {
+				c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("6m")}
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				config := c
+				tc.change(&config)
+				if err := config.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				rendered := copyContractManifests(t, root)
+				if _, err := adaptSource(rendered, config, plugin); err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range paths {
+					before, err := os.ReadFile(filepath.Join(dest, path))
+					if err != nil {
+						t.Fatal(err)
+					}
+					after, err := os.ReadFile(filepath.Join(rendered, path))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if changed := !bytes.Equal(before, after); changed != (path == tc.target) {
+						t.Errorf("%s changed=%t; only %q should change", path, changed, tc.target)
+					}
+				}
+			})
+		}
+	})
 	t.Run("configured sizing on pinned workloads", func(t *testing.T) {
 		replicas, pool := 3, 10
 		c.Substrate.Sizing = &SizingConfig{

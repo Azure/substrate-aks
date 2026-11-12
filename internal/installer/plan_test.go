@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -213,5 +214,38 @@ func TestPlanCapacityBoundsCatalogPagination(t *testing.T) {
 	err := (App{Config: testConfig(t), Runner: r, Warning: func(s string) { warnings = append(warnings, s) }}).warnControlPlaneCapacity(t.Context())
 	if err != nil || r.calls != 32 || len(warnings) != 1 || !strings.Contains(warnings[0], "CONTROL_PLANE_CAPACITY_UNKNOWN") {
 		t.Fatalf("unbounded SKU lookup: calls=%d warnings=%v err=%v", r.calls, warnings, err)
+	}
+}
+
+type deadlineSKURunner struct {
+	t     *testing.T
+	calls int
+}
+
+func (r *deadlineSKURunner) Run(ctx context.Context, cmd Command) ([]byte, error) {
+	r.t.Helper()
+	r.calls++
+	args := strings.Join(cmd.Args, " ")
+	if !strings.HasPrefix(args, "az rest --method get ") ||
+		!strings.Contains(args, "/providers/Microsoft.Compute/skus?") {
+		r.t.Fatalf("capacity lookup was not a read-only SKU GET: %s", args)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) <= 0 {
+		r.t.Fatalf("capacity lookup lacks a future deadline: %v, %v", deadline, ok)
+	}
+	return nil, context.DeadlineExceeded
+}
+
+func TestPlanCapacityLookupIsReadOnlyAndBounded(t *testing.T) {
+	r := &deadlineSKURunner{t: t}
+	var warnings []string
+	err := (App{Config: testConfig(t), Runner: r, Warning: func(s string) {
+		warnings = append(warnings, s)
+	}}).warnControlPlaneCapacity(t.Context())
+	if err != nil || r.calls != 1 || len(warnings) != 1 ||
+		!strings.HasPrefix(warnings[0], "WARNING CONTROL_PLANE_CAPACITY_UNKNOWN: ") ||
+		!strings.HasSuffix(warnings[0], "; capacity not verified") {
+		t.Fatalf("timeout must warn without failing: calls=%d warnings=%v err=%v", r.calls, warnings, err)
 	}
 }

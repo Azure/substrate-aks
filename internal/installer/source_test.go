@@ -292,8 +292,11 @@ func TestRepeatedInstallKeepsSizing(t *testing.T) {
 	replicas, pool, routers := 3, 10, 2
 	c.Substrate.Sizing = &SizingConfig{
 		APIServer: &APIServerSizing{Replicas: &replicas, PostgresPoolMaxConns: &pool,
-			Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "500m"}}},
-		Router: &RouterSizing{Replicas: &routers},
+			Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "500m"}, Limits: map[string]string{"memory": "1Gi"}}},
+		Router: &RouterSizing{Replicas: &routers, Resources: &RouterResources{
+			AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "250m"}},
+			Envoy:        &ResourceRequirements{Limits: map[string]string{"memory": "512Mi"}},
+		}},
 	}
 	c.Substrate.Atelet = &AteletConfig{stringPointer("10s"), stringPointer("30s")}
 	root, _ := clientFixture(t, c)
@@ -399,6 +402,34 @@ spec:
 		!strings.Contains(renders[0][2], "replicas: 2") {
 		t.Fatalf("repeated install lost sizing: %v", renders)
 	}
+	for _, workload := range []struct {
+		index     int
+		name      string
+		replicas  int
+		resources map[string]object
+	}{
+		{1, "ate-api-server", 3, map[string]object{"ate-api-server": {"requests": object{"cpu": "500m"}, "limits": object{"memory": "1Gi"}}}},
+		{2, "atenet-router", 2, map[string]object{
+			"atenet-router": {"requests": object{"cpu": "250m"}},
+			"envoy":         {"limits": object{"memory": "512Mi"}},
+		}},
+	} {
+		doc := manifestObject(t, []byte(renders[0][workload.index]), "Deployment", workload.name)
+		spec, err := child(doc, "spec")
+		if err != nil || spec["replicas"] != workload.replicas {
+			t.Fatalf("%s replicas after repeated install: %v, %v", workload.name, spec, err)
+		}
+		pod, err := nested(spec, "template", "spec")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range workload.resources {
+			container, err := named(pod["containers"], name)
+			if err != nil || !reflect.DeepEqual(container["resources"], want) {
+				t.Fatalf("%s resources after repeated install: %v, %v", name, container["resources"], err)
+			}
+		}
+	}
 }
 
 func TestPreparedSourceReplacesLegacyDemoCache(t *testing.T) {
@@ -426,6 +457,200 @@ func TestPreparedSourceReplacesLegacyDemoCache(t *testing.T) {
 		if err != nil || string(data) != previousMarker {
 			t.Fatalf("prepare modified the previous managed checkout: %s, %v", data, err)
 		}
+	}
+}
+
+func TestPreparedSourceCreatesNewGenerationWithoutChangingOld(t *testing.T) {
+	c, i := testConfig(t), testInfrastructure()
+	fp := fingerprint(c, i)
+	oldRoots := []string{
+		filepath.Join(c.workspace(), "source-"+fp),
+		filepath.Join(c.workspace(), "source-"+fp+"-v2"),
+	}
+	for _, root := range oldRoots {
+		if err := os.MkdirAll(filepath.Join(root, "nested"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		p := prepared{Fingerprint: fp, Files: make(map[string]string)}
+		for _, rel := range adaptedSourcePaths[:6] {
+			path := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			data := []byte("prior generation: " + rel)
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			p.Files[rel] = checksum(data)
+		}
+		marker, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".substrate-aks-prepared.json"), marker, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "nested/workload.yaml"), []byte("original content\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func() map[string]string {
+		t.Helper()
+		result := make(map[string]string)
+		for _, root := range oldRoots {
+			err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				info, err := entry.Info()
+				if err != nil {
+					return err
+				}
+				value := info.Mode().String()
+				if !entry.IsDir() {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					value += ":" + checksum(data)
+				}
+				result[path] = value
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return result
+	}
+	before := snapshot()
+	api := strings.Replace(string(workloadFixture(false)), "- name: atelet\n        image:", "- name: ate-api-server\n        image:", 1)
+	fixtures := map[string]string{
+		adaptedSourcePaths[0]: string(workloadFixture(true)),
+		adaptedSourcePaths[1]: api,
+		adaptedSourcePaths[2]: `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ate-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: postgres
+        image: example.invalid/postgres
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ReadWriteOnce]
+`,
+		adaptedSourcePaths[3]: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-otel-config
+  namespace: ate-system
+data:
+  example: original
+`,
+		adaptedSourcePaths[4]: `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../ate-api-server.yaml
+- ../ate-idp-server.yaml
+- ../ate-controller.yaml
+- ../atelet.yaml
+- ../atenet-router.yaml
+- ../atenet-router-monitoring.yaml
+- ../ate-otel-config.yaml
+`,
+		adaptedSourcePaths[5]: `apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: counter-microvm
+  namespace: ate-demo-counter-microvm
+spec:
+  template:
+    nodeSelector:
+      existing: retained
+`,
+		adaptedSourcePaths[6]: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atenet-router
+  namespace: ate-system
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: atenet-router
+        image: example.invalid/router
+      - name: envoy
+        image: example.invalid/envoy
+`,
+	}
+	sourceReplies := fetchReplies(c.Substrate.Source)
+	sourceReplies[len(sourceReplies)-1].effect = func(cmd Command) {
+		writeAssetFixture(t, cmd.Dir, t.TempDir())
+		for rel, content := range fixtures {
+			path := filepath.Join(cmd.Dir, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pluginReplies := fetchReplies(c.Substrate.PluginSource)
+	pluginReplies[len(pluginReplies)-1].effect = func(cmd Command) {
+		if err := os.CopyFS(cmd.Dir, os.DirFS("testdata/plugin")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(cmd.Dir, "cmd/azure-blob-objectstore-plugin"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replies := append(sourceReplies, pluginReplies...)
+	replies = append(replies,
+		reply{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
+		reply{contains: "git diff --name-only HEAD"},
+		reply{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"})
+	app := App{Config: c, Runner: script(t, replies...)}
+	root, err := app.prepare(t.Context(), i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != filepath.Join(c.workspace(), "source-"+fp+"-v3") {
+		t.Fatalf("unexpected generation: %s", root)
+	}
+	marker, err := os.ReadFile(filepath.Join(root, ".substrate-aks-prepared.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p prepared
+	if err := json.Unmarshal(marker, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Fingerprint != fp || len(p.Files) != len(adaptedSourcePaths) {
+		t.Fatalf("invalid prepared marker: %+v", p)
+	}
+	for _, rel := range adaptedSourcePaths {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil || p.Files[rel] != checksum(data) {
+			t.Fatalf("missing or inconsistent adapted file %s: %v", rel, err)
+		}
+	}
+	router, err := os.ReadFile(filepath.Join(root, adaptedSourcePaths[6]))
+	if err != nil || string(router) != fixtures[adaptedSourcePaths[6]] {
+		t.Fatalf("new generation changed the unset router: %s, %v", router, err)
+	}
+	if cached, err := app.prepare(t.Context(), i); err != nil || cached != root {
+		t.Fatalf("new generation cannot be reused: %q, %v", cached, err)
+	}
+	if after := snapshot(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("old generations changed: before=%v after=%v", before, after)
 	}
 }
 

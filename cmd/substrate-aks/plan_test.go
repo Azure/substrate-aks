@@ -88,6 +88,10 @@ esac
 			if err := run(t.Context(), []string{"plan", recordName(path)}, &result, &progress); err != nil {
 				t.Fatal(err)
 			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(data, after) {
+				t.Fatalf("capacity warning changed the installation record: %v", err)
+			}
 			if !strings.Contains(progress.String(), tc.warning) || strings.Contains(result.String(), tc.warning) {
 				t.Fatalf("warning must be on stderr: stdout=%s stderr=%s", result.String(), progress.String())
 			}

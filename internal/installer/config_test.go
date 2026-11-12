@@ -127,6 +127,14 @@ func TestConfigSizingAndSnapshotDelays(t *testing.T) {
 			c.Substrate.Source.Commit = strings.Repeat("a", 40)
 			c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("1s")}
 		}, false},
+		{"custom pin with detach only", func(c *Config) {
+			c.Substrate.Source.Commit = strings.Repeat("a", 40)
+			c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("6m")}
+		}, false},
+		{"custom pin with neither delay", func(c *Config) {
+			c.Substrate.Source.Commit = strings.Repeat("a", 40)
+			c.Substrate.Atelet = &AteletConfig{}
+		}, true},
 		{"custom pin with both delays", func(c *Config) {
 			c.Substrate.Source.Commit = strings.Repeat("a", 40)
 			c.Substrate.Atelet = &AteletConfig{stringPointer("1s"), stringPointer("2s")}
