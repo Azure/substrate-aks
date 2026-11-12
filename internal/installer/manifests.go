@@ -193,7 +193,7 @@ func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) (
 	if node {
 		kind, name, v.Component = "DaemonSet", "atelet", "actor-images"
 		if d := c.Substrate.Atelet; d != nil && (d.SnapshotUploadDelay != nil || d.SnapshotDetachDelay != nil) {
-			v.Sizing = &deploy.Sizing{Workload: name}
+			v.Sizing = &deploy.Sizing{}
 			if d.SnapshotUploadDelay != nil {
 				v.Sizing.UploadDelay = *d.SnapshotUploadDelay
 			}
@@ -201,14 +201,8 @@ func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) (
 				v.Sizing.DetachDelay = *d.SnapshotDetachDelay
 			}
 		}
-	} else if c.Substrate.Sizing != nil {
-		if api := c.Substrate.Sizing.APIServer; api != nil {
-			containers := make(map[string]*deploy.Resources)
-			addSizingResources(containers, "ate-api-server", api.Resources)
-			if api.Replicas != nil || len(containers) != 0 {
-				v.Sizing = &deploy.Sizing{Workload: name, Replicas: api.Replicas, Containers: containers}
-			}
-		}
+	} else {
+		v.Sizing = deploymentSizing(c.Substrate, name)
 	}
 	found := false
 	err := inspectYAML(data, func(doc object) error {
@@ -332,23 +326,28 @@ func containerOrder(pod object) ([]string, error) {
 	return names, nil
 }
 
-func addSizingResources(containers map[string]*deploy.Resources, name string, r *ResourceRequirements) {
-	if r != nil && (len(r.Requests) != 0 || len(r.Limits) != 0) {
-		containers[name] = &deploy.Resources{Requests: r.Requests, Limits: r.Limits}
+func deploymentSizing(s SubstrateConfig, name string) *deploy.Sizing {
+	for _, workload := range s.sizedWorkloads() {
+		if workload.name != name {
+			continue
+		}
+		containers := make(map[string]*deploy.Resources)
+		for _, container := range workload.containers {
+			r := container.resources
+			if r != nil && (len(r.Requests) != 0 || len(r.Limits) != 0) {
+				containers[container.name] = &deploy.Resources{Requests: r.Requests, Limits: r.Limits}
+			}
+		}
+		if workload.replicas != nil || len(containers) != 0 {
+			return &deploy.Sizing{Workload: name, Replicas: workload.replicas, Containers: containers}
+		}
 	}
+	return nil
 }
 
 func adaptRouter(data []byte, c Config) ([]byte, error) {
-	if c.Substrate.Sizing == nil || c.Substrate.Sizing.Router == nil {
-		return data, nil
-	}
-	router := c.Substrate.Sizing.Router
-	containers := make(map[string]*deploy.Resources)
-	if router.Resources != nil {
-		addSizingResources(containers, "atenet-router", router.Resources.AtenetRouter)
-		addSizingResources(containers, "envoy", router.Resources.Envoy)
-	}
-	if router.Replicas == nil && len(containers) == 0 {
+	sizing := deploymentSizing(c.Substrate, "atenet-router")
+	if sizing == nil {
 		return data, nil
 	}
 	found := false
@@ -369,7 +368,7 @@ func adaptRouter(data []byte, c Config) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		for name := range containers {
+		for name := range sizing.Containers {
 			if _, err := named(pod["containers"], name); err != nil {
 				return err
 			}
@@ -386,9 +385,8 @@ func adaptRouter(data []byte, c Config) ([]byte, error) {
 	if !found {
 		return nil, errors.New("upstream router Deployment missing")
 	}
-	return deploy.Render(data, deploy.Values{Sizing: &deploy.Sizing{
-		Workload: "atenet-router", Replicas: router.Replicas, Containers: containers, ContainerOrder: order,
-	}})
+	sizing.ContainerOrder = order
+	return deploy.Render(data, deploy.Values{Sizing: sizing})
 }
 
 func checkActorImages(pod object) error {

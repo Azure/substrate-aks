@@ -13,7 +13,7 @@ import (
 
 func TestControlPlaneCapacityWarnings(t *testing.T) {
 	cpu := resource.MustParse("3860m")
-	memory := quantityRat(resource.MustParse("12188Mi"))
+	memory := resource.MustParse("12188Mi")
 	for _, tc := range []struct {
 		name, cpu, memory, limitCPU, want string
 		router                            bool
@@ -71,7 +71,7 @@ func TestCapacityEstimateAcceptsDifferentPoolSizeAndCount(t *testing.T) {
 		Resources: &RouterResources{Envoy: &ResourceRequirements{Requests: map[string]string{"cpu": "8"}}},
 	}}}
 	cpu := resource.MustParse("7820m")
-	memory := quantityRat(resource.MustParse("20Gi"))
+	memory := resource.MustParse("20Gi")
 	warning, err := capacityWarning("Standard_D8s_v6", 3, cpu, memory, c)
 	if err != nil || !strings.Contains(warning, "system=Standard_D8s_v6x3") ||
 		!strings.Contains(warning, "a pod exceeds one node") || strings.Contains(warning, "aggregate requests exceed") {
@@ -81,7 +81,7 @@ func TestCapacityEstimateAcceptsDifferentPoolSizeAndCount(t *testing.T) {
 
 func TestControlPlaneCapacityCombinesRouterContainers(t *testing.T) {
 	cpu := resource.MustParse("3860m")
-	memory := quantityRat(resource.MustParse("12188Mi"))
+	memory := resource.MustParse("12188Mi")
 	c := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
 		AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "2"}},
 		Envoy:        &ResourceRequirements{Requests: map[string]string{"cpu": "2"}},
@@ -116,10 +116,23 @@ func TestSystemCapacitySKUValidation(t *testing.T) {
 				t.Fatalf("systemCapacity = %v; want valid %t", err, tc.valid)
 			}
 			if tc.name == "valid" && (cpu.Cmp(resource.MustParse("3860m")) != 0 ||
-				memory.Cmp(quantityRat(resource.MustParse("12188Mi"))) != 0) {
-				t.Fatalf("wrong reservation: %s, %s", cpu.String(), memory.RatString())
+				memory.Cmp(resource.MustParse("12188Mi")) != 0) {
+				t.Fatalf("wrong reservation: %s, %s", cpu.String(), memory.String())
 			}
 		})
+	}
+}
+
+func TestSystemCapacityRejectsAmbiguousCapabilities(t *testing.T) {
+	a := App{Config: testConfig(t)}
+	for _, data := range []string{
+		`[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]}]`,
+		`[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"},{"name":"MemoryGB","value":"16"}]}]`,
+		`[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]},{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]}]`,
+	} {
+		if _, _, err := a.systemCapacity([]byte(data), SystemVMSize); err == nil {
+			t.Fatalf("accepted ambiguous SKU capabilities: %s", data)
+		}
 	}
 }
 
@@ -139,6 +152,31 @@ func TestSystemCapacityCPUReservations(t *testing.T) {
 				t.Fatalf("capacity = %s, %v; want %s", cpu.String(), err, want.String())
 			}
 		})
+	}
+}
+
+func TestSystemCapacityFractionalMemoryRoundsDown(t *testing.T) {
+	c := testConfig(t)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
+	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), SystemVMSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := resource.MustParse("217264947")
+	if memory.Cmp(want) != 0 {
+		t.Fatalf("fractional-byte estimate = %s, want %s", memory.String(), want.String())
+	}
+	for _, tc := range []struct {
+		request string
+		warn    bool
+	}{{"217264947", false}, {"217264948", true}} {
+		s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
+			Envoy: &ResourceRequirements{Requests: map[string]string{"memory": tc.request}},
+		}}}}
+		warning, err := capacityWarning(SystemVMSize, 1, cpu, memory, s)
+		if err != nil || (warning != "") != tc.warn {
+			t.Fatalf("request %s warning = %q, %v", tc.request, warning, err)
+		}
 	}
 }
 

@@ -40,6 +40,29 @@ func TestFingerprintSizingIdentity(t *testing.T) {
 	}
 }
 
+func TestSizingIdentityPreservesConfiguredEncoding(t *testing.T) {
+	apiReplicas, routerReplicas, pool := 2, 3, 10
+	s := SubstrateConfig{
+		Sizing: &SizingConfig{
+			APIServer: &APIServerSizing{Replicas: &apiReplicas, PostgresPoolMaxConns: &pool,
+				Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "1000m"}}},
+			Router: &RouterSizing{Replicas: &routerReplicas, Resources: &RouterResources{
+				AtenetRouter: &ResourceRequirements{Requests: map[string]string{"memory": "1Gi"}},
+				Envoy:        &ResourceRequirements{Limits: map[string]string{"cpu": "500m"}},
+			}},
+		},
+		Atelet: &AteletConfig{stringPointer("60s"), stringPointer("6m")},
+	}
+	want := map[string]any{
+		"apiServer.replicas": 2, "apiServer.postgresPoolMaxConns": 10, "apiServer.requests.cpu": "1",
+		"router.replicas": 3, "router.atenetRouter.requests.memory": "1Gi", "router.envoy.limits.cpu": "500m",
+		"atelet.upload": "1m0s", "atelet.detach": "6m0s",
+	}
+	if got := sizingIdentity(s); !reflect.DeepEqual(got, want) {
+		t.Fatalf("configured sizing identity changed: got %v, want %v", got, want)
+	}
+}
+
 func TestFingerprintEachSizingField(t *testing.T) {
 	replicas, pool := 3, 10
 	for _, tc := range []struct {

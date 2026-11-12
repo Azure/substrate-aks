@@ -67,12 +67,14 @@ type Resources struct {
 }
 
 type Sizing struct {
+	// Deployment overrides.
 	Workload       string
 	Replicas       *int
 	Containers     map[string]*Resources
 	ContainerOrder []string
-	UploadDelay    string
-	DetachDelay    string
+	// Atelet argument overrides.
+	UploadDelay string
+	DetachDelay string
 }
 
 // Render applies external components, then an embedded component, then sizing,
@@ -120,22 +122,15 @@ func Render(source []byte, v Values) ([]byte, error) {
 			return nil, err
 		}
 	}
+	var components []string
 	if v.Component != "" {
-		component := "components/" + v.Component
-		if err := fs.WalkDir(manifests, component, func(name string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				return nil
-			}
-			return write(name, "/render/"+name)
-		}); err != nil {
-			return nil, err
-		}
+		components = append(components, "components/"+v.Component)
 	}
 	if v.Sizing != nil {
-		if err := fs.WalkDir(manifests, "components/sizing", func(name string, entry fs.DirEntry, err error) error {
+		components = append(components, "components/sizing")
+	}
+	for _, component := range components {
+		if err := fs.WalkDir(manifests, component, func(name string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}

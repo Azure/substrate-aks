@@ -65,24 +65,15 @@ func sizingIdentity(s SubstrateConfig) map[string]any {
 			}
 		}
 	}
-	if s.Sizing != nil {
-		if api := s.Sizing.APIServer; api != nil {
-			if api.Replicas != nil {
-				values["apiServer.replicas"] = *api.Replicas
-			}
-			if api.PostgresPoolMaxConns != nil {
-				values["apiServer.postgresPoolMaxConns"] = *api.PostgresPoolMaxConns
-			}
-			addResources("apiServer", api.Resources)
+	for _, workload := range s.sizedWorkloads() {
+		if workload.replicas != nil {
+			values[workload.field+".replicas"] = *workload.replicas
 		}
-		if router := s.Sizing.Router; router != nil {
-			if router.Replicas != nil {
-				values["router.replicas"] = *router.Replicas
-			}
-			if router.Resources != nil {
-				addResources("router.atenetRouter", router.Resources.AtenetRouter)
-				addResources("router.envoy", router.Resources.Envoy)
-			}
+		if workload.pool != nil {
+			values[workload.field+".postgresPoolMaxConns"] = *workload.pool
+		}
+		for _, container := range workload.containers {
+			addResources(container.identity, container.resources)
 		}
 	}
 	if s.Atelet != nil {
@@ -280,8 +271,10 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		// replaces, so these placeholders are never used.
 		"--gcp-project-id", transferPlaceholderProject,
 		"--snapshot-transfer-gsa-name", transferPlaceholderAccount)
-	if c.Substrate.Sizing != nil && c.Substrate.Sizing.APIServer != nil && c.Substrate.Sizing.APIServer.PostgresPoolMaxConns != nil {
-		command = append(command, "--ateapi-postgres-pool-max-conns", strconv.Itoa(*c.Substrate.Sizing.APIServer.PostgresPoolMaxConns))
+	for _, workload := range c.Substrate.sizedWorkloads() {
+		if workload.pool != nil {
+			command = append(command, "--ateapi-postgres-pool-max-conns", strconv.Itoa(*workload.pool))
+		}
 	}
 	if args[1] == "ate-system" {
 		// ate-setup would stage microVM assets to GCS; the installer uploads

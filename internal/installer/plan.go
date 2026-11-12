@@ -2,11 +2,8 @@ package installer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"math/big"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -57,29 +54,25 @@ func (r controlPlaneRequest) scaled(count int) controlPlaneRequest {
 func controlPlaneRequests(s SubstrateConfig) (controlPlaneRequest, controlPlaneRequest, controlPlaneRequest, error) {
 	var api, router controlPlaneRequest
 	apiReplicas, routerReplicas := defaultAPIServerReplicas, 1
-	if s.Sizing != nil {
-		if a := s.Sizing.APIServer; a != nil {
-			var err error
-			api, err = containerRequests(a.Resources)
+	for _, workload := range s.sizedWorkloads() {
+		var request controlPlaneRequest
+		for _, container := range workload.containers {
+			part, err := containerRequests(container.resources)
 			if err != nil {
 				return api, router, controlPlaneRequest{}, err
 			}
-			if a.Replicas != nil {
-				apiReplicas = *a.Replicas
-			}
+			request.add(part)
 		}
-		if r := s.Sizing.Router; r != nil {
-			if r.Replicas != nil {
-				routerReplicas = *r.Replicas
+		switch workload.name {
+		case "ate-api-server":
+			api = request
+			if workload.replicas != nil {
+				apiReplicas = *workload.replicas
 			}
-			if r.Resources != nil {
-				for _, resources := range []*ResourceRequirements{r.Resources.AtenetRouter, r.Resources.Envoy} {
-					part, err := containerRequests(resources)
-					if err != nil {
-						return api, router, controlPlaneRequest{}, err
-					}
-					router.add(part)
-				}
+		case "atenet-router":
+			router = request
+			if workload.replicas != nil {
+				routerReplicas = *workload.replicas
 			}
 		}
 	}
@@ -88,90 +81,66 @@ func controlPlaneRequests(s SubstrateConfig) (controlPlaneRequest, controlPlaneR
 	return api, router, total, nil
 }
 
-var memoryGBPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
-
-func (a App) systemCapacity(data []byte, size string) (resource.Quantity, *big.Rat, error) {
-	_, cpus, err := a.cloudSKU(data, size)
+func (a App) systemCapacity(data []byte, size string) (resource.Quantity, resource.Quantity, error) {
+	sku, err := a.readSKU(data, size)
 	if err != nil {
-		return resource.Quantity{}, nil, err
+		return resource.Quantity{}, resource.Quantity{}, err
 	}
 	// AKS Linux reservations: https://learn.microsoft.com/azure/aks/node-resource-reservations
 	reservations := map[int64]int64{1: 60, 2: 100, 4: 140, 8: 180, 16: 260, 32: 420, 64: 740}
-	reserved, ok := reservations[cpus]
+	reserved, ok := reservations[sku.cpus]
 	if !ok {
-		return resource.Quantity{}, nil, fmt.Errorf("unsupported CPU reservation profile")
+		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("unsupported CPU reservation profile")
 	}
-	var skus []struct {
-		Name         string
-		Capabilities []struct{ Name, Value string }
+	memory := sku.memory
+	if sku.matches != 1 || sku.cpusFound != 1 || sku.memoryFound != 1 ||
+		len(memory) == 0 || len(memory) > 20 || strings.Trim(memory, "0123456789.") != "" ||
+		strings.HasPrefix(memory, ".") || strings.HasSuffix(memory, ".") {
+		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("missing or invalid memory capability")
 	}
-	if err := json.Unmarshal(data, &skus); err != nil {
-		return resource.Quantity{}, nil, err
+	q, err := resource.ParseQuantity(memory + "Gi")
+	maximum := resource.MustParse("65536Gi")
+	if err != nil || q.Sign() <= 0 || q.Cmp(maximum) > 0 {
+		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("missing or invalid memory capability")
 	}
-	matches, memoryFields, cpuFields := 0, 0, 0
-	var memory string
-	for _, sku := range skus {
-		if !strings.EqualFold(sku.Name, size) {
-			continue
-		}
-		matches++
-		for _, capability := range sku.Capabilities {
-			if capability.Name == "vCPUs" {
-				cpuFields++
-			}
-			if capability.Name == "MemoryGB" {
-				memoryFields++
-				memory = capability.Value
-			}
-		}
+	q.Mul(3)
+	bytes := q.Value()
+	// Quantity.Value rounds up; floor the reservation estimate to bytes.
+	if q.Cmp(*resource.NewQuantity(bytes, resource.BinarySI)) < 0 {
+		bytes--
 	}
-	if matches != 1 || cpuFields != 1 || memoryFields != 1 || !memoryGBPattern.MatchString(memory) || len(memory) > 20 {
-		return resource.Quantity{}, nil, fmt.Errorf("missing or invalid memory capability")
+	allocatable := bytes/4 - 100*(1<<20)
+	if allocatable <= 0 {
+		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("insufficient memory for the reservation model")
 	}
-	mem, ok := new(big.Rat).SetString(memory)
-	if !ok || mem.Sign() <= 0 || mem.Cmp(big.NewRat(65536, 1)) > 0 {
-		return resource.Quantity{}, nil, fmt.Errorf("missing or invalid memory capability")
-	}
-	mem.Mul(mem, big.NewRat(3*(1<<30), 4))
-	mem.Sub(mem, big.NewRat(100*(1<<20), 1))
-	if mem.Sign() <= 0 {
-		return resource.Quantity{}, nil, fmt.Errorf("insufficient memory for the reservation model")
-	}
-	return *resource.NewMilliQuantity(cpus*1000-reserved, resource.DecimalSI), mem, nil
+	return *resource.NewMilliQuantity(sku.cpus*1000-reserved, resource.DecimalSI),
+		*resource.NewQuantity(allocatable, resource.BinarySI), nil
 }
 
-func quantityRat(q resource.Quantity) *big.Rat {
-	value, _ := new(big.Rat).SetString(q.AsDec().String())
-	return value
-}
-
-func capacityWarning(size string, count int, cpu resource.Quantity, memory *big.Rat, s SubstrateConfig) (string, error) {
+func capacityWarning(size string, count int, cpu, memory resource.Quantity, s SubstrateConfig) (string, error) {
 	api, router, total, err := controlPlaneRequests(s)
 	if err != nil {
 		return "", err
 	}
 	totalCPU := cpu.DeepCopy()
 	totalCPU.Mul(int64(count))
-	totalMemory := new(big.Rat).Mul(memory, big.NewRat(int64(count), 1))
+	totalMemory := memory.DeepCopy()
+	totalMemory.Mul(int64(count))
 	var reasons []string
-	if total.cpu.Cmp(totalCPU) > 0 || quantityRat(total.memory).Cmp(totalMemory) > 0 {
+	if total.cpu.Cmp(totalCPU) > 0 || total.memory.Cmp(totalMemory) > 0 {
 		reasons = append(reasons, "aggregate requests exceed the pool estimate")
 	}
 	if api.cpu.Cmp(cpu) > 0 || router.cpu.Cmp(cpu) > 0 ||
-		quantityRat(api.memory).Cmp(memory) > 0 || quantityRat(router.memory).Cmp(memory) > 0 {
+		api.memory.Cmp(memory) > 0 || router.memory.Cmp(memory) > 0 {
 		reasons = append(reasons, "a pod exceeds one node's estimate")
 	}
 	if len(reasons) == 0 {
 		return "", nil
 	}
-	// Flooring the display avoids overstating allocatable memory.
-	bytes := new(big.Int).Quo(totalMemory.Num(), totalMemory.Denom())
-	memDisplay, err := resource.ParseQuantity(bytes.String())
-	if err != nil {
-		return "", err
-	}
+	displayMemory := totalMemory.DeepCopy()
+	displayMemory.Format = resource.DecimalSI
 	return fmt.Sprintf("WARNING CONTROL_PLANE_CAPACITY: system=%sx%d requested=<%s,%s> estimated-allocatable=<%s,%s>; %s; estimate excludes system/add-on pods; no fit guarantee",
-		size, count, total.cpu.String(), total.memory.String(), totalCPU.String(), memDisplay.String(), strings.Join(reasons, ", ")), nil
+		size, count, total.cpu.String(), total.memory.String(), totalCPU.String(), displayMemory.String(), strings.Join(reasons, ", ")), nil
 }
 
 func (a App) warnControlPlaneCapacity(ctx context.Context) error {

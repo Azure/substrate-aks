@@ -280,7 +280,14 @@ func (a App) regionalSKUCatalogPages(ctx context.Context, maxPages int) ([]byte,
 	return json.Marshal(skus)
 }
 
-func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+type skuInfo struct {
+	family                          string
+	cpus                            int64
+	memory                          string
+	matches, cpusFound, memoryFound int
+}
+
+func (a App) readSKU(data []byte, size string) (skuInfo, error) {
 	var skus []struct {
 		Name, Family string
 		Capabilities []struct{ Name, Value string }
@@ -290,36 +297,62 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 		}
 	}
 	if err := json.Unmarshal(data, &skus); err != nil {
-		return "", 0, fmt.Errorf("reading VM SKU %s: %w", size, err)
+		return skuInfo{}, fmt.Errorf("reading VM SKU %s: %w", size, err)
 	}
+	var result skuInfo
 	for _, sku := range skus {
 		if !strings.EqualFold(sku.Name, size) {
+			continue
+		}
+		result.matches++
+		if result.matches > 1 {
 			continue
 		}
 		for _, restriction := range sku.Restrictions {
 			if strings.EqualFold(restriction.Type, "Location") {
 				if len(restriction.Values) == 0 {
-					return "", 0, fmt.Errorf("VM SKU %s has an unspecified location restriction; availability is unverified", size)
+					return skuInfo{}, fmt.Errorf("VM SKU %s has an unspecified location restriction; availability is unverified", size)
 				}
 				for _, location := range restriction.Values {
 					if strings.EqualFold(location, a.Config.Azure.Location) {
-						return "", 0, fmt.Errorf("VM SKU %s is restricted in %s for this subscription", size, location)
+						return skuInfo{}, fmt.Errorf("VM SKU %s is restricted in %s for this subscription", size, location)
 					}
 				}
 			}
 		}
+		result.family = sku.Family
 		for _, capability := range sku.Capabilities {
-			if capability.Name == "vCPUs" && sku.Family != "" {
+			if capability.Name == "vCPUs" {
+				result.cpusFound++
+				if result.cpusFound != 1 || sku.Family == "" {
+					continue
+				}
 				cpus, err := strconv.ParseInt(capability.Value, 10, 64)
 				if err != nil || cpus <= 0 || cpus > 1024 {
-					return "", 0, fmt.Errorf("VM SKU %s has invalid vCPU capability", size)
+					return skuInfo{}, fmt.Errorf("VM SKU %s has invalid vCPU capability", size)
 				}
-				return sku.Family, cpus, nil
+				result.cpus = cpus
+			}
+			if capability.Name == "MemoryGB" {
+				result.memoryFound++
+				if result.memoryFound == 1 {
+					result.memory = capability.Value
+				}
 			}
 		}
-		return "", 0, fmt.Errorf("VM SKU %s has no usable CPU/family information", size)
+		if result.cpus == 0 {
+			return skuInfo{}, fmt.Errorf("VM SKU %s has no usable CPU/family information", size)
+		}
 	}
-	return "", 0, fmt.Errorf("VM SKU %s is not available in %s", size, a.Config.Azure.Location)
+	if result.matches == 0 {
+		return skuInfo{}, fmt.Errorf("VM SKU %s is not available in %s", size, a.Config.Azure.Location)
+	}
+	return result, nil
+}
+
+func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+	sku, err := a.readSKU(data, size)
+	return sku.family, sku.cpus, err
 }
 
 // ephemeralOSDiskFits checks that size supports ephemeral OS disks and that

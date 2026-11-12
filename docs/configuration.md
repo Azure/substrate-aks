@@ -183,11 +183,14 @@ bundled database, the installer reserves 10% of its 100 connections and counts
 six additional connections per API replica. It requires replicas × (pool + 6)
 to fit the remaining budget. If neither setting is supplied, the upstream
 pool default is not known to the installer and the budget is not verified.
+The check covers steady state; during a rollout or eviction one extra replica
+may hold connections, so leave room for its pool plus six when pools saturate.
 
 `plan` estimates system-pool allocatable CPU and memory from the VM SKU and
 configured requests (or limits when requests are absent). It warns when the
 estimate is exceeded or cannot be verified. This estimate excludes system and
-add-on pods and does not guarantee scheduling capacity.
+add-on pods, rounds memory down to whole bytes, and does not guarantee scheduling
+capacity.
 
 The sizing component is an interim implementation for the current pin. A
 future pin with upstream sizing components will replace the mechanism while

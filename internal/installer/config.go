@@ -165,6 +165,46 @@ type RouterResources struct {
 	Envoy        *ResourceRequirements `json:"envoy,omitempty"`
 }
 
+type sizedContainer struct {
+	name, field, identity string
+	resources             *ResourceRequirements
+}
+
+type sizedWorkload struct {
+	name, field string
+	replicas    *int
+	pool        *int
+	containers  []sizedContainer
+}
+
+func (s SubstrateConfig) sizedWorkloads() [2]sizedWorkload {
+	api := sizedWorkload{
+		name: "ate-api-server", field: "apiServer",
+		containers: []sizedContainer{{name: "ate-api-server", field: "apiServer.resources", identity: "apiServer"}},
+	}
+	router := sizedWorkload{
+		name: "atenet-router", field: "router",
+		containers: []sizedContainer{
+			{name: "atenet-router", field: "router.resources.atenetRouter", identity: "router.atenetRouter"},
+			{name: "envoy", field: "router.resources.envoy", identity: "router.envoy"},
+		},
+	}
+	if s.Sizing != nil {
+		if value := s.Sizing.APIServer; value != nil {
+			api.replicas, api.pool = value.Replicas, value.PostgresPoolMaxConns
+			api.containers[0].resources = value.Resources
+		}
+		if value := s.Sizing.Router; value != nil {
+			router.replicas = value.Replicas
+			if value.Resources != nil {
+				router.containers[0].resources = value.Resources.AtenetRouter
+				router.containers[1].resources = value.Resources.Envoy
+			}
+		}
+	}
+	return [2]sizedWorkload{api, router}
+}
+
 type AteletConfig struct {
 	SnapshotUploadDelay *string `json:"snapshotUploadDelay,omitempty"`
 	SnapshotDetachDelay *string `json:"snapshotDetachDelay,omitempty"`
@@ -207,41 +247,30 @@ func (s SubstrateConfig) validateSizing() error {
 		}
 		return nil
 	}
-	if s.Sizing != nil {
-		if api := s.Sizing.APIServer; api != nil {
-			if api.Replicas != nil && *api.Replicas < 1 {
-				return errors.New("substrate.sizing.apiServer.replicas must be at least 1")
-			}
-			if api.PostgresPoolMaxConns != nil && *api.PostgresPoolMaxConns < 1 {
+	for _, workload := range s.sizedWorkloads() {
+		if workload.replicas != nil && *workload.replicas < 1 {
+			return fmt.Errorf("substrate.sizing.%s.replicas must be at least 1", workload.field)
+		}
+		if workload.name == "ate-api-server" {
+			if workload.pool != nil && *workload.pool < 1 {
 				return errors.New("substrate.sizing.apiServer.postgresPoolMaxConns must be at least 1")
 			}
-			if api.Replicas != nil && api.PostgresPoolMaxConns == nil {
+			if workload.replicas != nil && workload.pool == nil {
 				return errors.New("substrate.sizing.apiServer.replicas requires an explicit postgresPoolMaxConns")
 			}
-			if api.PostgresPoolMaxConns != nil {
+			if workload.pool != nil {
 				replicas := defaultAPIServerReplicas
-				if api.Replicas != nil {
-					replicas = *api.Replicas
+				if workload.replicas != nil {
+					replicas = *workload.replicas
 				}
-				if err := validateConnectionBudget(replicas, *api.PostgresPoolMaxConns, bundledPostgresConnections); err != nil {
+				if err := validateConnectionBudget(replicas, *workload.pool, bundledPostgresConnections); err != nil {
 					return err
 				}
-			}
-			if err := validateResources("substrate.sizing.apiServer.resources", api.Resources); err != nil {
-				return err
 			}
 		}
-		if router := s.Sizing.Router; router != nil {
-			if router.Replicas != nil && *router.Replicas < 1 {
-				return errors.New("substrate.sizing.router.replicas must be at least 1")
-			}
-			if router.Resources != nil {
-				if err := validateResources("substrate.sizing.router.resources.atenetRouter", router.Resources.AtenetRouter); err != nil {
-					return err
-				}
-				if err := validateResources("substrate.sizing.router.resources.envoy", router.Resources.Envoy); err != nil {
-					return err
-				}
+		for _, container := range workload.containers {
+			if err := validateResources("substrate.sizing."+container.field, container.resources); err != nil {
+				return err
 			}
 		}
 	}
