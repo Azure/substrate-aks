@@ -104,6 +104,7 @@ choices are saved as a named installation in your user state directory, so
 | `bin/substrate-aks setup NAME` | Resume or reconcile a saved installation |
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
+| `bin/substrate-aks init flex --database flexible-server --database-location westus3` | Save a new installation that uses Azure Database for PostgreSQL Flexible Server |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md)
@@ -130,7 +131,7 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 | Operator access | Microsoft Entra sign-in and cluster-scoped Azure RBAC; local accounts disabled |
 | Runtime | Kata / Cloud Hypervisor microVMs; KVM is tested on the microVM node before Substrate is installed |
 | Substrate | [`v1.0.0`](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0): API server, controller, networking, and atelet |
-| Database | Bundled PostgreSQL with a 32 GiB Azure Disk; no HA or backups |
+| Database | Bundled PostgreSQL with a 32 GiB Azure Disk by default (no HA or backups); optional Azure Database for PostgreSQL Flexible Server |
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built with ko and pushed there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |
@@ -153,6 +154,10 @@ Setup checks quota and VM availability before billing, but Azure capacity is
 not reserved. See
 [validation and limitations](docs/operations.md#validation-and-limitations)
 for what has been tested.
+
+Managed PostgreSQL uses passwords retained in Key Vault because the pinned client
+cannot renew Entra database tokens. See [database configuration](docs/configuration.md#postgresql-backend)
+for costs, availability, credential retention, and destructive teardown.
 
 ## Try the demo
 
@@ -270,8 +275,8 @@ cluster, and the CLI is the only supported way to install. Planned work:
 - **Sizing:** configurable system node pool ([#23](https://github.com/Azure/substrate-aks/issues/23)) and control plane
   ([#24](https://github.com/Azure/substrate-aks/issues/24)), local NVMe snapshot disks ([#18](https://github.com/Azure/substrate-aks/issues/18)), and a guard against mixed CPU
   generations ([#12](https://github.com/Azure/substrate-aks/issues/12))
-- **Managed services:** Azure Database for PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)) and managed
-  Prometheus and Grafana monitoring ([#14](https://github.com/Azure/substrate-aks/pull/14))
+- **Managed services:** managed Prometheus and Grafana monitoring
+  ([#14](https://github.com/Azure/substrate-aks/pull/14))
 - **Continuous testing:** pull request checks and a scheduled live install on
   AKS ([#27](https://github.com/Azure/substrate-aks/issues/27))
 - **Benchmarks:** upstream's suite and Azure-recommended tests, run on AKS

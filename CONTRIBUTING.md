@@ -22,20 +22,23 @@ make bicep
 | --- | --- |
 | `make verify` | Formatting, vet, and module consistency |
 | `make test-unit` | Race-enabled unit tests |
-| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins |
+| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins, and the compiled managed PostgreSQL templates and bootstrap |
 | `make test` | Unit tests and contracts |
 | `make bicep` | Compile the infrastructure template |
 
 Contract tests need Git, Go, `kubectl`, and network access to the Substrate and
 plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
-GitHub. Missing prerequisites fail the tests rather than skipping them.
-No check above provisions Azure resources.
+GitHub. The managed PostgreSQL contracts also need the Azure CLI with Bicep, which
+compiles the templates and evaluates queries locally without signing in, and a
+running Docker daemon, which runs the pinned bootstrap SQL twice against a
+disposable PostgreSQL container. Missing prerequisites fail the tests rather
+than skipping them. No check above provisions Azure resources.
 
 To use existing pristine checkouts of the pins:
 
 ```sh
 go test -race -tags=integration ./internal/installer \
-  -run 'TestPinned.*Contract' -count=1 -args \
+  -run 'TestPinned' -count=1 -args \
   -contract-root /absolute/path/to/pinned/substrate \
   -plugin-contract-root /absolute/path/to/pinned/objectstore-azure-blob
 ```
@@ -45,6 +48,30 @@ manifests, run the pinned `ate-setup` with every flag the installer passes,
 verify the published release inventory, and assemble the pinned runtime assets.
 The image-check tests use local registries, and publisher tests use controlled
 engine commands. They do not prove live ACR access or real image builds.
+
+### Managed PostgreSQL Azure checks
+
+These are opt-in and need an Azure subscription. The capability checks are
+read-only; they confirm the default Flexible Server profile in `westus3` and list
+the regions that offer it:
+
+```sh
+go test -tags=integration ./internal/installer \
+  -run '^TestAzureDatabaseRegion(Capabilities|Discovery)$' \
+  -database-region-subscription SUBSCRIPTION_UUID
+```
+
+The vault contract creates billable resources: a disposable resource group and
+Key Vault, but no database or cluster. It checks credential writes and reads,
+ARM secure references, and that no password reaches local files or logs, then
+deletes the group. The vault stays soft-deleted for seven days.
+
+```sh
+go test -tags=integration ./internal/installer \
+  -run '^TestAzureDatabaseVaultContract$' -timeout=25m \
+  -vault-contract-subscription SUBSCRIPTION_UUID \
+  -vault-contract-operator SIGNED_IN_ENTRA_OBJECT_UUID
+```
 
 ### Extending guided setup
 

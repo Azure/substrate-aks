@@ -105,6 +105,82 @@ func TestInitDoesNotOverwriteAndCreatesValidConfig(t *testing.T) {
 	}
 }
 
+func TestInitSavesDatabaseInInitialRecord(t *testing.T) {
+	path := testRecord(t, "flexible")
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", `
+case "$*" in
+  *"flexible-server list-skus --location southcentralus"*) printf '%s' '[{"supportedServerVersions":[{"name":"17"}],"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D2ads_v5"}]}]}]';;
+  "rest --method"*) printf '%s' '`+testRegionsJSON+`';;
+  *) printf 'unexpected Azure operation: %s\n' "$*" >&2; exit 19;;
+esac
+`)
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"init", recordName(path), "--subscription", defaultSubscription,
+		"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+		"--api-cidr", "203.0.113.8/32", "--database", "flexible-server", "--database-location", "southcentralus"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	c, err := installer.LoadInstallation(recordHome(path), recordName(path))
+	if err != nil || c.Database != (installer.DatabaseConfig{Backend: installer.DatabaseFlexible, Location: "southcentralus",
+		SKU: installer.DefaultDatabaseSKU}) {
+		t.Fatalf("database selection was not saved with the new installation: %+v, %v", c.Database, err)
+	}
+	// The SKU is written explicitly, so a later default change can't resize this installation.
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte(`"name": "Standard_D2ads_v5"`)) || !bytes.Contains(data, []byte(`"tier": "GeneralPurpose"`)) {
+		t.Fatalf("new installation record does not pin its database SKU: %v\n%s", err, data)
+	}
+}
+
+func TestNewManagedConfigRejectsUnsupportedRegion(t *testing.T) {
+	bin := t.TempDir()
+	for _, tool := range []string{"git", "go", "kubelogin"} {
+		fakeTool(t, bin, tool, `test "$1" = version || test "$1" = --version || exit 19`)
+	}
+	fakeTool(t, bin, "kubectl", `printf '%s' '{"clientVersion":{"major":"1","minor":"37"}}'`)
+	// New setups probe the image builder before Azure discovery.
+	fakeTool(t, bin, "docker", `
+case "$*" in
+  "buildx inspect --bootstrap") echo "Status: running";;
+  "info --format {{json .ServerVersion}}"|"buildx version") exit 0;;
+  *) exit 19;;
+esac
+`)
+	fakeTool(t, bin, "podman", `exit 19`)
+	fakeTool(t, bin, "az", `
+case "$*" in
+  version|"bicep version") exit 0;;
+  *flexible-server*) printf '%s' '[{"reason":"Subscriptions are restricted from provisioning in this region."}]';;
+  "rest --method"*) printf '%s' '`+testRegionsJSON+`';;
+  *) printf 'unexpected Azure operation\n' >&2; exit 19;;
+esac
+`)
+	t.Setenv("PATH", bin)
+	for _, command := range []string{"init", "setup"} {
+		for _, backend := range []string{"flexible-server"} {
+			t.Run(command+"/"+backend, func(t *testing.T) {
+				path := testRecord(t, "substrate-test")
+				args := []string{command, recordName(path), "--subscription", defaultSubscription,
+					"--identity-object-id", defaultPublisher, "--operator-object-id", defaultPublisher,
+					"--api-cidr", "203.0.113.8/32", "--database", backend}
+				if command == "setup" {
+					args = append(args, "--yes")
+				}
+				var output bytes.Buffer
+				err := run(t.Context(), args, &output, &output)
+				if err == nil || !strings.Contains(err.Error(), "no alternate region") {
+					t.Fatalf("unsupported region was accepted: %v", err)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("unsupported region created an installation record")
+				}
+			})
+		}
+	}
+}
+
 func TestInitUsesAzureContextDefaults(t *testing.T) {
 	path := testRecord(t, "substrate-test")
 	bin := t.TempDir()
@@ -329,7 +405,7 @@ func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
 	}
 	var out bytes.Buffer
 	if err := initialize(home, c.Azure.SubscriptionID, c.Azure.AssetPublisherObjectID, "", "203.0.113.8/32",
-		"substrate-other", "eastus2", false, nil, "", "", &out); err != nil {
+		"substrate-other", "eastus2", false, nil, "", "", installer.DatabaseConfig{}, &out); err != nil {
 		t.Fatal(err)
 	}
 	err = run(t.Context(), []string{"status"}, &out, &out)
@@ -345,6 +421,40 @@ func TestCommandsResolveTheOnlyInstallationOrRequireAChoice(t *testing.T) {
 		!strings.HasPrefix(lines[1], "substrate-other") || !strings.HasPrefix(lines[2], "substrate-test") ||
 		!strings.Contains(lines[2], c.Azure.ResourceGroup) || !strings.Contains(lines[2], c.Azure.Location) {
 		t.Fatalf("list did not show each installation's resource group and region:\n%s", &out)
+	}
+}
+
+func TestDestroyKeepsLocalStateWhenManagedDatabaseBlocksDeletion(t *testing.T) {
+	path := testCLIConfig(t)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Database = installer.DatabaseConfig{Backend: installer.DatabaseFlexible, Location: "westus3"}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", fmt.Sprintf(`case "$1 $2" in
+"account show") printf '{"id":"%s"}' ;;
+"group exists") printf true ;;
+"group show") printf '{"location":"%s","tags":{"substrate-aks-installation":"%s"}}' ;;
+"group delete") echo "ResourceGroupDeletionBlocked: PostgreSQL server deletion is in progress" >&2; exit 1 ;;
+*) exit 7 ;;
+esac
+`, c.Azure.SubscriptionID, c.Azure.Location, c.Installation.ID))
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	err = run(t.Context(), []string{"destroy", c.Installation.Name, "--confirm-delete", c.Azure.ResourceGroup}, &out, &out)
+	if err == nil {
+		t.Fatal("blocked group deletion was reported as success")
+	}
+	if saved, err := os.ReadFile(path); err != nil || !bytes.Equal(saved, data) {
+		t.Fatalf("failed teardown removed or changed the local installation needed for retry: %v", err)
 	}
 }
 

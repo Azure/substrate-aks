@@ -2,6 +2,8 @@ package installer
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,15 +20,16 @@ const ownershipTag = "substrate-aks-installation"
 var errGroupAbsent = errors.New("installation resource group does not exist")
 
 type Infrastructure struct {
-	ClusterName        string `json:"clusterName"`
-	ResourceGroup      string `json:"resourceGroup"`
-	StorageAccount     string `json:"storageAccount"`
-	AccountURL         string `json:"accountUrl"`
-	SnapshotsContainer string `json:"snapshotsContainer"`
-	AssetsContainer    string `json:"assetsContainer"`
-	NodeClientID       string `json:"nodeClientId"`
-	ControlClientID    string `json:"controlClientId"`
-	TenantID           string `json:"tenantId"`
+	ClusterName        string                  `json:"clusterName"`
+	ResourceGroup      string                  `json:"resourceGroup"`
+	StorageAccount     string                  `json:"storageAccount"`
+	AccountURL         string                  `json:"accountUrl"`
+	SnapshotsContainer string                  `json:"snapshotsContainer"`
+	AssetsContainer    string                  `json:"assetsContainer"`
+	NodeClientID       string                  `json:"nodeClientId"`
+	ControlClientID    string                  `json:"controlClientId"`
+	TenantID           string                  `json:"tenantId"`
+	Database           *DatabaseInfrastructure `json:"database,omitempty"`
 }
 
 type App struct {
@@ -113,6 +116,26 @@ func (a App) inspectOwnedGroup(ctx context.Context, required bool) (bool, error)
 	if group.Location != a.Config.Azure.Location {
 		return false, fmt.Errorf("resource group %q is in %s, but azure.location is %s; restore its existing location for retries or teardown. A different target requires a new installation configuration", a.Config.Azure.ResourceGroup, group.Location, a.Config.Azure.Location)
 	}
+	if !required {
+		recorded := group.Tags["substrate-aks-database"]
+		if recorded == "" {
+			recorded = string(DatabaseBundled)
+		}
+		requested := a.Config.Database.Backend
+		if requested == "" {
+			requested = DatabaseBundled
+		}
+		// Groups from builds before the SKU tag could only use the default SKU.
+		recordedSKU, tagged := group.Tags["substrate-aks-database-sku"]
+		if !tagged {
+			recordedSKU = DefaultDatabaseSKU.Name
+		}
+		if recorded != string(requested) || (a.Config.ManagedDatabase() &&
+			(group.Tags["substrate-aks-database-location"] != a.Config.DatabaseLocation() ||
+				recordedSKU != a.Config.Database.ComputeSKU().Name)) {
+			return false, errors.New("database backend, region or SKU differs from the provisioned installation; switching, resizing and adoption are not supported, use the original config or a fresh installation")
+		}
+	}
 	return true, nil
 }
 
@@ -180,6 +203,12 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := a.guardTarget(ctx); err != nil {
 		return err
 	}
+	if a.Config.ManagedDatabase() && !registryOnly {
+		a.progress("Checking managed PostgreSQL region and compute availability")
+		if err := a.CheckDatabaseRegion(ctx); err != nil {
+			return err
+		}
+	}
 	exists, err := a.inspectOwnedGroup(ctx, false)
 	if err != nil {
 		return err
@@ -201,7 +230,7 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, name := range []string{"main.bicep", "resources.bicep", "registry.bicep"} {
+	for _, name := range []string{"main.bicep", "resources.bicep", "registry.bicep", "flexible-server.bicep", "database-vault.bicep", "vault.bicep"} {
 		data, err := infra.Files.ReadFile(name)
 		if err != nil {
 			return err
@@ -225,12 +254,35 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"snapshotReaderObjectId":      c.Azure.SnapshotReaderObjectID,
 		"snapshotReaderPrincipalType": c.readerPrincipalType(),
 		"registryOnly":                registryOnly,
+		"databaseBackend":             databaseBackend(c),
+		"databaseLocation":            c.DatabaseLocation(),
+		"databaseSkuName":             c.Database.ComputeSKU().Name,
+		"databaseSkuTier":             c.Database.ComputeSKU().Tier,
 	} {
 		params[key] = map[string]any{"value": value}
 	}
 	if operator := c.AKS.Operator; operator != nil {
 		params["operatorObjectId"] = map[string]any{"value": operator.ObjectID}
 		params["operatorPrincipalType"] = map[string]any{"value": operator.PrincipalType}
+	}
+	if c.ManagedDatabase() && !registryOnly {
+		params["databaseVaultName"] = map[string]any{"value": c.databaseVaultName()}
+		if whatIf {
+			// A public placeholder permits diagnostics without reading real credentials.
+			params["databaseCredentials"] = map[string]any{"value": `{"admin":"PreviewOnly-NotARealPassword1!"}`}
+		} else {
+			if err := a.provisionDatabaseVault(ctx, dir); err != nil {
+				return err
+			}
+			a.progress("Loading or initializing database credentials in Key Vault")
+			if _, err := a.databaseCredentials(ctx, true); err != nil {
+				return err
+			}
+			params["databaseCredentials"] = map[string]any{"reference": map[string]any{
+				"keyVault":   map[string]string{"id": c.databaseVaultID()},
+				"secretName": databaseSecretName,
+			}}
+		}
 	}
 	data, err := json.Marshal(map[string]any{
 		"$schema":        "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
@@ -240,7 +292,11 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		return err
 	}
 	path := filepath.Join(dir, "parameters.json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	parameters := "@" + path
+	var input []byte
+	if c.ManagedDatabase() && !registryOnly && whatIf {
+		parameters, input = "@/dev/stdin", data
+	} else if err := os.WriteFile(path, data, 0600); err != nil {
 		return err
 	}
 	action := "create"
@@ -250,9 +306,16 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	deployment := c.deploymentName()
 	if registryOnly {
 		deployment += "-registry"
+	} else if !whatIf {
+		// Keep the last successful outputs when a later attempt fails.
+		var suffix [6]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return fmt.Errorf("naming infrastructure deployment: %w", err)
+		}
+		deployment += "-run-" + hex.EncodeToString(suffix[:])
 	}
 	args := []string{"deployment", "sub", action, "--name", deployment,
-		"--location", c.Azure.Location, "--template-file", filepath.Join(dir, "main.bicep"), "--parameters", "@" + path}
+		"--location", c.Azure.Location, "--template-file", filepath.Join(dir, "main.bicep"), "--parameters", parameters}
 	if whatIf {
 		a.progress("Asking Azure to preview resource changes; no resources will be deployed")
 		args = append(args, "--no-pretty-print")
@@ -260,8 +323,20 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		a.progress("Creating or reconciling the container registry and publisher permissions")
 	} else {
 		a.progress("Creating or reconciling AKS, registry, storage and identities; this can take several minutes")
+		if c.ManagedDatabase() {
+			a.progress("Provisioning %s PostgreSQL in %s and restricted AKS egress; this can take several minutes", c.Database.Backend, c.DatabaseLocation())
+		}
 	}
-	data, err = a.az(ctx, args...)
+	if c.ManagedDatabase() && !registryOnly {
+		data, err = a.Runner.Run(ctx, Command{
+			Args:            append([]string{"az"}, append(args, "--subscription", c.Azure.SubscriptionID, "--only-show-errors", "--output", "json")...),
+			Input:           input,
+			Env:             databaseCommandEnvironment,
+			SensitiveOutput: !whatIf,
+		})
+	} else {
+		data, err = a.az(ctx, args...)
+	}
 	if err != nil {
 		return err
 	}
@@ -298,14 +373,19 @@ func (a App) infrastructure(ctx context.Context) (Infrastructure, error) {
 	if err := a.ownedGroup(ctx, true); err != nil {
 		return Infrastructure{}, err
 	}
-	a.progress("Loading this installation's Azure resource details")
-	data, err := a.az(ctx, "deployment", "sub", "show", "--name", a.Config.deploymentName(), "--query", "properties.outputs.infrastructure.value")
+	a.progress("Loading resource details from this installation's last successful Azure deployment")
+	query := "sort_by(" + a.Config.infrastructureDeploymentFilter() +
+		" | [?properties.provisioningState=='Succeeded'], &properties.timestamp)[-1].properties.outputs.infrastructure.value"
+	data, err := a.az(ctx, "deployment", "sub", "list", "--query", query)
 	if err != nil {
-		return Infrastructure{}, err
+		return Infrastructure{}, fmt.Errorf("loading successful infrastructure deployment outputs: %w", err)
+	}
+	if strings.TrimSpace(string(data)) == "" || strings.TrimSpace(string(data)) == "null" {
+		return Infrastructure{}, fmt.Errorf("no successful infrastructure deployment outputs are available for installation %s; inspect its Azure deployment failures and retry provision with the original configuration; missing outputs do not establish that resources were deleted", a.Config.Installation.ID)
 	}
 	var i Infrastructure
 	if err := json.Unmarshal(data, &i); err != nil {
-		return i, err
+		return i, fmt.Errorf("reading successful infrastructure deployment outputs: %w", err)
 	}
 	if i.ClusterName != a.Config.AKS.ClusterName || i.ResourceGroup != a.Config.Azure.ResourceGroup ||
 		!regexpStorageAccount(i.StorageAccount) || !uuidPattern.MatchString(i.TenantID) ||
@@ -315,6 +395,9 @@ func (a App) infrastructure(ctx context.Context) (Infrastructure, error) {
 		return i, errors.New("deployment outputs are missing or inconsistent with this installation")
 	}
 	i.AccountURL = strings.TrimSuffix(i.AccountURL, "/")
+	if err := validateDatabaseInfrastructure(a.Config, i.Database); err != nil {
+		return i, err
+	}
 	return i, nil
 }
 

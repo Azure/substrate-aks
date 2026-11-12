@@ -39,6 +39,57 @@ type Config struct {
 	Azure        AzureConfig        `json:"azure"`
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
+	Database     DatabaseConfig     `json:"database"`
+}
+
+type DatabaseBackend string
+
+const (
+	DatabaseBundled  DatabaseBackend = "bundled"
+	DatabaseFlexible DatabaseBackend = "flexible-server"
+)
+
+type DatabaseConfig struct {
+	Backend  DatabaseBackend `json:"backend"`
+	Location string          `json:"location,omitempty"`
+	// SKU is the Flexible Server compute SKU; it can't change after creation.
+	SKU DatabaseSKU `json:"sku,omitzero"`
+}
+
+// DatabaseSKU names a Flexible Server compute SKU and its tier, as ARM does.
+type DatabaseSKU struct {
+	Name string `json:"name"`
+	Tier string `json:"tier"`
+}
+
+// DefaultDatabaseSKU is used when a managed database record does not choose a SKU.
+var DefaultDatabaseSKU = DatabaseSKU{Name: "Standard_D2ads_v5", Tier: "GeneralPurpose"}
+
+// ComputeSKU returns the configured SKU, or the default when none is set.
+func (d DatabaseConfig) ComputeSKU() DatabaseSKU {
+	if d.SKU == (DatabaseSKU{}) {
+		return DefaultDatabaseSKU
+	}
+	return d.SKU
+}
+
+// WithDefaults fills the SKU of a managed database that doesn't choose one.
+func (d DatabaseConfig) WithDefaults() DatabaseConfig {
+	if d.Backend != "" && d.Backend != DatabaseBundled {
+		d.SKU = d.ComputeSKU()
+	}
+	return d
+}
+
+func (c Config) ManagedDatabase() bool {
+	return c.Database.Backend != "" && c.Database.Backend != DatabaseBundled
+}
+
+func (c Config) DatabaseLocation() string {
+	if c.Database.Location != "" {
+		return c.Database.Location
+	}
+	return c.Azure.Location
 }
 
 type InstallationConfig struct {
@@ -203,6 +254,7 @@ type RuntimeConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
+		Database:     DatabaseConfig{Backend: DatabaseBundled},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
 			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,
@@ -257,6 +309,7 @@ func readConfig(path string) (Config, error) {
 	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("%s must contain exactly one JSON object", path)
 	}
+	c.Database = c.Database.WithDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -272,6 +325,34 @@ func ValidateInstallationName(name string) error {
 }
 
 func (c Config) Validate() error {
+	switch c.Database.Backend {
+	case "", DatabaseBundled:
+		if c.Database.Location != "" {
+			return errors.New("database.location is only valid for managed PostgreSQL")
+		}
+		if c.Database.SKU != (DatabaseSKU{}) {
+			return errors.New("database.sku is only valid for managed PostgreSQL")
+		}
+	case DatabaseFlexible:
+		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
+			return errors.New("database.location must be an Azure region name")
+		}
+		sku := c.Database.ComputeSKU()
+		if !regexp.MustCompile(`^Standard_[A-Z][A-Za-z0-9]*(_v[0-9]+)?$`).MatchString(sku.Name) {
+			return fmt.Errorf("database.sku.name %q must be a Flexible Server compute SKU such as %s", sku.Name, DefaultDatabaseSKU.Name)
+		}
+		switch sku.Tier {
+		case "Burstable", "GeneralPurpose", "MemoryOptimized":
+		default:
+			return fmt.Errorf("database.sku.tier %q must be Burstable, GeneralPurpose or MemoryOptimized", sku.Tier)
+		}
+		// The database credential vault grants access to the AKS operator.
+		if c.AKS.Operator == nil {
+			return errors.New("managed PostgreSQL requires aks.operator, which receives access to the database credential vault")
+		}
+	default:
+		return errors.New("database.backend must be bundled or flexible-server")
+	}
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
@@ -419,3 +500,7 @@ func (c Config) ValidateInstall() error {
 
 func (c Config) workspace() string      { return c.Installation.Dir }
 func (c Config) deploymentName() string { return "substrate-" + c.Installation.ID }
+
+func (c Config) infrastructureDeploymentFilter() string {
+	return fmt.Sprintf("[?name=='%s' || starts_with(name, '%s-run-')]", c.deploymentName(), c.deploymentName())
+}

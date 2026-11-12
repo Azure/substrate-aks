@@ -13,8 +13,11 @@ test: test-unit test-contract
 test-unit:
 	go test -race ./...
 
+CONTRACT_TESTS := TestPinned(Upstream|UpstreamFlags|TransferPlaceholder|ReleaseInventory|MicroVMAssets|ManagedPostgres|ImagePublisher|ImageCheck|PodmanPublisher)Contract
+CONTRACT_TESTS := $(CONTRACT_TESTS)|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract|DatabaseSKU)|TestInfrastructureDeploymentHistorySelection
+
 test-contract:
-	go test -race -tags=integration ./internal/installer -run '^TestPinned(Upstream|UpstreamFlags|TransferPlaceholder|ReleaseInventory|MicroVMAssets|ImagePublisher|ImageCheck|PodmanPublisher)Contract$$' -count=1
+	go test -race -tags=integration ./internal/installer -run '^($(CONTRACT_TESTS))$$' -count=1
 
 verify:
 	test -z "$$(gofmt -l cmd internal infra deploy)"
