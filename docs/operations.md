@@ -518,7 +518,11 @@ to restore a memory snapshot onto a CPU with a different TSC rate
 resets. Older series such as Dsv3 span several CPU generations, so new
 installations default to `Standard_D4s_v6`, which runs on one. Keep that series,
 or another x86 D/E/F `_v6` or `_v7` size, when you run more than one microVM
-node; see [#12](https://github.com/Azure/substrate-aks/issues/12). AKS cannot
+node. Preflight refuses other sizes for multi-node pools; set
+`aks.workerPool.allowMixedCpuGenerations` to `true` to accept the risk and
+receive a warning instead. Even one node can be affected if node replacement or
+an upgrade brings a different CPU generation; see
+[#12](https://github.com/Azure/substrate-aks/issues/12). AKS cannot
 change an existing pool's VM size, so destroy and recreate installations created
 with the earlier Dsv3 default.
 

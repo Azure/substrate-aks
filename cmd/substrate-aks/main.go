@@ -397,7 +397,14 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		}
 		p.info("Diagnostic log: %s", log.Name())
 	}
-	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, Preview: func(changes []installer.ResourceChange) error {
+	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: func(format string, args ...any) {
+		message := fmt.Sprintf(format, args...)
+		if strings.HasPrefix(message, "WARNING: ") {
+			p.warn(strings.TrimPrefix(message, "WARNING: "))
+		} else {
+			p.step("%s", message)
+		}
+	}, Preview: func(changes []installer.ResourceChange) error {
 		p.pause()
 		if session != nil {
 			return session.preview(c.Azure.SubscriptionID, changes)

@@ -136,6 +136,7 @@ before running `plan` and `provision`:
 | --- | --- | --- |
 | `aks.workerPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size that supports nested virtualization; use an x86 D, E, or F series `_v6` or `_v7` size (see [quota and CPU compatibility](#quota-and-cpu-compatibility)) |
 | `aks.workerPool.count` | `1` | 1-100 nodes |
+| `aks.workerPool.allowMixedCpuGenerations` | `false` | Set to `true` to accept the snapshot restore risk of a multi-node pool on a non-stable-baseline size; preflight warns instead of refusing |
 | `aks.workerPool.osDiskType` | `Managed` | `Managed`, or `Ephemeral` to place the OS disk on the VM's local storage |
 | `aks.workerPool.osDiskSizeGB` | `128` | 30-2048 GB; an `Ephemeral` disk must fit the VM's local storage, up to 2,040 GB |
 | `aks.workerPool.maxPods` | AKS default | 10-250 pods per node, and at least 30 across the pool (`maxPods` × `count`); omit to keep the AKS default |
@@ -191,8 +192,11 @@ The system pool keeps the AKS default.
 
 Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools; request more quota before provisioning
-a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
-so memory snapshots can restore on any node; see
+a large pool. For more than one worker, preflight refuses sizes outside the x86
+D, E or F `_v6`/`_v7` stable baseline unless
+`aks.workerPool.allowMixedCpuGenerations` is `true`. The opt-in warns rather
+than preventing TSC-related snapshot restore failures. One node can also be
+affected if replacement brings a different CPU generation; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
 ## Azure identity and permissions

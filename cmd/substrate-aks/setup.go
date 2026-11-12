@@ -341,7 +341,14 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if cloudRunner == nil {
 		cloudRunner = runner
 	}
-	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) {
+		message := fmt.Sprintf(format, args...)
+		if strings.HasPrefix(message, "WARNING: ") {
+			ui.warning(strings.TrimPrefix(message, "WARNING: "))
+		} else {
+			ui.step(message)
+		}
+	}}
 	if err := ui.check("Azure deployment readiness", func() error { return cloud.CloudPreflight(ctx) }); err != nil {
 		return fmt.Errorf("Azure prerequisites failed before provisioning: %w", err)
 	}
