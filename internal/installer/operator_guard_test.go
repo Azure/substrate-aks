@@ -53,6 +53,27 @@ func TestProvisionRejectsFixedSystemPoolChanges(t *testing.T) {
 	}
 }
 
+func TestProvisionAllowsSystemPoolCountDecrease(t *testing.T) {
+	for _, whatIf := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preview=%t", whatIf), func(t *testing.T) {
+			original := testConfig(t)
+			original.AKS.SystemPool.Count = 3
+			c := original
+			c.AKS.SystemPool.Count = 1
+			action := "create"
+			if whatIf {
+				action = "what-if"
+			}
+			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
+				ownerReply(c), clusterReply(original), operatorRecordReply(original),
+				reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
+			if err := (App{Config: c, Runner: r}).Provision(t.Context(), whatIf); err != nil {
+				t.Fatalf("count decrease rejected: %v", err)
+			}
+		})
+	}
+}
+
 func operatorRecordReply(c Config) reply {
 	id, kind := "", "User"
 	if c.AKS.Operator != nil {

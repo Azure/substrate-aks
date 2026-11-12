@@ -396,6 +396,36 @@ func TestConfigSystemPoolBicepMapping(t *testing.T) {
 	}
 }
 
+// The expected bytes were captured from a fake plan at main commit b5f2b97
+// using the same parameter-affecting values as the main-era record fixture.
+func TestConfigOmittedSystemPoolMatchesMainParameters(t *testing.T) {
+	record, err := os.ReadFile("testdata/installation-main-era.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "installation.json")
+	if err := os.WriteFile(path, record, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(c.workspace(), "infra", "parameters.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mainParameters = `{"$schema":"https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#","contentVersion":"1.0.0.0","parameters":{"apiAuthorizedCidrs":{"value":["203.0.113.8/32"]},"assetPublisherObjectId":{"value":"33333333-3333-4333-8333-333333333333"},"assetPublisherPrincipalType":{"value":""},"clusterName":{"value":"substrate-test"},"installationId":{"value":"11111111-1111-4111-8111-111111111111"},"kubernetesVersion":{"value":"1.37"},"location":{"value":"eastus2"},"registryOnly":{"value":false},"resourceGroupName":{"value":"substrate-test"},"snapshotReaderObjectId":{"value":""},"snapshotReaderPrincipalType":{"value":""},"workerCount":{"value":1},"workerMaxPods":{"value":0},"workerOsDiskSizeGB":{"value":128},"workerOsDiskType":{"value":"Managed"},"workerVmSize":{"value":"Standard_D4s_v6"}}}`
+	if string(got) != mainParameters {
+		t.Fatalf("omitted system pool changed main's parameters:\ngot  %s\nwant %s", got, mainParameters)
+	}
+}
+
 func TestProvisionSystemPoolParameters(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
