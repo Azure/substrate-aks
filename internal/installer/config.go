@@ -29,11 +29,12 @@ const (
 
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
-	SystemVMSize        = "Standard_D4s_v6"
-	DefaultSystemVMSize = SystemVMSize
-	// The overlay pod CIDR (10.244.0.0/16) gives each node a /24, so the cluster holds at most 256 nodes.
+	DefaultSystemVMSize = "Standard_D4s_v6"
+	// The overlay gives each node a /24 from a /16; AKS defaults to one surge node per pool:
+	// https://github.com/MicrosoftDocs/azure-aks-docs/blob/06cb62048bec26a37e731947fcb45f3e4f50741c/articles/aks/upgrade-aks-node-pools-rolling.md
 	MaxWorkerCount  = 100
 	MaxOverlayNodes = 256
+	MaxSystemCount  = MaxOverlayNodes - 2 - MaxWorkerCount
 )
 
 type Config struct {
@@ -304,13 +305,8 @@ func (c Config) Validate() error {
 	if c.AKS.WorkerPool.Count < 1 || c.AKS.WorkerPool.Count > MaxWorkerCount {
 		return fmt.Errorf("aks.workerPool.count must be 1-%d", MaxWorkerCount)
 	}
-	if c.AKS.SystemPool.Count < 1 {
-		return errors.New("aks.systemPool.count must be at least 1")
-	}
-	// AKS defaults to one surge node per pool:
-	// https://github.com/MicrosoftDocs/azure-aks-docs/blob/06cb62048bec26a37e731947fcb45f3e4f50741c/articles/aks/upgrade-aks-node-pools-rolling.md
-	if c.AKS.SystemPool.Count > MaxOverlayNodes-2-c.AKS.WorkerPool.Count {
-		return fmt.Errorf("aks.systemPool.count and aks.workerPool.count must fit within %d overlay nodes, including two upgrade surge nodes", MaxOverlayNodes)
+	if c.AKS.SystemPool.Count < 1 || c.AKS.SystemPool.Count > MaxSystemCount {
+		return fmt.Errorf("aks.systemPool.count must be 1-%d", MaxSystemCount)
 	}
 	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.SystemPool.VMSize) {
 		return errors.New("aks.systemPool.vmSize must be an explicit Standard_* Azure SKU")

@@ -2,9 +2,8 @@ param location string
 param installationId string
 param clusterName string
 param kubernetesVersion string
-param systemVmSize string = 'Standard_D4s_v6'
-@minValue(1)
-param systemCount int = 1
+param systemVmSize string
+param systemCount int
 param workerVmSize string
 param workerCount int
 @allowed(['Managed', 'Ephemeral'])

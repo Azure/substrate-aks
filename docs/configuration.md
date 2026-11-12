@@ -138,12 +138,14 @@ API server and router replicas.
 
 | Field | Default | Limits |
 | --- | --- | --- |
-| `aks.systemPool.vmSize` | `Standard_D4s_v6` | An explicit `Standard_*` Azure VM size available in the region |
-| `aks.systemPool.count` | `1` | At least 1 node, subject to the overlay limit below |
+| `aks.systemPool.vmSize` | `Standard_D4s_v6` | An explicit Linux/amd64 (x86-64) `Standard_*` Azure VM size available in the region; regional availability alone does not establish compatibility |
+| `aks.systemPool.count` | `1` | 1-154 nodes |
 
 `plan` and `provision` refuse to change the system pool's VM size on an existing
 installation; destroy it and create a new one instead. The count can change in
 place. Direct Bicep deployments can set `systemVmSize` and `systemCount`.
+Reducing the count drains removed nodes and can briefly restart single-replica
+control-plane pods, interrupting service.
 
 ### MicroVM worker pool
 
@@ -162,10 +164,11 @@ AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
 `plan` and `provision` refuse to change them on an existing installation;
 destroy it and create a new one instead.
 
-The worker pool is limited to 100 nodes. The overlay pod address range
-(`10.244.0.0/16`, one `/24` per node) fits 256 nodes total. The installer limits
-system plus worker nodes to 254, leaving one upgrade surge node for each pool
-at AKS's default surge setting. If surge settings are changed outside the
+The installer and direct `main.bicep` deployments limit the system pool to
+154 nodes and the worker pool to 100. Their sum is therefore at most 254.
+The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
+256 nodes total, leaving one upgrade surge node for each pool at AKS's default
+surge setting. If surge settings are changed outside the
 installer, reserve enough additional addresses for them. AKS itself allows up
 to 1,000 nodes per pool.
 

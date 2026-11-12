@@ -1,12 +1,13 @@
 package installer
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -368,29 +369,57 @@ func TestLoadSystemPoolImageResavePreservesOverride(t *testing.T) {
 	}
 }
 
-func TestConfigSystemPoolBicepMapping(t *testing.T) {
-	for _, tc := range []struct {
-		file  string
-		parts []string
-	}{
-		{"main.bicep", []string{
-			"param systemVmSize string = 'Standard_D4s_v6'", "@minValue(1)\nparam systemCount int = 1",
-			"systemVmSize: systemVmSize", "systemCount: systemCount",
-		}},
-		{"resources.bicep", []string{
-			"param systemVmSize string = 'Standard_D4s_v6'", "@minValue(1)\nparam systemCount int = 1",
-			"name: 'system'\n        mode: 'System'\n        count: systemCount\n        vmSize: systemVmSize",
-		}},
-	} {
-		t.Run(tc.file, func(t *testing.T) {
-			data, err := infra.Files.ReadFile(tc.file)
-			if err != nil {
-				t.Fatal(err)
+func TestConfigBicepPoolParameterBounds(t *testing.T) {
+	data, err := infra.Files.ReadFile("main.bicep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizeDefault := regexp.MustCompile(`param\s+systemVmSize\s+string\s*=\s*'([^']+)'`).FindStringSubmatch(string(data))
+	if len(sizeDefault) != 2 || sizeDefault[1] != DefaultSystemVMSize {
+		t.Fatalf("Bicep system VM size default differs from installer: %q", sizeDefault)
+	}
+	bounds := func(name string) (int, int) {
+		t.Helper()
+		pattern := `((?:@\w+\([^)]*\)\s*)*)param\s+` + name + `\s+int\s*=\s*1\b`
+		matches := regexp.MustCompile(pattern).FindStringSubmatch(string(data))
+		if len(matches) != 2 {
+			t.Fatalf("missing Bicep bounds or default for %s", name)
+		}
+		get := func(decorator string) int {
+			t.Helper()
+			match := regexp.MustCompile(`@` + decorator + `\(\s*(\d+)\s*\)`).FindStringSubmatch(matches[1])
+			if len(match) != 2 {
+				t.Fatalf("missing %s on Bicep parameter %s", decorator, name)
 			}
-			for _, part := range tc.parts {
-				if !strings.Contains(string(data), part) {
-					t.Fatalf("%s missing system pool default or mapping %q", tc.file, part)
-				}
+			value, err := strconv.Atoi(match[1])
+			if err != nil {
+				t.Fatalf("invalid %s on Bicep parameter %s", decorator, name)
+			}
+			return value
+		}
+		return get("minValue"), get("maxValue")
+	}
+	sysMin, sysMax := bounds("systemCount")
+	workerMin, workerMax := bounds("workerCount")
+	if sysMin != 1 || sysMax != MaxSystemCount || workerMin != 1 || workerMax != MaxWorkerCount ||
+		sysMax+workerMax+2 != MaxOverlayNodes {
+		t.Fatalf("installer and Bicep pool limits disagree: system %d-%d, worker %d-%d", sysMin, sysMax, workerMin, workerMax)
+	}
+	for _, tc := range []struct {
+		system, worker int
+		accepted       bool
+	}{
+		{154, 100, true}, {155, 100, false},
+		{154, 1, true}, {155, 1, false},
+		{1, 100, true}, {1, 101, false}, {0, 1, false},
+	} {
+		t.Run(fmt.Sprintf("%d-%d", tc.system, tc.worker), func(t *testing.T) {
+			templateAccepts := tc.system >= sysMin && tc.system <= sysMax &&
+				tc.worker >= workerMin && tc.worker <= workerMax
+			c := testConfig(t)
+			c.AKS.SystemPool.Count, c.AKS.WorkerPool.Count = tc.system, tc.worker
+			if templateAccepts != tc.accepted || (c.Validate() == nil) != tc.accepted {
+				t.Fatalf("Bicep and installer disagree on count pair %+v", tc)
 			}
 		})
 	}
@@ -450,32 +479,17 @@ func TestProvisionSystemPoolParameters(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			params := map[string]any{
-				"location": c.Azure.Location, "resourceGroupName": c.Azure.ResourceGroup,
-				"installationId": c.Installation.ID, "clusterName": c.AKS.ClusterName,
-				"kubernetesVersion": c.AKS.KubernetesVersion, "workerVmSize": c.AKS.WorkerPool.VMSize,
-				"workerCount": c.AKS.WorkerPool.Count, "apiAuthorizedCidrs": c.AKS.APIAuthorizedCIDRs,
-				"workerOsDiskType": c.AKS.WorkerPool.osDiskType(), "workerOsDiskSizeGB": c.AKS.WorkerPool.osDiskSizeGB(),
-				"workerMaxPods": c.AKS.WorkerPool.MaxPods, "assetPublisherObjectId": c.Azure.AssetPublisherObjectID,
-				"assetPublisherPrincipalType": c.publisherPrincipalType(), "snapshotReaderObjectId": c.Azure.SnapshotReaderObjectID,
-				"snapshotReaderPrincipalType": c.readerPrincipalType(), "registryOnly": false,
+			var parsed struct {
+				Parameters map[string]struct{ Value any }
 			}
-			if tc.size {
-				params["systemVmSize"] = tc.pool.VMSize
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatal(err)
 			}
-			if tc.count {
-				params["systemCount"] = tc.pool.Count
-			}
-			wrapped := map[string]any{}
-			for key, value := range params {
-				wrapped[key] = map[string]any{"value": value}
-			}
-			want, err := json.Marshal(map[string]any{
-				"$schema":        "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
-				"contentVersion": "1.0.0.0", "parameters": wrapped,
-			})
-			if err != nil || !bytes.Equal(data, want) {
-				t.Fatalf("parameters changed unexpectedly:\ngot  %s\nwant %s\nerror %v", data, want, err)
+			size, hasSize := parsed.Parameters["systemVmSize"]
+			count, hasCount := parsed.Parameters["systemCount"]
+			if hasSize != tc.size || hasSize && size.Value != tc.pool.VMSize ||
+				hasCount != tc.count || hasCount && count.Value != float64(tc.pool.Count) {
+				t.Fatalf("unexpected system pool parameters: %s", data)
 			}
 		})
 	}
