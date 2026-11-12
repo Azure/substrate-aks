@@ -76,6 +76,10 @@ placeholders are not valid deployment values.
       "objectId": "YOUR_OPERATOR_ENTRA_OBJECT_UUID",
       "principalType": "User"
     },
+    "systemPool": {
+      "vmSize": "Standard_D4s_v6",
+      "count": 1
+    },
     "workerPool": {
       "vmSize": "Standard_D4s_v6",
       "count": 1,
@@ -126,11 +130,27 @@ the incomplete deletion before retrying.
 If the resource group is deleted outside the installer, reset references to
 deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
 
-## MicroVM worker pool
+## Node pools
 
-Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
-always one `Standard_D4s_v6` node; [#23](https://github.com/Azure/substrate-aks/issues/23) tracks making it configurable. Set the worker pool in `installation.json`
-before running `plan` and `provision`:
+Set the system pool in `installation.json` before running `plan` and `provision`.
+It must have enough capacity for the control plane's resource requests, including
+API server and router replicas.
+
+| Field | Default | Limits |
+| --- | --- | --- |
+| `aks.systemPool.vmSize` | `Standard_D4s_v6` | An explicit Linux/amd64 (x86-64) `Standard_*` Azure VM size available in the region; regional availability alone does not establish compatibility |
+| `aks.systemPool.count` | `1` | 1-154 nodes |
+
+`plan` and `provision` refuse to change the system pool's VM size on an existing
+installation; destroy it and create a new one instead. The count can change in
+place. Direct Bicep deployments can set `systemVmSize` and `systemCount`.
+Reducing the count drains removed nodes and can briefly restart single-replica
+control-plane pods, interrupting service.
+
+### MicroVM worker pool
+
+Sandboxes run on a dedicated, tainted `microvm` node pool. Set the worker pool in
+`installation.json` before running `plan` and `provision`:
 
 | Field | Default | Limits |
 | --- | --- | --- |
@@ -144,9 +164,13 @@ AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
 `plan` and `provision` refuse to change them on an existing installation;
 destroy it and create a new one instead.
 
-The 100-node limit keeps the cluster within its overlay pod address range
-(`10.244.0.0/16`, one `/24` per node, so 256 nodes in total) with room for
-upgrade surge nodes. AKS itself allows up to 1,000 nodes per pool.
+The installer and direct `main.bicep` deployments limit the system pool to
+154 nodes and the worker pool to 100. Their sum is therefore at most 254.
+The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
+256 nodes total, leaving one upgrade surge node for each pool at AKS's default
+surge setting. If surge settings are changed outside the
+installer, reserve enough additional addresses for them. AKS itself allows up
+to 1,000 nodes per pool.
 
 ### Snapshot disk performance
 

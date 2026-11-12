@@ -127,14 +127,19 @@ func TestCloudPreflightDoesNotCreditDifferentWorkerSKU(t *testing.T) {
 
 func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 	c := testConfig(t)
+	c.AKS.SystemPool.VMSize = "Standard_F4s_v6"
+	c.AKS.SystemPool.Count = 2
 	c.AKS.WorkerPool.VMSize = "Standard_D8s_v6"
+	c.AKS.WorkerPool.Count = 2
 	replies := cloudReplies(c)
+	system := skuReply(c.AKS.SystemPool.VMSize)
+	system.output = strings.ReplaceAll(system.output, "StandardDsv6Family", "StandardFsv6Family")
 	worker := skuReply(c.AKS.WorkerPool.VMSize)
 	worker.output = strings.Replace(worker.output, `"value":"4"`, `"value":"8"`, 1)
-	replies[5].output = strings.TrimSuffix(replies[5].output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
+	replies[5].output = strings.TrimSuffix(system.output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
 	replies[5].effect = func(command Command) {
 		args := strings.Join(command.Args, " ")
-		if !strings.Contains(args, "name=='Standard_D4s_v6'") || !strings.Contains(args, "name=='Standard_D8s_v6'") {
+		if !strings.Contains(args, "name=='Standard_F4s_v6'") || !strings.Contains(args, "name=='Standard_D8s_v6'") {
 			t.Fatalf("regional catalog query omitted one of the pool SKUs: %s", args)
 		}
 		index := slices.Index(command.Args, "--url")
@@ -148,10 +153,69 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 			t.Fatalf("SKU lookup lost server-side region filtering or pagination: %s", args)
 		}
 	}
+	for _, tc := range []struct {
+		name, catalog, quota, want string
+	}{
+		{"available", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, ""},
+		{"system unavailable", worker.output, "", "Standard_F4s_v6 is not available"},
+		{"system restricted", `{"value":[{"name":"Standard_F4s_v6","restrictions":[{"type":"Location","values":["eastus2"]}]}]}`, "", "Standard_F4s_v6 is restricted"},
+		{"system family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":7}]`, "8 additional required"},
+		{"worker family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":15},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, "16 additional required"},
+		{"regional insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":23},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, "24 additional required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := slices.Clone(replies)
+			if tc.catalog != "" {
+				steps[5].output = tc.catalog
+				steps = steps[:6]
+			} else {
+				steps[6].output = tc.quota
+			}
+			err := (App{Config: c, Runner: script(t, steps...)}).CloudPreflight(t.Context())
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("both pool SKU checks: %v (want %q)", err, tc.want)
+			}
+		})
+	}
+}
 
+func TestCloudPreflightSystemCountUsesAdditionalCapacity(t *testing.T) {
+	original := testConfig(t)
+	c := original
+	c.AKS.SystemPool.Count = 3
+	replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
+		clusterReply(original), operatorRecordReply(original),
+		{contains: "/subscriptions/" + c.Azure.SubscriptionID + "/providers/Microsoft.Authorization/permissions?", output: allCloudPermissions},
+		{contains: "/resourceGroups/" + c.Azure.ResourceGroup + "/providers/Microsoft.Authorization/permissions?", output: allCloudPermissions},
+		{contains: "aks get-versions", output: availableAKS}, skuReply(c.AKS.SystemPool.VMSize),
+		{contains: "vm list-usage", output: `[{"name":{"value":"cores"},"currentValue":8,"limit":15},{"name":{"value":"StandardDsv6Family"},"currentValue":8,"limit":15}]`}}
 	err := (App{Config: c, Runner: script(t, replies...)}).CloudPreflight(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "12 additional required") {
-		t.Fatalf("did not account for both pool SKUs from one lookup: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "8 additional required") {
+		t.Fatalf("system pool scaling did not count only additional nodes: %v", err)
+	}
+}
+
+func TestCloudPreflightRejectsSystemSizeChange(t *testing.T) {
+	original := testConfig(t)
+	c := original
+	c.AKS.SystemPool.VMSize = "Standard_F4s_v6"
+	replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
+		clusterReply(original), operatorRecordReply(original)}
+	err := (App{Config: c, Runner: script(t, replies...)}).CloudPreflight(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "destroy and recreate") {
+		t.Fatalf("preflight accepted a system pool size change: %v", err)
+	}
+}
+
+func TestCloudPreflightSumsPoolsInSameFamily(t *testing.T) {
+	c := testConfig(t)
+	c.AKS.SystemPool.Count = 2
+	c.AKS.WorkerPool.Count = 3
+	replies := cloudReplies(c)
+	replies[6].output = `[{"name":{"value":"cores"},"currentValue":0,"limit":20},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":19}]`
+	err := (App{Config: c, Runner: script(t, replies...)}).CloudPreflight(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "20 additional required") {
+		t.Fatalf("same-family quota did not sum both pools: %v", err)
 	}
 }
 

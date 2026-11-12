@@ -5,6 +5,11 @@ param resourceGroupName string
 param installationId string
 param clusterName string
 param kubernetesVersion string = '1.37'
+param systemVmSize string = 'Standard_D4s_v6'
+@description('Maximum reserves overlay addresses for 100 worker nodes and one default surge node per pool.')
+@minValue(1)
+@maxValue(154)
+param systemCount int = 1
 param workerVmSize string = 'Standard_D4s_v6'
 @minValue(1)
 @maxValue(100)
@@ -60,6 +65,8 @@ module resources 'resources.bicep' = if (!registryOnly) {
     installationId: installationId
     clusterName: clusterName
     kubernetesVersion: kubernetesVersion
+    systemVmSize: systemVmSize
+    systemCount: systemCount
     workerVmSize: workerVmSize
     workerCount: workerCount
     workerOsDiskType: workerOsDiskType

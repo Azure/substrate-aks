@@ -29,9 +29,12 @@ const (
 
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
-	SystemVMSize        = "Standard_D4s_v6"
-	// The overlay pod CIDR (10.244.0.0/16) gives each node a /24, so the cluster holds at most 256 nodes.
-	MaxWorkerCount = 100
+	DefaultSystemVMSize = "Standard_D4s_v6"
+	// The overlay gives each node a /24 from a /16; AKS defaults to one surge node per pool:
+	// https://github.com/MicrosoftDocs/azure-aks-docs/blob/06cb62048bec26a37e731947fcb45f3e4f50741c/articles/aks/upgrade-aks-node-pools-rolling.md
+	MaxWorkerCount  = 100
+	MaxOverlayNodes = 256
+	MaxSystemCount  = MaxOverlayNodes - 2 - MaxWorkerCount
 )
 
 type Config struct {
@@ -76,8 +79,14 @@ type AKSConfig struct {
 	KubernetesVersion    string           `json:"kubernetesVersion"`
 	APIAuthorizedCIDRs   []string         `json:"apiAuthorizedCidrs"`
 	AllowUnrestrictedAPI bool             `json:"allowUnrestrictedApi,omitempty"`
+	SystemPool           SystemPoolConfig `json:"systemPool"`
 	WorkerPool           WorkerPoolConfig `json:"workerPool"`
 	Operator             *OperatorConfig  `json:"operator,omitempty"`
+}
+
+type SystemPoolConfig struct {
+	VMSize string `json:"vmSize"`
+	Count  int    `json:"count"`
 }
 
 type OperatorConfig struct {
@@ -205,6 +214,7 @@ func DefaultConfig() Config {
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
+			SystemPool:        SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1},
 			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,
 				OSDiskType: DefaultWorkerOSDiskType, OSDiskSizeGB: DefaultWorkerOSDiskSizeGB},
 		},
@@ -294,6 +304,12 @@ func (c Config) Validate() error {
 	}
 	if c.AKS.WorkerPool.Count < 1 || c.AKS.WorkerPool.Count > MaxWorkerCount {
 		return fmt.Errorf("aks.workerPool.count must be 1-%d", MaxWorkerCount)
+	}
+	if c.AKS.SystemPool.Count < 1 || c.AKS.SystemPool.Count > MaxSystemCount {
+		return fmt.Errorf("aks.systemPool.count must be 1-%d", MaxSystemCount)
+	}
+	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.SystemPool.VMSize) {
+		return errors.New("aks.systemPool.vmSize must be an explicit Standard_* Azure SKU")
 	}
 	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
 		return errors.New("aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")

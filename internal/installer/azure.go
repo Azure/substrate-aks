@@ -192,6 +192,9 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		if err := a.guardWorkerPool(cluster); err != nil {
 			return err
 		}
+		if err := a.guardSystemPool(cluster); err != nil {
+			return err
+		}
 	}
 	a.progress("Preparing Azure infrastructure templates")
 	if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
@@ -227,6 +230,12 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"registryOnly":                registryOnly,
 	} {
 		params[key] = map[string]any{"value": value}
+	}
+	if c.AKS.SystemPool.VMSize != DefaultSystemVMSize {
+		params["systemVmSize"] = map[string]any{"value": c.AKS.SystemPool.VMSize}
+	}
+	if c.AKS.SystemPool.Count != 1 {
+		params["systemCount"] = map[string]any{"value": c.AKS.SystemPool.Count}
 	}
 	if operator := c.AKS.Operator; operator != nil {
 		params["operatorObjectId"] = map[string]any{"value": operator.ObjectID}
