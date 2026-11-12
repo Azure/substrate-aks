@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -48,6 +50,64 @@ func successfulCloudRunnerFor(home, name string) installer.Runner {
 			return nil, fmt.Errorf("unexpected cloud preflight command: %s", args)
 		}
 	})
+}
+
+func TestSetupCloudRestoreRiskWarning(t *testing.T) {
+	for _, workspace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("workspace=%t", workspace), func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.AKS.WorkerPool.VMSize = "Standard_D4s_v5"
+			c.AKS.WorkerPool.Count = 2
+			c.AKS.WorkerPool.AllowMixedCPUGenerations = true
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			home := recordHome(path)
+			normal := successfulCloudRunner(home)
+			cloud := defaultsRunner(func(ctx context.Context, command installer.Command) ([]byte, error) {
+				if strings.Contains(strings.Join(command.Args, " "), "/providers/Microsoft.Compute/skus?") {
+					return []byte(`{"value":[{"name":"Standard_D4s_v6","family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}]},{"name":"Standard_D4s_v5","family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}]}]}`), nil
+				}
+				return normal.Run(ctx, command)
+			})
+			ctx := t.Context()
+			var m *setupWorkspace
+			if workspace {
+				m = testWorkspace(t)
+				m.session.events = make(chan any, 1024)
+				ctx = context.WithValue(ctx, setupSessionKey{}, m.session)
+			}
+			var output bytes.Buffer
+			err = setupForTest(ctx, setupOptions{home: home, name: recordName(path), yes: true, skipContextHandoff: true,
+				discovery: subscriptionDisplayRunner(t), azure: cloud}, strings.NewReader(""), &output, &output, stopAtFirstStage)
+			if !errors.Is(err, errFirstStage) {
+				t.Fatalf("setup did not reach first stage: %v", err)
+			}
+			if workspace {
+				found := false
+				for len(m.session.events) > 0 {
+					if event, ok := (<-m.session.events).(setupNoteMsg); ok && event.warning &&
+						strings.Contains(event.text, "snapshot restore") && strings.Contains(event.text, "Standard_D4s_v6") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("workspace did not receive a restore-risk warning")
+				}
+			} else if !strings.Contains(strings.Join(strings.Fields(output.String()), " "), "WARNING: microVM pool size Standard_D4s_v5") ||
+				!strings.Contains(output.String(), "snapshot restore") {
+				t.Fatalf("setup did not display the restore-risk warning: %s", &output)
+			}
+		})
+	}
 }
 
 func TestSetupCloudFailureStopsBeforeBillingAndDeployment(t *testing.T) {

@@ -226,6 +226,103 @@ func TestLoadGroupedConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadMainEraRecordPlanAndDestroy(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "installation-main-era.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(fixture), "allowMixedCpuGenerations") {
+		t.Fatal("main-era fixture must omit the new field")
+	}
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"original", string(fixture)},
+		{"non-baseline", strings.Replace(strings.Replace(string(fixture), `"Standard_D4s_v6"`, `"Standard_D4s_v5"`, 1), `"count": 1`, `"count": 2`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := RecordPath(home, "substrate-test")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadInstallation(home, "substrate-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.AKS.WorkerPool.AllowMixedCPUGenerations {
+				t.Fatal("omitted opt-in did not default to false")
+			}
+			if tc.name == "non-baseline" && (c.AKS.WorkerPool.VMSize != "Standard_D4s_v5" || c.AKS.WorkerPool.Count != 2) {
+				t.Fatalf("non-baseline fixture was not constructed: %+v", c.AKS.WorkerPool)
+			}
+			encoded, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"allowMixedCpuGenerations":false`) {
+				t.Fatal("saved record did not include the new default field")
+			}
+			plan := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+			if err := (App{Config: c, Runner: plan}).Provision(t.Context(), true); err != nil {
+				t.Fatalf("old record plan: %v", err)
+			}
+			destroy := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
+				ownerReply(c), reply{contains: "group delete"})
+			if err := (App{Config: c, Runner: destroy}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
+				t.Fatalf("old record destroy: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadMainEraRecordImageSavePreservesCPUOptIn(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "installation-main-era.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, optIn := range []bool{false, true} {
+		t.Run(fmt.Sprint(optIn), func(t *testing.T) {
+			data := string(fixture)
+			if optIn {
+				data = strings.Replace(data, `"count": 1`, `"count": 1, "allowMixedCpuGenerations": true`, 1)
+			}
+			home := t.TempDir()
+			path := RecordPath(home, "substrate-test")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadInstallation(home, "substrate-test")
+			if err != nil || c.AKS.WorkerPool.AllowMixedCPUGenerations != optIn {
+				t.Fatalf("load opt-in = %t: %v", c.AKS.WorkerPool.AllowMixedCPUGenerations, err)
+			}
+			result := BuildResult{Images: testConfig(t).Substrate.Images, AssetsDir: filepath.Join(home, "assets")}
+			if err := SaveBuildResult(path, c, result); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(saved), fmt.Sprintf(`"allowMixedCpuGenerations": %t`, optIn)) {
+				t.Fatalf("image save omitted or changed the opt-in: %s", saved)
+			}
+			reloaded, err := LoadInstallation(home, "substrate-test")
+			if err != nil || reloaded.AKS.WorkerPool.AllowMixedCPUGenerations != optIn {
+				t.Fatalf("reload opt-in = %t: %v", reloaded.AKS.WorkerPool.AllowMixedCPUGenerations, err)
+			}
+		})
+	}
+}
+
 func TestConfiguredSourceDoesNotInheritDefaultTag(t *testing.T) {
 	c := testConfig(t)
 	data, err := json.Marshal(c)

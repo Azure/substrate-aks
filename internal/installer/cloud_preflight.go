@@ -19,6 +19,8 @@ type cloudPermissions struct {
 	NextLink string
 }
 
+var stableBaselineSKU = regexp.MustCompile(`^Standard_[DEF][0-9]+(-[0-9]+)?[a-oq-z]*_v[67]$`)
+
 func (permissions cloudPermissions) allows(action string) bool {
 	matches := func(pattern string) bool {
 		pattern = "(?i)^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*") + "$"
@@ -58,6 +60,14 @@ func (a App) cloudPermissions(ctx context.Context, scope string) (cloudPermissio
 func (a App) CloudPreflight(ctx context.Context) error {
 	if err := a.Config.Validate(); err != nil {
 		return err
+	}
+	w := a.Config.AKS.WorkerPool
+	if w.Count > 1 && !stableBaselineSKU.MatchString(w.VMSize) {
+		message := fmt.Sprintf("microVM pool size %s may span CPU generations with different TSC rates, causing memory snapshot restore failures; choose a stable-baseline _v6 size such as Standard_D4s_v6", w.VMSize)
+		if !w.AllowMixedCPUGenerations {
+			return fmt.Errorf("%s, or explicitly set aks.workerPool.allowMixedCpuGenerations to true to accept the risk", message)
+		}
+		a.progress("WARNING: %s; aks.workerPool.allowMixedCpuGenerations is enabled", message)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()

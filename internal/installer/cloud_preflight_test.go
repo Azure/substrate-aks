@@ -27,6 +27,102 @@ func cloudReplies(c Config) []reply {
 	}
 }
 
+func TestCloudPreflightStableBaselinePattern(t *testing.T) {
+	for _, tc := range []struct {
+		size string
+		want bool
+	}{
+		{"Standard_D4s_v6", true}, {"Standard_D4s_v7", true},
+		{"Standard_E8ds_v6", true}, {"Standard_E8ds_v7", true},
+		{"Standard_F16s_v6", true}, {"Standard_F16s_v7", true},
+		{"Standard_D64-32s_v6", true}, {"Standard_D4_v7", true},
+		{"Standard_D4s_v5", false}, {"Standard_D4ps_v6", false}, {"Standard_E4pds_v7", false},
+		{"Standard_L8s_v7", false}, {"Standard_D4s_v8", false}, {"standard_D4s_v6", false},
+		{"Standard_D4s_v6_extra", false}, {"Standard_Ds_v6", false},
+	} {
+		t.Run(tc.size, func(t *testing.T) {
+			if got := stableBaselineSKU.MatchString(tc.size); got != tc.want {
+				t.Fatalf("stable baseline match = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
+	for _, tc := range []struct {
+		name, size     string
+		count          int
+		optIn, refused bool
+		warn           bool
+	}{
+		{"single older", "Standard_D4s_v5", 1, false, false, false},
+		{"single arm", "Standard_D4ps_v6", 1, false, false, false},
+		{"single other", "Standard_L8s_v7", 1, false, false, false},
+		{"D v6", "Standard_D4s_v6", 2, false, false, false},
+		{"D v7", "Standard_D4s_v7", 2, false, false, false},
+		{"E v6", "Standard_E8ds_v6", 2, false, false, false},
+		{"E v7", "Standard_E8ds_v7", 2, false, false, false},
+		{"F v6", "Standard_F16s_v6", 2, false, false, false},
+		{"F v7", "Standard_F16s_v7", 2, false, false, false},
+		{"older refused", "Standard_D4s_v5", 2, false, true, false},
+		{"larger older refused", "Standard_D4s_v5", 100, false, true, false},
+		{"arm refused", "Standard_D4ps_v6", 2, false, true, false},
+		{"other refused", "Standard_L8s_v7", 2, false, true, false},
+		{"older opted in", "Standard_D4s_v5", 2, true, false, true},
+		{"arm opted in", "Standard_D4ps_v6", 2, true, false, true},
+		{"stable opted in", "Standard_D4s_v6", 2, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.WorkerPool.VMSize, c.AKS.WorkerPool.Count = tc.size, tc.count
+			c.AKS.WorkerPool.AllowMixedCPUGenerations = tc.optIn
+			replies := cloudReplies(c)
+			if tc.refused {
+				replies = nil
+			} else {
+				replies[6].output = `[{"name":{"value":"cores"},"currentValue":0,"limit":1000},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":1000}]`
+				if tc.size != SystemVMSize {
+					worker := skuReply(tc.size)
+					replies[5].output = strings.TrimSuffix(replies[5].output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
+				}
+			}
+			var progress []string
+			r := script(t, replies...)
+			err := (App{Config: c, Runner: r, Progress: func(format string, args ...any) {
+				progress = append(progress, fmt.Sprintf(format, args...))
+			}}).CloudPreflight(t.Context())
+			if tc.refused {
+				if err == nil {
+					t.Fatal("risky pool was accepted")
+				}
+				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size} {
+					if !strings.Contains(err.Error(), term) {
+						t.Errorf("error %q lacks %q", err, term)
+					}
+				}
+				if len(r.calls) != 0 {
+					t.Fatal("refusal happened after cloud calls")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			warnings := strings.Join(progress, "\n")
+			if strings.Contains(warnings, "WARNING:") != tc.warn {
+				t.Fatalf("unexpected warnings: %s", warnings)
+			}
+			if tc.warn {
+				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size} {
+					if !strings.Contains(warnings, term) {
+						t.Errorf("warning %q lacks %q", warnings, term)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCloudPreflightChecksReadOnlyCapacityAndPermissions(t *testing.T) {
 	for _, tc := range []struct {
 		name, output, want string
