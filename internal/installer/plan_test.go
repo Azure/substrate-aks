@@ -106,6 +106,8 @@ func TestSystemCapacitySKUValidation(t *testing.T) {
 		{"missing memory", "4", "", false},
 		{"invalid memory", "4", "-1", false},
 		{"zero memory", "4", "0", false},
+		{"maximum memory", "4", "65536", true},
+		{"above maximum memory", "4", "65536.00000000000001", false},
 		{"excess memory", "4", "99999999", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,6 +138,17 @@ func TestSystemCapacityRejectsAmbiguousCapabilities(t *testing.T) {
 	}
 }
 
+func TestSystemCapacityPreservesMemoryDecimalPrecision(t *testing.T) {
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.400000000000000001"}]}]`, SystemVMSize)
+	_, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), SystemVMSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := memory.AsDec().String(), "217264947.200000000805306368"; got != want {
+		t.Fatalf("capacity = %s, want %s", got, want)
+	}
+}
+
 func TestSystemCapacityCPUReservations(t *testing.T) {
 	a := App{Config: testConfig(t)}
 	for _, tc := range []struct {
@@ -155,28 +168,95 @@ func TestSystemCapacityCPUReservations(t *testing.T) {
 	}
 }
 
-func TestSystemCapacityFractionalMemoryRoundsDown(t *testing.T) {
+func TestSystemCapacityFractionalMemoryExact(t *testing.T) {
 	c := testConfig(t)
 	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
 	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), SystemVMSize)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := resource.MustParse("217264947")
+	want := resource.MustParse("217264947.2")
 	if memory.Cmp(want) != 0 {
 		t.Fatalf("fractional-byte estimate = %s, want %s", memory.String(), want.String())
 	}
+	two := 2
 	for _, tc := range []struct {
-		request string
-		warn    bool
-	}{{"217264947", false}, {"217264948", true}} {
-		s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
-			Envoy: &ResourceRequirements{Requests: map[string]string{"memory": tc.request}},
-		}}}}
-		warning, err := capacityWarning(SystemVMSize, 1, cpu, memory, s)
-		if err != nil || (warning != "") != tc.warn {
-			t.Fatalf("request %s warning = %q, %v", tc.request, warning, err)
-		}
+		name     string
+		request  string
+		warn     bool
+		count    int
+		replicas *int
+	}{
+		{"below", "217264947.1", false, 1, nil},
+		{"equal", "217264947.2", false, 1, nil},
+		{"above", "217264947.3", true, 1, nil},
+		{"two nodes below", "217264947.1", false, 2, &two},
+		{"two nodes equal", "217264947.2", false, 2, &two},
+		{"two nodes above", "217264947.3", true, 2, &two},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Replicas: tc.replicas, Resources: &RouterResources{
+				Envoy: &ResourceRequirements{Requests: map[string]string{"memory": tc.request}},
+			}}}}
+			warning, err := capacityWarning(SystemVMSize, tc.count, cpu, memory, s)
+			if err != nil || (warning != "") != tc.warn {
+				t.Fatalf("request %s warning = %q, %v", tc.request, warning, err)
+			}
+			if tc.count == 2 && tc.warn && !strings.Contains(warning, "aggregate requests exceed") {
+				t.Fatalf("multi-node aggregate overflow not reported: %s", warning)
+			}
+		})
+	}
+}
+
+func TestControlPlaneCapacityFractionalAggregate(t *testing.T) {
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
+	cpu, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), SystemVMSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, apiRequest string
+		warn             bool
+	}{
+		{"aggregate below", "108632473.5", false},
+		{"aggregate equal", "108632473.6", false},
+		{"aggregate above", "108632473.7", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := SubstrateConfig{Sizing: &SizingConfig{
+				APIServer: &APIServerSizing{Resources: &ResourceRequirements{
+					Requests: map[string]string{"memory": tc.apiRequest},
+				}},
+				Router: &RouterSizing{Resources: &RouterResources{
+					Envoy: &ResourceRequirements{Requests: map[string]string{"memory": "217264947.2"}},
+				}},
+			}}
+			warning, err := capacityWarning(SystemVMSize, 2, cpu, memory, s)
+			if err != nil || (warning != "") != tc.warn {
+				t.Fatalf("aggregate request warning = %q, %v", warning, err)
+			}
+			if tc.warn && (!strings.Contains(warning, "aggregate requests exceed") || strings.Contains(warning, "a pod exceeds")) {
+				t.Fatalf("expected aggregate-only warning: %s", warning)
+			}
+		})
+	}
+}
+
+func TestControlPlaneCapacityFractionalExactEquality(t *testing.T) {
+	c := testConfig(t)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
+	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), SystemVMSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 0.4 GiB * 0.75 - 100 MiB = 217264947.2 bytes.
+	s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
+		Envoy: &ResourceRequirements{Requests: map[string]string{"memory": "217264947.2"}},
+	}}}}
+	warning, err := capacityWarning(SystemVMSize, 1, cpu, memory, s)
+	if err != nil || warning != "" {
+		t.Fatalf("exactly equal request must not warn: %q, %v", warning, err)
 	}
 }
 

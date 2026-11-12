@@ -98,23 +98,16 @@ func (a App) systemCapacity(data []byte, size string) (resource.Quantity, resour
 		strings.HasPrefix(memory, ".") || strings.HasSuffix(memory, ".") {
 		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("missing or invalid memory capability")
 	}
-	q, err := resource.ParseQuantity(memory + "Gi")
-	maximum := resource.MustParse("65536Gi")
-	if err != nil || q.Sign() <= 0 || q.Cmp(maximum) > 0 {
+	var q resource.Quantity
+	if _, ok := q.AsDec().SetString(memory); !ok || q.Sign() <= 0 || q.CmpInt64(65536) > 0 {
 		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("missing or invalid memory capability")
 	}
-	q.Mul(3)
-	bytes := q.Value()
-	// Quantity.Value rounds up; floor the reservation estimate to bytes.
-	if q.Cmp(*resource.NewQuantity(bytes, resource.BinarySI)) < 0 {
-		bytes--
-	}
-	allocatable := bytes/4 - 100*(1<<20)
-	if allocatable <= 0 {
+	q.Mul(3 * (1 << 28))
+	q.Sub(*resource.NewQuantity(100*(1<<20), resource.DecimalSI))
+	if q.Sign() <= 0 {
 		return resource.Quantity{}, resource.Quantity{}, fmt.Errorf("insufficient memory for the reservation model")
 	}
-	return *resource.NewMilliQuantity(sku.cpus*1000-reserved, resource.DecimalSI),
-		*resource.NewQuantity(allocatable, resource.BinarySI), nil
+	return *resource.NewMilliQuantity(sku.cpus*1000-reserved, resource.DecimalSI), q, nil
 }
 
 func capacityWarning(size string, count int, cpu, memory resource.Quantity, s SubstrateConfig) (string, error) {

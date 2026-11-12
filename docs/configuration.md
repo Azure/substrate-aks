@@ -189,8 +189,7 @@ may hold connections, so leave room for its pool plus six when pools saturate.
 `plan` estimates system-pool allocatable CPU and memory from the VM SKU and
 configured requests (or limits when requests are absent). It warns when the
 estimate is exceeded or cannot be verified. This estimate excludes system and
-add-on pods, rounds memory down to whole bytes, and does not guarantee scheduling
-capacity.
+add-on pods and does not guarantee scheduling capacity.
 
 The sizing component is an interim implementation for the current pin. A
 future pin with upstream sizing components will replace the mechanism while
