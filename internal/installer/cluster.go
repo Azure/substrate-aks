@@ -360,6 +360,9 @@ func (a App) recordInstall(ctx context.Context, fp, phase string) error {
 
 func (a App) Install(ctx context.Context, component string) error {
 	a.progress("Validating image and runtime asset configuration")
+	if err := a.Config.Substrate.validateSizing(); err != nil {
+		return err
+	}
 	if component != "ate-system" && component != "atelet" && component != "apiserver" {
 		return errors.New("component must be ate-system, atelet or apiserver")
 	}

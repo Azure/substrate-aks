@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -50,6 +51,8 @@ func testInfrastructure() Infrastructure {
 		TenantID:        "66666666-6666-4666-8666-666666666666",
 	}
 }
+
+func stringPointer(s string) *string { return &s }
 
 func TestConfigRejectsUnsafeInputs(t *testing.T) {
 	for _, tc := range []struct {
@@ -99,6 +102,208 @@ func TestConfigRejectsUnsafeInputs(t *testing.T) {
 	c.Substrate.Images.Plugin = "example.invalid/plugin:latest"
 	if err := c.ValidateInstall(); err == nil {
 		t.Fatal("accepted mutable plugin image")
+	}
+}
+
+func TestConfigSizingAndSnapshotDelays(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Config)
+		valid  bool
+	}{
+		{"unset", func(*Config) {}, true},
+		{"valid delays", func(c *Config) { c.Substrate.Atelet = &AteletConfig{stringPointer("10s"), stringPointer("30s")} }, true},
+		{"zero upload", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("0s")} }, false},
+		{"zero detach", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("0s")} }, false},
+		{"negative", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("-1s")} }, false},
+		{"invalid", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("wrong")} }, false},
+		{"empty", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("")} }, false},
+		{"reversed", func(c *Config) { c.Substrate.Atelet = &AteletConfig{stringPointer("1m"), stringPointer("30s")} }, false},
+		{"upload exceeds default detach", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("31m")} }, false},
+		{"detach below default upload", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("30s")} }, false},
+		{"upload below default detach", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("30s")} }, true},
+		{"detach above default upload", func(c *Config) { c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("6m")} }, true},
+		{"custom pin with one delay", func(c *Config) {
+			c.Substrate.Source.Commit = strings.Repeat("a", 40)
+			c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("1s")}
+		}, false},
+		{"custom pin with both delays", func(c *Config) {
+			c.Substrate.Source.Commit = strings.Repeat("a", 40)
+			c.Substrate.Atelet = &AteletConfig{stringPointer("1s"), stringPointer("2s")}
+		}, true},
+		{"zero replicas", func(c *Config) { c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Replicas: new(int)}} }, false},
+		{"zero pool", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{PostgresPoolMaxConns: new(int)}}
+		}, false},
+		{"bad quantity", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "one"}}}}
+		}, false},
+		{"negative quantity", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"memory": "-1Mi"}}}}
+		}, false},
+		{"valid quantity", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"memory": "1Gi", "cpu": "250m"}}}}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			tc.change(&c)
+			if err := c.Validate(); (err == nil) != tc.valid {
+				t.Fatalf("Validate() = %v; want valid %t", err, tc.valid)
+			}
+		})
+	}
+}
+
+func TestConfigBundledConnectionBudget(t *testing.T) {
+	one, three, maxInt := 1, 3, int(^uint(0)>>1)
+	pass, fail, defaultPass, defaultFail := 84, 85, 39, 40
+	for _, tc := range []struct {
+		name        string
+		replicas    *int
+		pool        *int
+		valid       bool
+		wantMessage string
+	}{
+		{"unset", nil, nil, true, ""},
+		{"explicit at boundary", &one, &pass, true, ""},
+		{"explicit over boundary", &one, &fail, false, "connection budget"},
+		{"default replicas at boundary", nil, &defaultPass, true, ""},
+		{"default replicas over boundary", nil, &defaultFail, false, "connection budget"},
+		{"replicas need pool", &three, nil, false, "explicit postgresPoolMaxConns"},
+		{"large replicas", &maxInt, &pass, false, "connection budget"},
+		{"large pool", &one, &maxInt, false, "connection budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{
+				Replicas: tc.replicas, PostgresPoolMaxConns: tc.pool,
+			}}
+			err := c.Validate()
+			if (err == nil) != tc.valid || (!tc.valid && !strings.Contains(err.Error(), tc.wantMessage)) {
+				t.Fatalf("Validate() = %v; want valid %t and %q", err, tc.valid, tc.wantMessage)
+			}
+			if !tc.valid {
+				r := script(t)
+				if err := (App{Config: c, Runner: r}).Install(t.Context(), "ate-system"); err == nil || len(r.calls) != 0 {
+					t.Fatalf("invalid budget caused commands: %v, %v", err, r.calls)
+				}
+			}
+		})
+	}
+	c := testConfig(t)
+	c.Substrate.Sizing = &SizingConfig{
+		APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "1"}}},
+		Router:    &RouterSizing{Replicas: &three},
+	}
+	c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("10s")}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unrelated sizing must preserve the unset budget exception: %v", err)
+	}
+	if err := validateConnectionBudget(1, 84, 101); err != nil {
+		t.Fatalf("rounded headroom rejected boundary: %v", err)
+	}
+	if err := validateConnectionBudget(1, 85, 101); err == nil {
+		t.Fatal("rounded headroom accepted excess connections")
+	}
+}
+
+func TestLoadMainEraRecordWithoutSizing(t *testing.T) {
+	data, err := os.ReadFile("testdata/installation-main-era.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "installation.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Substrate.Sizing != nil || c.Substrate.Atelet != nil {
+		t.Fatalf("old record gained sizing: %+v", c.Substrate)
+	}
+	plan := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
+	if err := (App{Config: c, Runner: plan}).Provision(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	destroy := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"})
+	if err := (App{Config: c, Runner: destroy}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
+		t.Fatal(err)
+	}
+	images := testConfig(t).Substrate.Images
+	if err := SaveBuildResult(path, c, BuildResult{Images: images, AssetsDir: "/test/assets"}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadConfig(path)
+	if err != nil || saved.Substrate.Sizing != nil || saved.Substrate.Atelet != nil {
+		t.Fatalf("image save changed omitted settings: %+v, %v", saved.Substrate, err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"sizing"`) || strings.Contains(string(data), `"atelet"`) {
+		t.Fatalf("unset settings were written: %s", data)
+	}
+}
+
+func TestInstallRejectsInvalidDelayBeforeMutation(t *testing.T) {
+	c := testConfig(t)
+	c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("30s")}
+	r := script(t)
+	if err := (App{Config: c, Runner: r}).Install(t.Context(), "atelet"); err == nil {
+		t.Fatal("invalid delays accepted")
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("invalid delays caused commands: %v", r.calls)
+	}
+}
+
+func TestImageSavePreservesSizingAndOmittedDelay(t *testing.T) {
+	c := testConfig(t)
+	c.Substrate.Images = ImagesConfig{}
+	replicas := 3
+	pool := 10
+	c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{
+		Replicas:             &replicas,
+		PostgresPoolMaxConns: &pool,
+		Resources: &ResourceRequirements{Requests: map[string]string{
+			"cpu": "500m", "memory": "1Gi",
+		}},
+	}}
+	c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("10s")}
+	path := filepath.Join(c.workspace(), "installation.json")
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := BuildResult{Images: testConfig(t).Substrate.Images, AssetsDir: "/test/assets"}
+	if err := SaveBuildResult(path, expected, result); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(saved.Substrate.Sizing, c.Substrate.Sizing) || !reflect.DeepEqual(saved.Substrate.Atelet, c.Substrate.Atelet) {
+		t.Fatalf("image save changed sizing: %+v", saved.Substrate)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"snapshotDetachDelay"`) {
+		t.Fatalf("image save persisted an omitted delay: %s", data)
 	}
 }
 

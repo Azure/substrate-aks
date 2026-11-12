@@ -35,6 +35,7 @@ type App struct {
 	ContainerEngine    string
 	Progress           func(string, ...any)
 	Preview            func([]ResourceChange) error
+	Warning            func(string)
 	ImageCheckProgress func(name string, done bool, err error)
 }
 
@@ -266,7 +267,13 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		return err
 	}
 	if whatIf {
-		return a.showPlan(data)
+		if err := a.showPlan(data); err != nil {
+			return err
+		}
+		if !registryOnly {
+			return a.warnControlPlaneCapacity(ctx)
+		}
+		return nil
 	}
 	return nil
 }

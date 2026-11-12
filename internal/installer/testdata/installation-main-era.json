@@ -1,0 +1,37 @@
+{
+  "installation": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "name": "substrate-test",
+    "ownership": {"resourceGroup": "created", "cluster": "created"}
+  },
+  "azure": {
+    "subscriptionId": "22222222-2222-4222-8222-222222222222",
+    "location": "eastus2",
+    "resourceGroup": "substrate-test",
+    "assetPublisherObjectId": "33333333-3333-4333-8333-333333333333"
+  },
+  "aks": {
+    "clusterName": "substrate-test",
+    "kubernetesVersion": "1.37",
+    "apiAuthorizedCidrs": ["203.0.113.8/32"],
+    "workerPool": {
+      "vmSize": "Standard_D4s_v6",
+      "count": 1,
+      "osDiskType": "Managed",
+      "osDiskSizeGB": 128
+    }
+  },
+  "substrate": {
+    "source": {
+      "repository": "https://github.com/agent-substrate/substrate.git",
+      "tag": "v1.0.0",
+      "commit": "b34fbee742906494b5eb4f1f36987176bf8770a4"
+    },
+    "pluginSource": {
+      "repository": "https://github.com/agent-substrate-plugins/objectstore-azure-blob.git",
+      "commit": "5639af04ad429cf51d2dbf452c80709d3b68e48b"
+    },
+    "images": {"repository": "", "tag": "", "plugin": ""},
+    "runtime": {"assetsDir": ""}
+  }
+}

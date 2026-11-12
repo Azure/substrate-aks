@@ -13,7 +13,7 @@ func TestProvisionCarriesExplicitSnapshotReaderOptIn(t *testing.T) {
 			c := testConfig(t)
 			c.Azure.SnapshotReaderObjectID = reader
 			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
 			if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 				t.Fatal(err)
 			}

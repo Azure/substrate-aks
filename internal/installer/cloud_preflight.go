@@ -226,6 +226,10 @@ func (a App) CloudPreflight(ctx context.Context) error {
 }
 
 func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
+	return a.regionalSKUCatalogPages(ctx, 0)
+}
+
+func (a App) regionalSKUCatalogPages(ctx context.Context, maxPages int) ([]byte, error) {
 	// Azure CLI's list-skus can filter --location locally, downloading every region.
 	endpoint := "https://management.azure.com/subscriptions/" + a.Config.Azure.SubscriptionID + "/providers/Microsoft.Compute/skus"
 	params := url.Values{
@@ -237,6 +241,9 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {
+		if maxPages > 0 && len(seen) >= maxPages {
+			return nil, errors.New("VM SKU catalog exceeded the page limit")
+		}
 		pageURL, err := url.Parse(next)
 		if err != nil || pageURL.Scheme != "https" || pageURL.Host != "management.azure.com" ||
 			pageURL.User != nil || pageURL.Fragment != "" ||
@@ -250,6 +257,9 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		data, err := a.az(ctx, "rest", "--method", "get", "--url", next, "--query", query)
 		if err != nil {
 			return nil, err
+		}
+		if maxPages > 0 && len(data) > 4<<20 {
+			return nil, errors.New("VM SKU catalog page exceeded the size limit")
 		}
 		var page struct {
 			Value    []json.RawMessage

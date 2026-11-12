@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Sizing.Workload}}
+  namespace: ate-system
+spec:
+{{- if .Sizing.Replicas}}
+  replicas: {{.Sizing.Replicas}}
+{{- end}}
+{{- if .Sizing.Containers}}
+  template:
+    spec:
+      containers:
+{{- range $name := .Sizing.ContainerOrder}}
+      - name: {{printf "%q" $name}}
+{{- with $resources := index $.Sizing.Containers $name}}
+        resources:
+{{- if $resources.Requests}}
+          requests:
+{{- range $key, $value := $resources.Requests}}
+            {{printf "%q" $key}}: {{printf "%q" $value}}
+{{- end}}
+{{- end}}
+{{- if $resources.Limits}}
+          limits:
+{{- range $key, $value := $resources.Limits}}
+            {{printf "%q" $key}}: {{printf "%q" $value}}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- end}}

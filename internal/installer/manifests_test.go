@@ -315,6 +315,131 @@ func TestAzureWorkloadsRenderFromEmbeddedAssets(t *testing.T) {
 	}
 }
 
+func TestSizingRendersOnlyRequestedTargets(t *testing.T) {
+	apiFixture := []byte(strings.Replace(string(workloadFixture(false)), "- name: atelet\n        image:", "- name: ate-api-server\n        image:", 1))
+	routerFixture := []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atenet-router
+  namespace: ate-system
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: atenet-router
+        image: example.invalid/router
+      - name: envoy
+        image: example.invalid/envoy
+`)
+	two := 2
+	for _, tc := range []struct {
+		name   string
+		source []byte
+		kind   string
+		target string
+		change func(*Config)
+		expect func(object)
+		render func([]byte, Config, []deploy.External) ([]byte, error)
+	}{
+		{"api replicas", apiFixture, "Deployment", "ate-api-server", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Replicas: &two}}
+		}, func(doc object) { doc["spec"].(map[string]any)["replicas"] = 2 }, func(b []byte, c Config, p []deploy.External) ([]byte, error) {
+			return adaptWorkload(b, c, p, false)
+		}},
+		{"api resources", apiFixture, "Deployment", "ate-api-server", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "500m"}, Limits: map[string]string{"memory": "1Gi"}}}}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			container, _ := named(pod["containers"], "ate-api-server")
+			container["resources"] = object{"requests": object{"cpu": "500m"}, "limits": object{"memory": "1Gi"}}
+		}, func(b []byte, c Config, p []deploy.External) ([]byte, error) { return adaptWorkload(b, c, p, false) }},
+		{"router replicas", routerFixture, "Deployment", "atenet-router", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Replicas: &two}}
+		}, func(doc object) { doc["spec"].(map[string]any)["replicas"] = 2 }, func(b []byte, c Config, _ []deploy.External) ([]byte, error) {
+			return adaptRouter(b, c)
+		}},
+		{"router containers", routerFixture, "Deployment", "atenet-router", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
+				AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "100m"}},
+				Envoy:        &ResourceRequirements{Limits: map[string]string{"memory": "2Gi"}},
+			}}}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			router, _ := named(pod["containers"], "atenet-router")
+			envoy, _ := named(pod["containers"], "envoy")
+			router["resources"] = object{"requests": object{"cpu": "100m"}}
+			envoy["resources"] = object{"limits": object{"memory": "2Gi"}}
+		}, func(b []byte, c Config, _ []deploy.External) ([]byte, error) { return adaptRouter(b, c) }},
+		{"router container only", routerFixture, "Deployment", "atenet-router", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
+				AtenetRouter: &ResourceRequirements{Limits: map[string]string{"cpu": "1"}},
+			}}}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			router, _ := named(pod["containers"], "atenet-router")
+			router["resources"] = object{"limits": object{"cpu": "1"}}
+		}, func(b []byte, c Config, _ []deploy.External) ([]byte, error) { return adaptRouter(b, c) }},
+		{"envoy container only", routerFixture, "Deployment", "atenet-router", func(c *Config) {
+			c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
+				Envoy: &ResourceRequirements{Requests: map[string]string{"memory": "128Mi"}},
+			}}}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			envoy, _ := named(pod["containers"], "envoy")
+			envoy["resources"] = object{"requests": object{"memory": "128Mi"}}
+		}, func(b []byte, c Config, _ []deploy.External) ([]byte, error) { return adaptRouter(b, c) }},
+		{"atelet delays", workloadFixture(true), "DaemonSet", "atelet", func(c *Config) {
+			c.Substrate.Atelet = &AteletConfig{stringPointer("10s"), stringPointer("30s")}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			atelet, _ := named(pod["containers"], "atelet")
+			atelet["args"] = append(atelet["args"].([]any), "--snapshot-upload-delay=10s", "--snapshot-detach-delay=30s")
+		}, func(b []byte, c Config, p []deploy.External) ([]byte, error) { return adaptWorkload(b, c, p, true) }},
+		{"atelet upload only", workloadFixture(true), "DaemonSet", "atelet", func(c *Config) {
+			c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("10s")}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			atelet, _ := named(pod["containers"], "atelet")
+			atelet["args"] = append(atelet["args"].([]any), "--snapshot-upload-delay=10s")
+		}, func(b []byte, c Config, p []deploy.External) ([]byte, error) { return adaptWorkload(b, c, p, true) }},
+		{"atelet detach only", workloadFixture(true), "DaemonSet", "atelet", func(c *Config) {
+			c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("6m")}
+		}, func(doc object) {
+			pod, _ := nested(doc, "spec", "template", "spec")
+			atelet, _ := named(pod["containers"], "atelet")
+			atelet["args"] = append(atelet["args"].([]any), "--snapshot-detach-delay=6m")
+		}, func(b []byte, c Config, p []deploy.External) ([]byte, error) { return adaptWorkload(b, c, p, true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, i := testConfig(t), testInfrastructure()
+			plugin := testPlugin(t, c, i)
+			baseline, err := tc.render(tc.source, c, plugin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := manifestObject(t, baseline, tc.kind, tc.target)
+			tc.expect(expected)
+			tc.change(&c)
+			got, err := tc.render(tc.source, c, plugin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := manifestObject(t, got, tc.kind, tc.target)
+			if !reflect.DeepEqual(expected, actual) {
+				t.Fatalf("unexpected workload change\nwant %#v\ngot %#v", expected, actual)
+			}
+			again, err := tc.render(tc.source, c, plugin)
+			if err != nil || string(got) != string(again) {
+				t.Fatalf("render is not repeatable: %v", err)
+			}
+			if tc.kind == "DaemonSet" {
+				assertAzureWorkload(t, got, c, i, true)
+			}
+		})
+	}
+}
+
 func TestBundledPostgresUsesPersistentAzureDisk(t *testing.T) {
 	data := []byte(`apiVersion: apps/v1
 kind: StatefulSet

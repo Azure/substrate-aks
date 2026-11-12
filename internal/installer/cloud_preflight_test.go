@@ -14,7 +14,7 @@ const availableAKS = `{"values":[{"version":"1.37","patchVersions":{"1.37.2":{}}
 
 func skuReply(size string) reply {
 	return reply{contains: "/providers/Microsoft.Compute/skus?", output: fmt.Sprintf(
-		`{"value":[{"name":%q,"family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}],"restrictions":[{"type":"Zone","values":["eastus2"],"restrictionInfo":{"zones":["3"]}}]}]}`, size)}
+		`{"value":[{"name":%q,"family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}],"restrictions":[{"type":"Zone","values":["eastus2"],"restrictionInfo":{"zones":["3"]}}]}]}`, size)}
 }
 
 func cloudReplies(c Config) []reply {

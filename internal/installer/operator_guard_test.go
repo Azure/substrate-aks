@@ -59,6 +59,9 @@ func TestProvisionGuardsExistingOperator(t *testing.T) {
 							action = "what-if"
 						}
 						replies = append(replies, reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
+						if whatIf && !registryOnly {
+							replies = append(replies, skuReply(SystemVMSize))
+						}
 					}
 					r := script(t, replies...)
 					err := (App{Config: c, Runner: r}).provision(t.Context(), whatIf, registryOnly)
@@ -95,7 +98,7 @@ func TestProvisionRejectsFixedWorkerPoolChanges(t *testing.T) {
 			replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
 				clusterReply(original), operatorRecordReply(original)}
 			if tc.ok {
-				replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+				replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
 			}
 			err := (App{Config: c, Runner: script(t, replies...)}).provision(t.Context(), true, false)
 			if tc.ok && err != nil || !tc.ok && (err == nil || !strings.Contains(err.Error(), "destroy and recreate")) {
@@ -135,7 +138,7 @@ func TestProvisionSerializesIdentityPrincipalTypes(t *testing.T) {
 					c.Azure.SnapshotReaderPrincipalType = principalType
 				}
 				r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-					reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+					reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
 				if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 					t.Fatal(err)
 				}

@@ -126,6 +126,73 @@ the incomplete deletion before retrying.
 If the resource group is deleted outside the installer, reset references to
 deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
 
+## Control-plane sizing
+
+These settings are optional. Omit them to keep the pinned release's defaults.
+Set them before installation; changing them on an installed deployment changes
+its recorded deployment identity and is not an in-place resizing mechanism.
+The defaults below are from the pinned
+[API server](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/ate-api-server.yaml),
+[router](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/atenet-router.yaml),
+and [atelet](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/cmd/atelet/internal/snapshottracker/background.go).
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `substrate.sizing.apiServer.replicas` | 2 | API server replicas; at least 1 |
+| `substrate.sizing.apiServer.resources` | none | API server container requests and limits |
+| `substrate.sizing.apiServer.postgresPoolMaxConns` | unset | Read/write PostgreSQL pool maximum per API server; at least 1 |
+| `substrate.sizing.router.replicas` | 1 | Router replicas; at least 1 |
+| `substrate.sizing.router.resources.atenetRouter` | none | Router container requests and limits |
+| `substrate.sizing.router.resources.envoy` | none | Envoy container requests and limits |
+| `substrate.atelet.snapshotUploadDelay` | 5m | Positive Go duration |
+| `substrate.atelet.snapshotDetachDelay` | 30m | Positive Go duration |
+
+Resources use Kubernetes quantities in `requests` and `limits`, for example:
+
+```json
+{
+  "sizing": {
+    "apiServer": {
+      "replicas": 2,
+      "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}},
+      "postgresPoolMaxConns": 10
+    },
+    "router": {
+      "resources": {
+        "atenetRouter": {"requests": {"cpu": "250m"}},
+        "envoy": {"limits": {"memory": "1Gi"}}
+      }
+    }
+  },
+  "atelet": {
+    "snapshotUploadDelay": "10s",
+    "snapshotDetachDelay": "30s"
+  }
+}
+```
+
+These are members of `substrate`. Effective upload delay must not exceed
+effective detach delay; an omitted delay uses the pinned default for this
+validation. Atelet's pinned resource requests remain 50m CPU and 128Mi memory.
+The pool's unset value is determined by the upstream database client.
+For a different source revision, set both delays or omit both: its built-in
+defaults are not known to the installer.
+
+When setting API server replicas, also set `postgresPoolMaxConns`. For the
+bundled database, the installer reserves 10% of its 100 connections and counts
+six additional connections per API replica. It requires replicas × (pool + 6)
+to fit the remaining budget. If neither setting is supplied, the upstream
+pool default is not known to the installer and the budget is not verified.
+
+`plan` estimates system-pool allocatable CPU and memory from the VM SKU and
+configured requests (or limits when requests are absent). It warns when the
+estimate is exceeded or cannot be verified. This estimate excludes system and
+add-on pods and does not guarantee scheduling capacity.
+
+The sizing component is an interim implementation for the current pin. A
+future pin with upstream sizing components will replace the mechanism while
+retaining these configuration fields.
+
 ## MicroVM worker pool
 
 Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is

@@ -404,6 +404,14 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		}
 		return writePlan(out, c.Azure.SubscriptionID, changes)
 	}}
+	a.Warning = func(message string) {
+		if session != nil {
+			p.warn(message)
+			return
+		}
+		p.pause()
+		fmt.Fprintln(stderr, message)
+	}
 	if session != nil && checkImages {
 		a.ImageCheckProgress = func(name string, done bool, err error) {
 			session.send(setupCheckMsg{name: name, done: done, err: err})

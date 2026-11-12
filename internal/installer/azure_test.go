@@ -215,7 +215,7 @@ func TestStatusReportsInstalledRevisionsFromTheRecord(t *testing.T) {
 func TestProvisionWhatIfWritesTypedParameters(t *testing.T) {
 	c := testConfig(t)
 	r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[{"changeType":"Create","resourceId":"/subscriptions/test/resourceGroups/dev/providers/Microsoft.ContainerRegistry/registries/example"}]}`})
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[{"changeType":"Create","resourceId":"/subscriptions/test/resourceGroups/dev/providers/Microsoft.ContainerRegistry/registries/example"}]}`}, skuReply(SystemVMSize))
 	var changes []ResourceChange
 	a := App{Config: c, Runner: r, Preview: func(result []ResourceChange) error {
 		changes = result
@@ -228,7 +228,7 @@ func TestProvisionWhatIfWritesTypedParameters(t *testing.T) {
 		changes[0].ResourceID != "/subscriptions/test/resourceGroups/dev/providers/Microsoft.ContainerRegistry/registries/example" {
 		t.Fatalf("preview altered Azure resource IDs: %+v", changes)
 	}
-	if !strings.Contains(strings.Join(r.calls[len(r.calls)-1].Args, " "), "--no-pretty-print") {
+	if !strings.Contains(strings.Join(r.calls[len(r.calls)-2].Args, " "), "--no-pretty-print") {
 		t.Fatal("preview did not request structured output")
 	}
 	data, err := os.ReadFile(filepath.Join(c.workspace(), "infra/parameters.json"))
@@ -282,11 +282,15 @@ func TestProvisionRetryWithAKSManagedNodeGroup(t *testing.T) {
 				if whatIf {
 					action = "what-if"
 				}
-				r := script(t, accountReply(c),
+				replies := []reply{accountReply(c),
 					reply{contains: "group list --tag " + ownershipTag + "=" + c.Installation.ID, output: groups},
 					reply{contains: "group exists", output: "true"}, ownerReply(c),
 					clusterReply(c), operatorRecordReply(c),
-					reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
+					reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`}}
+				if whatIf && !registryOnly {
+					replies = append(replies, skuReply(SystemVMSize))
+				}
+				r := script(t, replies...)
 				if err := (App{Config: c, Runner: r}).provision(t.Context(), whatIf, registryOnly); err != nil {
 					t.Fatal(err)
 				}
@@ -398,7 +402,7 @@ func TestProvisionUnrestrictedAPIAccessIsExplicitAndUsesAnEmptyArray(t *testing.
 				return
 			}
 			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
 			if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 				t.Fatal(err)
 			}

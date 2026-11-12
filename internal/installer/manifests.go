@@ -192,6 +192,23 @@ func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) (
 	v := deploy.Values{External: plugin}
 	if node {
 		kind, name, v.Component = "DaemonSet", "atelet", "actor-images"
+		if d := c.Substrate.Atelet; d != nil && (d.SnapshotUploadDelay != nil || d.SnapshotDetachDelay != nil) {
+			v.Sizing = &deploy.Sizing{Workload: name}
+			if d.SnapshotUploadDelay != nil {
+				v.Sizing.UploadDelay = *d.SnapshotUploadDelay
+			}
+			if d.SnapshotDetachDelay != nil {
+				v.Sizing.DetachDelay = *d.SnapshotDetachDelay
+			}
+		}
+	} else if c.Substrate.Sizing != nil {
+		if api := c.Substrate.Sizing.APIServer; api != nil {
+			containers := make(map[string]*deploy.Resources)
+			addSizingResources(containers, "ate-api-server", api.Resources)
+			if api.Replicas != nil || len(containers) != 0 {
+				v.Sizing = &deploy.Sizing{Workload: name, Replicas: api.Replicas, Containers: containers}
+			}
+		}
 	}
 	found := false
 	err := inspectYAML(data, func(doc object) error {
@@ -237,7 +254,32 @@ func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) (
 			return errors.New("upstream already defines an azure-identity-token volume; review the Azure adapter")
 		}
 		if node {
+			if v.Sizing != nil {
+				atelet, err := named(pod["containers"], "atelet")
+				if err != nil {
+					return err
+				}
+				args, ok := atelet["args"].([]any)
+				if !ok {
+					return errors.New("upstream atelet arguments missing")
+				}
+				for _, arg := range args {
+					s, ok := arg.(string)
+					if !ok || strings.HasPrefix(s, "--snapshot-upload-delay") || strings.HasPrefix(s, "--snapshot-detach-delay") {
+						return errors.New("upstream atelet snapshot delay argument contract changed")
+					}
+				}
+			}
 			return checkActorImages(pod)
+		}
+		if v.Sizing != nil {
+			if _, err := named(pod["containers"], name); err != nil {
+				return err
+			}
+			v.Sizing.ContainerOrder, err = containerOrder(pod)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -271,6 +313,82 @@ func adaptWorkload(data []byte, c Config, plugin []deploy.External, node bool) (
 		return nil
 	})
 	return rendered, err
+}
+
+func containerOrder(pod object) ([]string, error) {
+	containers, ok := pod["containers"].([]any)
+	if !ok {
+		return nil, errors.New("upstream workload containers missing")
+	}
+	names := make([]string, 0, len(containers))
+	for _, entry := range containers {
+		container, ok := entry.(map[string]any)
+		name, named := container["name"].(string)
+		if !ok || !named || name == "" || slices.Contains(names, name) {
+			return nil, errors.New("upstream workload has invalid or duplicate container names")
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func addSizingResources(containers map[string]*deploy.Resources, name string, r *ResourceRequirements) {
+	if r != nil && (len(r.Requests) != 0 || len(r.Limits) != 0) {
+		containers[name] = &deploy.Resources{Requests: r.Requests, Limits: r.Limits}
+	}
+}
+
+func adaptRouter(data []byte, c Config) ([]byte, error) {
+	if c.Substrate.Sizing == nil || c.Substrate.Sizing.Router == nil {
+		return data, nil
+	}
+	router := c.Substrate.Sizing.Router
+	containers := make(map[string]*deploy.Resources)
+	if router.Resources != nil {
+		addSizingResources(containers, "atenet-router", router.Resources.AtenetRouter)
+		addSizingResources(containers, "envoy", router.Resources.Envoy)
+	}
+	if router.Replicas == nil && len(containers) == 0 {
+		return data, nil
+	}
+	found := false
+	var order []string
+	err := inspectYAML(data, func(doc object) error {
+		meta, err := child(doc, "metadata")
+		if err != nil {
+			return err
+		}
+		if doc["kind"] != "Deployment" || meta["name"] != "atenet-router" {
+			return nil
+		}
+		if found || meta["namespace"] != "ate-system" {
+			return errors.New("upstream router identity or namespace changed")
+		}
+		found = true
+		pod, err := nested(doc, "spec", "template", "spec")
+		if err != nil {
+			return err
+		}
+		for name := range containers {
+			if _, err := named(pod["containers"], name); err != nil {
+				return err
+			}
+		}
+		order, err = containerOrder(pod)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("upstream router Deployment missing")
+	}
+	return deploy.Render(data, deploy.Values{Sizing: &deploy.Sizing{
+		Workload: "atenet-router", Replicas: router.Replicas, Containers: containers, ContainerOrder: order,
+	}})
 }
 
 func checkActorImages(pod object) error {
@@ -339,15 +457,18 @@ func adaptPostgres(data []byte) ([]byte, error) {
 	return deploy.Render(data, deploy.Values{Component: "postgres"})
 }
 
+var adaptedSourcePaths = []string{
+	"manifests/ate-install/atelet.yaml",
+	"manifests/ate-install/ate-api-server.yaml",
+	"manifests/ate-install/postgres/postgres.yaml",
+	"manifests/ate-install/ate-otel-config.yaml",
+	"manifests/ate-install/base/kustomization.yaml",
+	"demos/counter/counter-microvm.yaml.tmpl",
+	"manifests/ate-install/atenet-router.yaml",
+}
+
 func adaptSource(root string, c Config, plugin []deploy.External) ([]string, error) {
-	paths := []string{
-		"manifests/ate-install/atelet.yaml",
-		"manifests/ate-install/ate-api-server.yaml",
-		"manifests/ate-install/postgres/postgres.yaml",
-		"manifests/ate-install/ate-otel-config.yaml",
-		"manifests/ate-install/base/kustomization.yaml",
-		"demos/counter/counter-microvm.yaml.tmpl",
-	}
+	paths := adaptedSourcePaths
 	// Render every surface before writing any of them, so contract failures
 	// cannot leave a checkout containing a mixture of upstream and Azure files.
 	rendered := make([][]byte, len(paths))
@@ -367,6 +488,8 @@ func adaptSource(root string, c Config, plugin []deploy.External) ([]string, err
 			data, err = deploy.AdaptBase(data)
 		case 5:
 			data, err = adaptDemo(data)
+		case 6:
+			data, err = adaptRouter(data, c)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("adapting %s: %w", rel, err)

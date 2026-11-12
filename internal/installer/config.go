@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // The Substrate release and the Azure Blob object-store plugin revision the
@@ -132,6 +135,143 @@ type SubstrateConfig struct {
 	ImageSource ImageSource   `json:"imageSource,omitempty"`
 	Images      ImagesConfig  `json:"images"`
 	Runtime     RuntimeConfig `json:"runtime"`
+	Sizing      *SizingConfig `json:"sizing,omitempty"`
+	Atelet      *AteletConfig `json:"atelet,omitempty"`
+}
+
+type SizingConfig struct {
+	APIServer *APIServerSizing `json:"apiServer,omitempty"`
+	Router    *RouterSizing    `json:"router,omitempty"`
+}
+
+type ResourceRequirements struct {
+	Requests map[string]string `json:"requests,omitempty"`
+	Limits   map[string]string `json:"limits,omitempty"`
+}
+
+type APIServerSizing struct {
+	Replicas             *int                  `json:"replicas,omitempty"`
+	Resources            *ResourceRequirements `json:"resources,omitempty"`
+	PostgresPoolMaxConns *int                  `json:"postgresPoolMaxConns,omitempty"`
+}
+
+type RouterSizing struct {
+	Replicas  *int             `json:"replicas,omitempty"`
+	Resources *RouterResources `json:"resources,omitempty"`
+}
+
+type RouterResources struct {
+	AtenetRouter *ResourceRequirements `json:"atenetRouter,omitempty"`
+	Envoy        *ResourceRequirements `json:"envoy,omitempty"`
+}
+
+type AteletConfig struct {
+	SnapshotUploadDelay *string `json:"snapshotUploadDelay,omitempty"`
+	SnapshotDetachDelay *string `json:"snapshotDetachDelay,omitempty"`
+}
+
+const (
+	// Defaults at the release pin, used only to validate an omitted peer.
+	// https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/cmd/atelet/internal/snapshottracker/background.go
+	defaultSnapshotUploadDelay = 5 * time.Minute
+	defaultSnapshotDetachDelay = 30 * time.Minute
+	// https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/ate-api-server.yaml
+	defaultAPIServerReplicas   = 2
+	bundledPostgresConnections = 100
+)
+
+func validateConnectionBudget(replicas, pool, limit int) error {
+	headroom := limit / 10
+	if limit%10 != 0 {
+		headroom++
+	}
+	available := limit - headroom
+	if replicas < 1 || pool < 1 || available/replicas < 6 || pool > available/replicas-6 {
+		return fmt.Errorf("API server replicas times (postgresPoolMaxConns + 6) exceeds the database connection budget of %d after headroom", available)
+	}
+	return nil
+}
+
+func (s SubstrateConfig) validateSizing() error {
+	validateResources := func(field string, r *ResourceRequirements) error {
+		if r == nil {
+			return nil
+		}
+		for _, values := range []map[string]string{r.Requests, r.Limits} {
+			for name, value := range values {
+				q, err := resource.ParseQuantity(value)
+				if err != nil || q.Sign() < 0 {
+					return fmt.Errorf("%s: invalid non-negative quantity for %s: %q", field, name, value)
+				}
+			}
+		}
+		return nil
+	}
+	if s.Sizing != nil {
+		if api := s.Sizing.APIServer; api != nil {
+			if api.Replicas != nil && *api.Replicas < 1 {
+				return errors.New("substrate.sizing.apiServer.replicas must be at least 1")
+			}
+			if api.PostgresPoolMaxConns != nil && *api.PostgresPoolMaxConns < 1 {
+				return errors.New("substrate.sizing.apiServer.postgresPoolMaxConns must be at least 1")
+			}
+			if api.Replicas != nil && api.PostgresPoolMaxConns == nil {
+				return errors.New("substrate.sizing.apiServer.replicas requires an explicit postgresPoolMaxConns")
+			}
+			if api.PostgresPoolMaxConns != nil {
+				replicas := defaultAPIServerReplicas
+				if api.Replicas != nil {
+					replicas = *api.Replicas
+				}
+				if err := validateConnectionBudget(replicas, *api.PostgresPoolMaxConns, bundledPostgresConnections); err != nil {
+					return err
+				}
+			}
+			if err := validateResources("substrate.sizing.apiServer.resources", api.Resources); err != nil {
+				return err
+			}
+		}
+		if router := s.Sizing.Router; router != nil {
+			if router.Replicas != nil && *router.Replicas < 1 {
+				return errors.New("substrate.sizing.router.replicas must be at least 1")
+			}
+			if router.Resources != nil {
+				if err := validateResources("substrate.sizing.router.resources.atenetRouter", router.Resources.AtenetRouter); err != nil {
+					return err
+				}
+				if err := validateResources("substrate.sizing.router.resources.envoy", router.Resources.Envoy); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if s.Atelet != nil {
+		if s.Source.Commit != DefaultCommit && (s.Atelet.SnapshotUploadDelay == nil) != (s.Atelet.SnapshotDetachDelay == nil) {
+			return errors.New("set both substrate.atelet snapshot delays for a non-default source revision; its built-in defaults are not known")
+		}
+		upload, detach := defaultSnapshotUploadDelay, defaultSnapshotDetachDelay
+		for _, item := range []struct {
+			field  string
+			value  *string
+			target *time.Duration
+		}{
+			{"snapshotUploadDelay", s.Atelet.SnapshotUploadDelay, &upload},
+			{"snapshotDetachDelay", s.Atelet.SnapshotDetachDelay, &detach},
+		} {
+			if item.value == nil {
+				continue
+			}
+			d, err := time.ParseDuration(*item.value)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("substrate.atelet.%s must be a positive Go duration", item.field)
+			}
+			*item.target = d
+		}
+		if upload > detach {
+			return errors.New("substrate.atelet snapshot upload delay must not exceed the detach delay")
+		}
+	}
+	return nil
 }
 
 type ImageSource string
@@ -272,6 +412,9 @@ func ValidateInstallationName(name string) error {
 }
 
 func (c Config) Validate() error {
+	if err := c.Substrate.validateSizing(); err != nil {
+		return err
+	}
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
