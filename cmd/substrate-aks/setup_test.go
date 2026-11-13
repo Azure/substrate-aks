@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Azure/substrate-aks/internal/installer"
@@ -438,14 +439,264 @@ func TestSetupDeclinesBeforeCloudChanges(t *testing.T) {
 	}
 }
 
+func TestSetupRejectsUnsupportedDatabaseBeforeAnyStage(t *testing.T) {
+	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible} {
+		t.Run(string(backend), func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Database = installer.DatabaseConfig{Backend: backend}
+			c.AKS.Operator = &installer.OperatorConfig{ObjectID: defaultPublisher, PrincipalType: "User"}
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			runner := defaultsRunner(func(_ context.Context, command installer.Command) ([]byte, error) {
+				if isRegionList(command) && strings.Contains(strings.Join(command.Args, " "), "/locations?") {
+					return []byte(testRegionsJSON), nil
+				}
+				args := strings.Join(command.Args, " ")
+				if strings.Contains(args, "group exists") {
+					return []byte("false"), nil
+				}
+				if backend == installer.DatabaseFlexible && strings.Contains(args, "postgres flexible-server list-skus") {
+					return []byte(`[{"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
+				}
+				t.Fatalf("unexpected discovery command: %v", command.Args)
+				return nil, nil
+			})
+			var output bytes.Buffer
+			err = setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, discovery: runner},
+				strings.NewReader(""), &output, &output, func(context.Context, []string, io.Writer, io.Writer) error {
+					t.Fatal("unsupported database reached a setup stage")
+					return nil
+				})
+			if err == nil || !strings.Contains(err.Error(), "verify the original database settings") {
+				t.Fatalf("setup accepted unsupported database region: %v", err)
+			}
+			saved, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(saved, data) {
+				t.Fatal("failed region validation changed the saved configuration")
+			}
+		})
+	}
+}
+
+func TestSetupRetriesRestrictedExistingDatabase(t *testing.T) {
+	for _, backend := range []installer.DatabaseBackend{installer.DatabaseFlexible} {
+		t.Run(string(backend), func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Database = installer.DatabaseConfig{Backend: backend, Location: "eastus"}
+			c.AKS.Operator = &installer.OperatorConfig{ObjectID: defaultPublisher, PrincipalType: "User"}
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			kind, host := "Microsoft.DBforPostgreSQL/flexibleServers", "pgexample.postgres.database.azure.com"
+			id := "/subscriptions/" + c.Azure.SubscriptionID + "/resourceGroups/" + c.Azure.ResourceGroup + "/providers/" + kind + "/pgexample"
+			db := &installer.DatabaseInfrastructure{Backend: backend, Location: "eastus", ResourceID: id,
+				Host: host, Name: "substrate", Schema: "substrate", EgressIP: "20.1.2.3"}
+			outputs, err := json.Marshal(installer.Infrastructure{
+				ClusterName: c.AKS.ClusterName, ResourceGroup: c.Azure.ResourceGroup,
+				StorageAccount: "substratetest123", AccountURL: "https://substratetest123.blob.core.windows.net",
+				SnapshotsContainer: "snapshots", AssetsContainer: "assets",
+				NodeClientID: defaultPublisher, ControlClientID: defaultPublisher, TenantID: defaultPublisher, Database: db,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := defaultsRunner(func(_ context.Context, command installer.Command) ([]byte, error) {
+				args := strings.Join(command.Args, " ")
+				switch {
+				case isRegionList(command) && strings.Contains(args, "/locations?"):
+					return json.Marshal([]string{c.Azure.Location, c.DatabaseLocation()})
+				case strings.Contains(args, "postgres flexible-server list-skus"):
+					return []byte("[]"), nil
+				case strings.Contains(args, "/capabilities?"):
+					return []byte(`{"value":[]}`), nil
+				case strings.Contains(args, "group exists"):
+					return []byte("true"), nil
+				case strings.Contains(args, "group show"):
+					return json.Marshal(map[string]any{"location": c.Azure.Location, "tags": map[string]string{
+						"substrate-aks-installation": c.Installation.ID, "substrate-aks-database": string(backend),
+						"substrate-aks-database-location": c.DatabaseLocation(),
+					}})
+				case strings.Contains(args, "deployment sub list"):
+					return outputs, nil
+				case strings.Contains(args, "resource show --ids "+id):
+					return json.Marshal(map[string]any{"id": id, "location": "eastus",
+						"tags": map[string]string{"substrate-aks-installation": c.Installation.ID}})
+				case strings.Contains(args, "account show"):
+					return []byte(accountJSON("user")), nil
+				case strings.Contains(args, "ad signed-in-user show"):
+					return []byte(`{"id":"` + defaultPublisher + `"}`), nil
+				default:
+					t.Fatalf("unexpected discovery command: %v", command.Args)
+					return nil, nil
+				}
+			})
+			stopped := errors.New("stop at first setup stage")
+			var output bytes.Buffer
+			err = setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, discovery: runner},
+				strings.NewReader(""), &output, &output, func(_ context.Context, args []string, _, _ io.Writer) error {
+					if args[0] != "plan" {
+						t.Fatalf("unexpected first stage: %v", args)
+					}
+					return stopped
+				})
+			if !errors.Is(err, stopped) || !strings.Contains(output.String(), "Warning: Azure no longer advertises") {
+				t.Fatalf("saved setup did not continue with a warning: %v; %s", err, output.String())
+			}
+			saved, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(saved, data) {
+				t.Fatal("retry changed the saved configuration")
+			}
+		})
+	}
+}
+
+func TestSetupOffersOnlySupportedDatabaseRegions(t *testing.T) {
+	for _, backend := range []struct {
+		name, region, capabilities string
+	}{
+		{"flexible-server", "westus3", `[{"supportedServerVersions":[{"name":"17"}],"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D2ads_v5"}]}]}]`},
+	} {
+		outcomes := []string{"select supported region", "EOF before selection", "cancel discovery"}
+		for _, outcome := range outcomes {
+			t.Run(backend.name+"/"+outcome, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				path := testRecord(t, "substrate-test")
+				var mu sync.Mutex
+				checked := map[string]int{}
+				runner := defaultsRunner(func(_ context.Context, command installer.Command) ([]byte, error) {
+					args := strings.Join(command.Args, " ")
+					if strings.Contains(args, "provider show") {
+						return []byte(`["South Central US","` + backend.region + `"]`), nil
+					}
+					if strings.Contains(args, "/locations?api-version=") {
+						return []byte(`["eastus","southcentralus","westus3"]`), nil
+					}
+					if strings.HasPrefix(args, "az account show ") {
+						return []byte(accountJSON("user")), nil
+					}
+					if args == "az ad signed-in-user show --only-show-errors --output json" {
+						return []byte(`{"id":"` + defaultPublisher + `"}`), nil
+					}
+					if !strings.Contains(args, "postgres flexible-server list-skus") {
+						t.Fatalf("unexpected discovery command: %v", command.Args)
+					}
+					if strings.Contains(args, "--location southcentralus") || strings.Contains(args, "/locations/southcentralus/") {
+						mu.Lock()
+						checked["southcentralus"]++
+						mu.Unlock()
+						if outcome == "cancel discovery" {
+							cancel()
+							return nil, context.Canceled
+						}
+						if backend.name == "flexible-server" {
+							return []byte(`[{"reason":"Subscriptions are restricted from provisioning in this region."}]`), nil
+						}
+						return []byte(`{"value":[]}`), nil
+					}
+					if !strings.Contains(args, "--location "+backend.region) &&
+						!strings.Contains(args, "/locations/"+backend.region+"/") {
+						t.Fatalf("capability request targeted an unexpected region: %v", command.Args)
+					}
+					mu.Lock()
+					checked[backend.region]++
+					mu.Unlock()
+					return []byte(backend.capabilities), nil
+				})
+				answers := "\n\n\n"
+				if outcome == "select supported region" {
+					// Approve billing and decline the demo; the first stage stops setup
+					// so the new installation is kept for inspection.
+					answers += "southcentralus\n" + backend.region + "\nyes\nno\n"
+				}
+				var output bytes.Buffer
+				err := setupForTest(ctx, setupOptions{
+					home: recordHome(path), subscription: defaultSubscription, publisher: defaultPublisher, reader: defaultPublisher,
+					cidr: "203.0.113.8/32", name: "substrate-test", location: "southcentralus",
+					database: backend.name, discovery: runner, accessible: true,
+				}, strings.NewReader(answers), &output, &output, func(ctx context.Context, args []string, out, stderr io.Writer) error {
+					if outcome != "select supported region" {
+						t.Fatal("incomplete region selection reached a setup stage")
+					}
+					return stopAtFirstStage(ctx, args, out, stderr)
+				})
+				if outcome == "select supported region" {
+					if !errors.Is(err, errFirstStage) {
+						t.Fatalf("setup did not recover and reach the first stage: %v\n%s", err, &output)
+					}
+					c, loadErr := installer.LoadConfig(path)
+					if loadErr != nil || c.DatabaseLocation() != backend.region || c.Azure.Location != "southcentralus" {
+						t.Fatalf("region selection was not saved independently of AKS: %+v, %v", c, loadErr)
+					}
+					if checked["southcentralus"] != 1 || checked[backend.region] != 2 ||
+						!strings.Contains(output.String(), "Available database regions: "+backend.region) ||
+						!strings.Contains(output.String(), "southcentralus is not available") ||
+						!strings.Contains(output.String(), `unknown Azure region "southcentralus"`) {
+						t.Fatalf("setup offered or accepted an unsupported region: %v\n%s", checked, &output)
+					}
+					// Discovery is slow, so it must run as a visible check before the picker.
+					check := strings.Index(output.String(), "Database region availability")
+					step := strings.Index(output.String(), "can take up to a minute")
+					picker := strings.Index(output.String(), "Available database regions")
+					if check < 0 || step < check || picker < step {
+						t.Fatalf("region discovery was not presented as a timed check before the picker:\n%s", &output)
+					}
+				} else {
+					want := io.EOF
+					if outcome == "cancel discovery" {
+						want = context.Canceled
+					}
+					if !errors.Is(err, want) {
+						t.Fatalf("setup lost cancellation: %v, %v", err, checked)
+					}
+					if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("incomplete database selection saved a configuration")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
-	path := testCLIConfig(t)
-	t.Setenv("PATH", "")
-	var output bytes.Buffer
-	err := run(t.Context(), []string{"setup", recordName(path), "--yes",
-		"--identity-object-id", defaultPublisher}, &output, &output)
-	if err == nil || !strings.Contains(err.Error(), "only apply to new installations") {
-		t.Fatalf("setup silently overrode configuration: %v", err)
+	for _, flags := range [][]string{
+		{"--identity-object-id", defaultPublisher},
+		{"--database", "flexible-server"},
+		{"--database-location", "eastus"},
+	} {
+		t.Run(flags[0], func(t *testing.T) {
+			path := testCLIConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", "")
+			var output bytes.Buffer
+			err = run(t.Context(), append([]string{"setup", recordName(path), "--yes"}, flags...), &output, &output)
+			if err == nil || !strings.Contains(err.Error(), "only apply to new installations") {
+				t.Fatalf("setup silently overrode configuration: %v", err)
+			}
+			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("rejected flags changed the saved installation: %v", err)
+			}
+		})
 	}
 }
 
@@ -670,7 +921,7 @@ func TestSetupNamePromptRejectsSavedInstallations(t *testing.T) {
 		home: home, subscription: defaultSubscription, publisher: defaultPublisher,
 		cidr: "203.0.113.8/32", location: "eastus2", accessible: true, skipContextHandoff: true,
 		discovery: subscriptionDisplayRunner(t), azure: successfulCloudRunnerFor(home, "fresh-install"),
-	}, strings.NewReader("substrate-test\nfresh-install\n\n\nno\n"), &output, &output,
+	}, strings.NewReader("substrate-test\nfresh-install\n\n\n\nno\n"), &output, &output,
 		func(context.Context, []string, io.Writer, io.Writer) error {
 			t.Fatal("declined setup ran a stage")
 			return nil

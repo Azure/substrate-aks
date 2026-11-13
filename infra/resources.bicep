@@ -24,7 +24,16 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryName string
+@allowed(['bundled', 'flexible-server'])
+param databaseBackend string = 'bundled'
+param databaseLocation string = location
+param databaseSkuName string = 'Standard_D2ads_v5'
+@allowed(['Burstable', 'GeneralPurpose', 'MemoryOptimized'])
+param databaseSkuTier string = 'GeneralPurpose'
+@secure()
+param databaseAdminPassword string = ''
 
+var managedDatabase = databaseBackend != 'bundled'
 var tags = {
   'substrate-aks-installation': installationId
 }
@@ -38,13 +47,46 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' existing =
   name: registryName
 }
 
+resource egress 'Microsoft.Network/publicIPAddresses@2024-05-01' = if (managedDatabase) {
+  name: '${clusterName}-database-egress'
+  location: location
+  tags: tags
+  sku: { name: 'Standard' }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    publicIPAddressVersion: 'IPv4'
+  }
+}
+
+resource clusterIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (managedDatabase) {
+  name: '${clusterName}-cluster'
+  location: location
+  tags: tags
+}
+
+resource egressNetwork 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (managedDatabase) {
+  name: guid(egress!.id, clusterIdentity!.id, 'network')
+  scope: egress
+  properties: {
+    principalId: clusterIdentity!.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4d97b98b-1d4f-4787-a291-c67834d212e7')
+  }
+}
+
 resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
   name: clusterName
   location: location
   tags: tags
-  identity: {
+  identity: managedDatabase ? {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${clusterIdentity!.id}': {}
+    }
+  } : {
     type: 'SystemAssigned'
   }
+  dependsOn: [egressNetwork]
   properties: {
     dnsPrefix: clusterName
     kubernetesVersion: kubernetesVersion
@@ -79,6 +121,13 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
       networkPolicy: 'cilium'
       loadBalancerSku: 'standard'
       outboundType: 'loadBalancer'
+      ...(managedDatabase ? {
+        loadBalancerProfile: {
+          outboundIPs: {
+            publicIPs: [{ id: egress!.id }]
+          }
+        }
+      } : {})
       podCidr: '10.244.0.0/16'
       serviceCidr: '10.0.0.0/16'
       dnsServiceIP: '10.0.0.10'
@@ -129,6 +178,18 @@ resource clusterOperator 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     principalId: operatorObjectId
     principalType: operatorPrincipalType
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b')
+  }
+}
+
+module flexible 'flexible-server.bicep' = if (databaseBackend == 'flexible-server') {
+  name: 'postgres-flexible-${installationId}'
+  params: {
+    location: databaseLocation
+    installationId: installationId
+    adminPassword: databaseAdminPassword
+    egressIP: egress!.properties.ipAddress
+    skuName: databaseSkuName
+    skuTier: databaseSkuTier
   }
 }
 
@@ -272,4 +333,15 @@ output infrastructure object = {
   nodeClientId: nodeIdentity.properties.clientId
   controlClientId: controlIdentity.properties.clientId
   tenantId: tenant().tenantId
+  ...(managedDatabase ? {
+    database: {
+      backend: databaseBackend
+      location: databaseLocation
+      resourceId: flexible!.outputs.resourceId
+      host: flexible!.outputs.host
+      name: 'substrate'
+      schema: 'substrate'
+      egressIP: egress!.properties.ipAddress
+    }
+  } : {})
 }

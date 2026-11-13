@@ -112,6 +112,10 @@ exports. On failure it prints recovery commands instead.
 
 ### Options and automation
 
+Setup also offers bundled PostgreSQL or Azure Database for PostgreSQL Flexible Server.
+Managed database regions are filtered by subscription-specific capabilities.
+Setup rechecks the chosen region before billing approval.
+
 | Option | Use |
 | --- | --- |
 | `--accessible` | Line-oriented prompts for screen readers; also used automatically for redirected output and `TERM=dumb` |
@@ -217,6 +221,9 @@ buildx builder, which may download a BuildKit container and has two minutes to
 start. If it is unhealthy, automatic mode falls back to Podman; an explicit
 `--container-engine` never falls back. Reusing configured images needs no builder.
 
+Registry-only provisioning never creates a managed database or its credentials,
+egress IP, or bootstrap Job.
+
 ACR authentication uses your Azure login. Registry credentials stay in the
 private workspace; your Docker credentials, context, and buildx settings are left
 alone. If the CLI reports a workspace context-store conflict, move the old store
@@ -256,12 +263,17 @@ bin/substrate-aks client
 
 | Command | Result |
 | --- | --- |
-| `provision` | Create AKS, Blob containers, identities, and permissions; reuse the ACR |
+| `provision` | Create AKS, Blob containers, identities, permissions, and any selected managed database; reuse the ACR |
 | `check` | Verify node versions, microVM worker count, and required certificate APIs |
 | `prepare` | Render Azure settings into the managed upstream source checkout |
 | `install` | Verify images and KVM, upload runtime assets, and deploy Substrate |
-| `status` | Show pods and persistent volume claims |
+| `status` | Show pods, persistent volume claims, and managed database metadata |
 | `client` | Install the matching `kubectl ate` and print shell exports |
+
+Managed databases use a restricted firewall, a static AKS outbound IP, and
+IP-scoped cluster network permissions. Credentials are retained in a Standard
+Key Vault with vault-scoped Secrets Officer access for the AKS operator and
+seven-day soft-delete retention.
 
 The cluster uses Azure CNI Overlay and Cilium network policy, with a separate
 tainted microVM node pool. Automatic Kubernetes version upgrades are disabled to
@@ -295,6 +307,42 @@ AKS Ubuntu nodes must provide these files:
 Discovering the certificate APIs is not enough: the signer and consuming
 workloads must also roll out successfully. Runtime assets are private Blob
 objects, verified by checksum when fetched.
+
+For a [managed PostgreSQL backend](configuration.md#postgresql-backend), `install`
+first runs a bounded non-root PostgreSQL-client Job in AKS. It creates the
+dedicated `substrate` database and runs the pinned upstream role/schema script
+transactionally. The temporary Job, administrator Secret and SQL ConfigMap are
+removed on success or failure, and again before the next bootstrap. If that
+cleanup itself fails, the error is reported and the administrator Secret can
+remain in `ate-system`; remove all three with
+`kubectl delete job,secret,configmap substrate-aks-postgres-bootstrap -n ate-system`.
+Failure does not record a completed install.
+The installer observes both successful and failed Job conditions, reporting a
+terminal failure without waiting for the full readiness deadline.
+The application, not the bootstrap Job, runs its migrations under the separate
+owner login.
+
+Upstream receives explicit owner/runtime DSNs through its existing secret
+environment contract on full install and component redeploy. It skips bundled
+PostgreSQL and reconciles the API Secret and rollout hash itself. `status`
+reports the managed endpoint and AKS egress address alongside workload status.
+Keep the saved installation and its ID for retries. Provisioning reuses
+the credentials in the installer-owned Key Vault rather than rotating them.
+The installation directory contains no database passwords. Run as the
+AKS operator or grant the
+installer equivalent vault access. Provisioning waits up to three minutes for
+recognized vault RBAC/DNS propagation failures instead of aborting on the first
+probe, including Linux and macOS DNS error wording. Metadata-only probes retain
+access diagnostics and never read passwords.
+If access still fails, retry the same installation once permissions are
+correct; a missing secret after database deployment requires restoring that secret.
+
+Secret-handling Azure, Kubernetes Secret and upstream commands suppress
+subprocess output even with `--verbose`; nonzero exits remain errors. This
+also limits automatic diagnostics. Inspect Azure deployment operations for
+provisioning failures. For bootstrap failures check service readiness, egress
+firewall, image pulling and Job conditions; treat SQL logs and upstream records
+as sensitive. Never paste credentials or DSNs into issues.
 
 ## Component redeployment
 
@@ -434,7 +482,9 @@ property-level details are in the logs and verbose output.
 
 **Failures retain resources.** Interactive setup offers to retry the failed
 command. `--yes` and cancellation do not enter a retry loop. Follow the printed
-stage-retry command, or rerun `setup NAME`.
+stage-retry command, or rerun `setup NAME`. Each full provision attempt gets its
+own subscription deployment name, so a failed rerun cannot hide the outputs of
+the last successful one.
 
 A new setup process checks the installation from the beginning; it does not
 resume an arbitrary interrupted stage. Keep the installation ID and target
@@ -465,8 +515,19 @@ no-op. After Azure deletion succeeds, `destroy` removes the installation's local
 directory, including its settings and logs. Subscription deployment history and
 the shared client remain. If `destroy` fails, local state is kept for a retry.
 
+Managed PostgreSQL servers are created in the installation's resource group,
+even when the database region differs from AKS, so group deletion removes them.
+If group deletion fails, `destroy` keeps local state for a retry. The database
+Key Vault stays soft-deleted for seven days (purge protection is off); the
+installer does not purge or recover it. Vault names derive from the installation ID, so
+a new installation with the same name uses a different vault.
+
 If the resource group was deleted outside the installer, clear references to
-deleted images before reusing the saved installation:
+deleted images before reusing the saved installation. This doesn't apply to a
+managed PostgreSQL installation: create a new installation instead. Reusing it
+fails on the soft-deleted vault name for seven days. After that, a new empty
+vault is created, and setup refuses to generate passwords because the earlier
+deployments are still recorded.
 
 ```sh
 bin/substrate-aks images substrate-dev --reset-config
@@ -533,6 +594,25 @@ with the earlier Dsv3 default.
 - Changing the snapshot reader on an existing installation
 - Regions and VM sizes other than those in the runs above
 
-Not part of this quickstart: installing into an existing cluster, managed
-PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)), upgrades, autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared
-filesystems.
+Not part of this quickstart: installing into an existing cluster, upgrades,
+autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared filesystems.
+
+### Managed PostgreSQL
+
+Flexible Server installs, with the database in `westus3` and AKS in
+`southcentralus`, covered:
+
+- The pinned bootstrap SQL run twice, all migrations, owner and runtime role
+  separation, advisory locks, and UNLOGGED partition maintenance, over verified
+  TLS
+- Setup with two API replicas and the counter demo, through Blob MEMORY
+  snapshots and automatic and explicit resume
+- Same-config reprovisioning, with the server, egress IP, and firewall rule
+  unchanged
+- Key Vault credential creation, reuse from a fresh workspace, and ARM secure
+  references, with no passwords in local files or logs
+- Ownership-checked teardown of the installation and AKS node resource groups
+
+Not yet validated: egress IP stability after network changes, rejection of
+unauthorized IPs, database reconnection after pod restarts, and renewable Entra
+database credentials.

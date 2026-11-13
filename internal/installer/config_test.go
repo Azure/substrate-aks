@@ -208,11 +208,11 @@ func TestConfigBundledConnectionBudget(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("unrelated sizing must preserve the unset budget exception: %v", err)
 	}
-	if err := validateConnectionBudget(1, 84, 101); err != nil {
-		t.Fatalf("rounded headroom rejected boundary: %v", err)
+	if err := validateConnectionBudget(1, 84, 90); err != nil {
+		t.Fatalf("available-budget boundary rejected: %v", err)
 	}
-	if err := validateConnectionBudget(1, 85, 101); err == nil {
-		t.Fatal("rounded headroom accepted excess connections")
+	if err := validateConnectionBudget(1, 85, 90); err == nil {
+		t.Fatal("available-budget boundary accepted excess connections")
 	}
 }
 
@@ -229,8 +229,9 @@ func TestLoadMainEraRecordWithoutSizing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Substrate.Sizing != nil || c.Substrate.Atelet != nil {
-		t.Fatalf("old record gained sizing: %+v", c.Substrate)
+	if c.Substrate.Sizing != nil || c.Substrate.Atelet != nil || c.Database.Backend != DatabaseBundled ||
+		c.Database.SKU != (DatabaseSKU{}) {
+		t.Fatalf("old record gained non-default settings: %+v, %+v", c.Substrate, c.Database)
 	}
 	plan := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
 		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
@@ -246,7 +247,8 @@ func TestLoadMainEraRecordWithoutSizing(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved, err := LoadConfig(path)
-	if err != nil || saved.Substrate.Sizing != nil || saved.Substrate.Atelet != nil {
+	if err != nil || saved.Substrate.Sizing != nil || saved.Substrate.Atelet != nil ||
+		saved.Database.Backend != DatabaseBundled || saved.Database.SKU != (DatabaseSKU{}) {
 		t.Fatalf("image save changed omitted settings: %+v, %v", saved.Substrate, err)
 	}
 	data, err = os.ReadFile(path)

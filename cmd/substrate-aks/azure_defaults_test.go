@@ -168,7 +168,7 @@ func TestSetupDiscoversNewConfigAndPromptsOnlyForMissingIDs(t *testing.T) {
 				}
 				return []byte(`{"id":"` + defaultPublisher + `","displayName":"Publisher"}`), nil
 			})
-			answers := "\n\nno\nyes\nno\n"
+			answers := "\n\nno\n\nyes\nno\n"
 			if blocked {
 				answers = defaultPublisher + "\n" + defaultPublisher + "\n" + answers
 			}
