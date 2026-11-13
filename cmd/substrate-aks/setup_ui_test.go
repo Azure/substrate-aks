@@ -57,6 +57,24 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 	}
 }
 
+func TestSetupSummarySystemPoolCount(t *testing.T) {
+	c, err := installer.LoadConfig(testCLIConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []int{1, 4} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			c.AKS.SystemPool.Count = count
+			var output bytes.Buffer
+			newSetupUI(&output).summary(c, azureDefaults{}, "deploy.json", false, "")
+			want := fmt.Sprintf("%d system + 1 microVM", count)
+			if !strings.Contains(strings.Join(strings.Fields(output.String()), " "), want) {
+				t.Fatalf("summary omitted %q: %s", want, output.String())
+			}
+		})
+	}
+}
+
 func TestSetupCompletionBanner(t *testing.T) {
 	const cluster = "substrate-cluster-with-a-long-name"
 	for _, width := range []int{24, 32, 48, 80} {

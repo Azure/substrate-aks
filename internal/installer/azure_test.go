@@ -215,7 +215,7 @@ func TestStatusReportsInstalledRevisionsFromTheRecord(t *testing.T) {
 func TestProvisionWhatIfWritesTypedParameters(t *testing.T) {
 	c := testConfig(t)
 	r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[{"changeType":"Create","resourceId":"/subscriptions/test/resourceGroups/dev/providers/Microsoft.ContainerRegistry/registries/example"}]}`}, skuReply(SystemVMSize))
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[{"changeType":"Create","resourceId":"/subscriptions/test/resourceGroups/dev/providers/Microsoft.ContainerRegistry/registries/example"}]}`}, skuReply(c.AKS.SystemPool.VMSize))
 	var changes []ResourceChange
 	a := App{Config: c, Runner: r, Preview: func(result []ResourceChange) error {
 		changes = result
@@ -288,7 +288,7 @@ func TestProvisionRetryWithAKSManagedNodeGroup(t *testing.T) {
 					clusterReply(c), operatorRecordReply(c),
 					reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`}}
 				if whatIf && !registryOnly {
-					replies = append(replies, skuReply(SystemVMSize))
+					replies = append(replies, skuReply(c.AKS.SystemPool.VMSize))
 				}
 				r := script(t, replies...)
 				if err := (App{Config: c, Runner: r}).provision(t.Context(), whatIf, registryOnly); err != nil {
@@ -470,7 +470,7 @@ func TestProvisionUnrestrictedAPIAccessIsExplicitAndUsesAnEmptyArray(t *testing.
 				return
 			}
 			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 			if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 				t.Fatal(err)
 			}

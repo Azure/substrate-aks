@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestControlPlaneCapacityWarnings(t *testing.T) {
 			} else {
 				sizing.APIServer = &APIServerSizing{Resources: r}
 			}
-			got, err := capacityWarning(SystemVMSize, tc.count, cpu, memory, SubstrateConfig{Sizing: &sizing})
+			got, err := capacityWarning(DefaultSystemVMSize, tc.count, cpu, memory, SubstrateConfig{Sizing: &sizing})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +87,7 @@ func TestControlPlaneCapacityCombinesRouterContainers(t *testing.T) {
 		AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "2"}},
 		Envoy:        &ResourceRequirements{Requests: map[string]string{"cpu": "2"}},
 	}}}}
-	warning, err := capacityWarning(SystemVMSize, 2, cpu, memory, c)
+	warning, err := capacityWarning(DefaultSystemVMSize, 2, cpu, memory, c)
 	if err != nil || !strings.Contains(warning, "a pod exceeds one node") || strings.Contains(warning, "aggregate requests exceed") {
 		t.Fatalf("router containers were not summed: %q, %v", warning, err)
 	}
@@ -112,8 +113,8 @@ func TestSystemCapacitySKUValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":%q},{"name":"MemoryGB","value":%q}]}]`,
-				SystemVMSize, tc.cpus, tc.memory)
-			cpu, memory, err := a.systemCapacity([]byte(data), SystemVMSize)
+				DefaultSystemVMSize, tc.cpus, tc.memory)
+			cpu, memory, err := a.systemCapacity([]byte(data), DefaultSystemVMSize)
 			if (err == nil) != tc.valid {
 				t.Fatalf("systemCapacity = %v; want valid %t", err, tc.valid)
 			}
@@ -132,15 +133,15 @@ func TestSystemCapacityRejectsAmbiguousCapabilities(t *testing.T) {
 		`[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"},{"name":"MemoryGB","value":"16"}]}]`,
 		`[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]},{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]}]`,
 	} {
-		if _, _, err := a.systemCapacity([]byte(data), SystemVMSize); err == nil {
+		if _, _, err := a.systemCapacity([]byte(data), DefaultSystemVMSize); err == nil {
 			t.Fatalf("accepted ambiguous SKU capabilities: %s", data)
 		}
 	}
 }
 
 func TestSystemCapacityPreservesMemoryDecimalPrecision(t *testing.T) {
-	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.400000000000000001"}]}]`, SystemVMSize)
-	_, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), SystemVMSize)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.400000000000000001"}]}]`, DefaultSystemVMSize)
+	_, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), DefaultSystemVMSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,8 +159,8 @@ func TestSystemCapacityCPUReservations(t *testing.T) {
 	} {
 		t.Run(fmt.Sprint(tc.cpus), func(t *testing.T) {
 			data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":%q},{"name":"MemoryGB","value":"16"}]}]`,
-				SystemVMSize, fmt.Sprint(tc.cpus))
-			cpu, _, err := a.systemCapacity([]byte(data), SystemVMSize)
+				DefaultSystemVMSize, fmt.Sprint(tc.cpus))
+			cpu, _, err := a.systemCapacity([]byte(data), DefaultSystemVMSize)
 			want := *resource.NewMilliQuantity(tc.cpus*1000-tc.reserved, resource.DecimalSI)
 			if err != nil || cpu.Cmp(want) != 0 {
 				t.Fatalf("capacity = %s, %v; want %s", cpu.String(), err, want.String())
@@ -170,8 +171,8 @@ func TestSystemCapacityCPUReservations(t *testing.T) {
 
 func TestSystemCapacityFractionalMemoryExact(t *testing.T) {
 	c := testConfig(t)
-	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
-	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), SystemVMSize)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, DefaultSystemVMSize)
+	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), DefaultSystemVMSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestSystemCapacityFractionalMemoryExact(t *testing.T) {
 			s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Replicas: tc.replicas, Resources: &RouterResources{
 				Envoy: &ResourceRequirements{Requests: map[string]string{"memory": tc.request}},
 			}}}}
-			warning, err := capacityWarning(SystemVMSize, tc.count, cpu, memory, s)
+			warning, err := capacityWarning(DefaultSystemVMSize, tc.count, cpu, memory, s)
 			if err != nil || (warning != "") != tc.warn {
 				t.Fatalf("request %s warning = %q, %v", tc.request, warning, err)
 			}
@@ -210,8 +211,8 @@ func TestSystemCapacityFractionalMemoryExact(t *testing.T) {
 }
 
 func TestControlPlaneCapacityFractionalAggregate(t *testing.T) {
-	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
-	cpu, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), SystemVMSize)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, DefaultSystemVMSize)
+	cpu, memory, err := (App{Config: testConfig(t)}).systemCapacity([]byte(data), DefaultSystemVMSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +233,7 @@ func TestControlPlaneCapacityFractionalAggregate(t *testing.T) {
 					Envoy: &ResourceRequirements{Requests: map[string]string{"memory": "217264947.2"}},
 				}},
 			}}
-			warning, err := capacityWarning(SystemVMSize, 2, cpu, memory, s)
+			warning, err := capacityWarning(DefaultSystemVMSize, 2, cpu, memory, s)
 			if err != nil || (warning != "") != tc.warn {
 				t.Fatalf("aggregate request warning = %q, %v", warning, err)
 			}
@@ -245,8 +246,8 @@ func TestControlPlaneCapacityFractionalAggregate(t *testing.T) {
 
 func TestControlPlaneCapacityFractionalExactEquality(t *testing.T) {
 	c := testConfig(t)
-	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, SystemVMSize)
-	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), SystemVMSize)
+	data := fmt.Sprintf(`[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"0.4"}]}]`, DefaultSystemVMSize)
+	cpu, memory, err := (App{Config: c}).systemCapacity([]byte(data), DefaultSystemVMSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,9 +255,121 @@ func TestControlPlaneCapacityFractionalExactEquality(t *testing.T) {
 	s := SubstrateConfig{Sizing: &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{
 		Envoy: &ResourceRequirements{Requests: map[string]string{"memory": "217264947.2"}},
 	}}}}
-	warning, err := capacityWarning(SystemVMSize, 1, cpu, memory, s)
+	warning, err := capacityWarning(DefaultSystemVMSize, 1, cpu, memory, s)
 	if err != nil || warning != "" {
 		t.Fatalf("exactly equal request must not warn: %q, %v", warning, err)
+	}
+}
+
+func TestPlanUsesConfiguredSystemPool(t *testing.T) {
+	for _, tc := range []struct {
+		name, size, cpus, memory, nodeCPU, nodeMemory string
+		count                                         int
+		apiCPU, routerCPU, routerMemory               string
+		routerReplicas                                int
+		aggregate, pod, missing                       bool
+	}{
+		{name: "default equality", size: "Standard_D4s_v6", cpus: "4", memory: "16", nodeCPU: "3860m", nodeMemory: "12188Mi", count: 1, apiCPU: "1930m"},
+		{name: "default aggregate over", size: "Standard_D4s_v6", cpus: "4", memory: "16", nodeCPU: "3860m", nodeMemory: "12188Mi", count: 1, apiCPU: "1931m", aggregate: true},
+		{name: "two nodes aggregate equality", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, apiCPU: "7820m"},
+		{name: "two nodes aggregate over", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, apiCPU: "7820m", routerCPU: "1m", aggregate: true},
+		{name: "two nodes fit", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, apiCPU: "5"},
+		{name: "same pods one node aggregate over", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 1, apiCPU: "5", aggregate: true},
+		{name: "two nodes per-pod equality", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, routerCPU: "7820m"},
+		{name: "two nodes per-pod over", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, routerCPU: "7821m", pod: true},
+		{name: "one node per-pod over", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 1, routerCPU: "7821m", aggregate: true, pod: true},
+		{name: "two nodes memory equality", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, routerMemory: "24476Mi", routerReplicas: 2},
+		{name: "two nodes memory over", size: "Standard_D8s_v6", cpus: "8", memory: "32", nodeCPU: "7820m", nodeMemory: "24476Mi", count: 2, routerMemory: "24477Mi", routerReplicas: 2, aggregate: true, pod: true},
+		{name: "larger SKU per-pod equality", size: "Standard_D32s_v6", cpus: "32", memory: "128", nodeCPU: "31580m", nodeMemory: "98204Mi", count: 2, routerCPU: "31580m"},
+		{name: "larger SKU per-pod over", size: "Standard_D32s_v6", cpus: "32", memory: "128", nodeCPU: "31580m", nodeMemory: "98204Mi", count: 2, routerCPU: "31581m", pod: true},
+		{name: "larger SKU aggregate equality", size: "Standard_D32s_v6", cpus: "32", memory: "128", nodeCPU: "31580m", nodeMemory: "98204Mi", count: 2, apiCPU: "31580m"},
+		{name: "larger SKU aggregate over", size: "Standard_D32s_v6", cpus: "32", memory: "128", nodeCPU: "31580m", nodeMemory: "98204Mi", count: 2, apiCPU: "31580m", routerCPU: "1m", aggregate: true},
+		{name: "configured SKU missing with default present", size: "Standard_D8s_v6", count: 2, missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.Azure.Location = "westus3"
+			c.AKS.SystemPool = SystemPoolConfig{VMSize: tc.size, Count: tc.count}
+			c.AKS.WorkerPool.VMSize = "Standard_D2s_v6"
+			c.Substrate.Sizing = &SizingConfig{}
+			if tc.apiCPU != "" {
+				c.Substrate.Sizing.APIServer = &APIServerSizing{Resources: &ResourceRequirements{
+					Requests: map[string]string{"cpu": tc.apiCPU},
+				}}
+			}
+			if tc.routerCPU != "" || tc.routerMemory != "" {
+				requests := map[string]string{}
+				if tc.routerCPU != "" {
+					requests["cpu"] = tc.routerCPU
+				}
+				if tc.routerMemory != "" {
+					requests["memory"] = tc.routerMemory
+				}
+				router := &RouterSizing{Resources: &RouterResources{Envoy: &ResourceRequirements{Requests: requests}}}
+				if tc.routerReplicas > 0 {
+					router.Replicas = &tc.routerReplicas
+				}
+				c.Substrate.Sizing.Router = router
+			}
+			catalog := skuReply(DefaultSystemVMSize).output
+			if !tc.missing {
+				catalog = fmt.Sprintf(`{"value":[{"name":%q,"family":"D","capabilities":[{"name":"vCPUs","value":%q},{"name":"MemoryGB","value":%q}]}]}`,
+					tc.size, tc.cpus, tc.memory)
+			}
+			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`},
+				reply{contains: "/providers/Microsoft.Compute/skus?", output: catalog})
+			var warnings []string
+			err := (App{Config: c, Runner: r, Warning: func(s string) { warnings = append(warnings, s) }}).Provision(t.Context(), true)
+			if err != nil {
+				t.Fatalf("plan failed: %v", err)
+			}
+			cmd := r.calls[len(r.calls)-1]
+			var endpoint, query string
+			for i := 0; i+1 < len(cmd.Args); i++ {
+				switch cmd.Args[i] {
+				case "--url":
+					endpoint = cmd.Args[i+1]
+				case "--query":
+					query = cmd.Args[i+1]
+				}
+			}
+			u, err := url.Parse(endpoint)
+			if err != nil || u.Host != "management.azure.com" ||
+				u.Path != "/subscriptions/"+c.Azure.SubscriptionID+"/providers/Microsoft.Compute/skus" ||
+				u.Query().Get("$filter") != "location eq '"+c.Azure.Location+"'" ||
+				!strings.Contains(strings.Join(cmd.Args, " "), "--subscription "+c.Azure.SubscriptionID) ||
+				!strings.Contains(query, "name=='"+c.AKS.SystemPool.VMSize+"' || name=='"+c.AKS.WorkerPool.VMSize+"'") {
+				t.Fatalf("lookup did not use configured subscription, region and SKUs: %v", cmd.Args)
+			}
+			if tc.missing {
+				if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "WARNING CONTROL_PLANE_CAPACITY_UNKNOWN: ") {
+					t.Fatalf("missing configured SKU must be unknown: %v", warnings)
+				}
+				return
+			}
+			if !tc.aggregate && !tc.pod {
+				if len(warnings) != 0 {
+					t.Fatalf("unexpected capacity warning: %v", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("expected one warning: %v", warnings)
+			}
+			cpu, memory := resource.MustParse(tc.nodeCPU), resource.MustParse(tc.nodeMemory)
+			cpu.Mul(int64(tc.count))
+			memory.Mul(int64(tc.count))
+			memory.Format = resource.DecimalSI
+			want := fmt.Sprintf("system=%sx%d requested=<", tc.size, tc.count)
+			estimate := fmt.Sprintf("estimated-allocatable=<%s,%s>", cpu.String(), memory.String())
+			if !strings.HasPrefix(warnings[0], "WARNING CONTROL_PLANE_CAPACITY: ") ||
+				!strings.Contains(warnings[0], want) || !strings.Contains(warnings[0], estimate) ||
+				strings.Contains(warnings[0], "aggregate requests exceed") != tc.aggregate ||
+				strings.Contains(warnings[0], "a pod exceeds one node") != tc.pod {
+				t.Fatalf("unexpected configured pool warning: %s", warnings[0])
+			}
+		})
 	}
 }
 
@@ -265,7 +378,7 @@ func TestPlanCapacityLookupWarnsWithoutFailing(t *testing.T) {
 		name, output, want string
 		err                error
 	}{
-		{"valid", skuReply(SystemVMSize).output, "", nil},
+		{"valid", "", "", nil},
 		{"lookup failed", "", "VM SKU lookup failed", errors.New("private diagnostic")},
 		{"missing SKU", `{"value":[]}`, "VM SKU capabilities or reservation model unavailable", nil},
 		{"missing memory", `{"value":[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"}]}]}`, "VM SKU capabilities or reservation model unavailable", nil},
@@ -273,6 +386,9 @@ func TestPlanCapacityLookupWarnsWithoutFailing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testConfig(t)
+			if tc.name == "valid" {
+				tc.output = skuReply(c.AKS.SystemPool.VMSize).output
+			}
 			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
 				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`},
 				reply{contains: "/providers/Microsoft.Compute/skus?", output: tc.output, err: tc.err})

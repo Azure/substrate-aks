@@ -235,7 +235,7 @@ func TestManagedProvisionRetriesRestrictedExistingDatabase(t *testing.T) {
 				}
 				replies = append(replies, reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
 				if whatIf {
-					replies = append(replies, skuReply(SystemVMSize))
+					replies = append(replies, skuReply(c.AKS.SystemPool.VMSize))
 				}
 				r := databaseTestRunner(t, c, true, replies...)
 				if err := (App{Config: c, Runner: r}).Provision(t.Context(), whatIf); err != nil {

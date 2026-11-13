@@ -158,8 +158,7 @@ func (a App) warnControlPlaneCapacity(ctx context.Context) error {
 		emit("WARNING CONTROL_PLANE_CAPACITY_UNKNOWN: control-plane defaults for this source revision are not verified; capacity not verified")
 		return nil
 	}
-	// The system pool is fixed in the current infrastructure template.
-	size, count := SystemVMSize, 1
+	size, count := a.Config.AKS.SystemPool.VMSize, a.Config.AKS.SystemPool.Count
 	cpu, memory, err := a.systemCapacity(data, size)
 	if err != nil {
 		emit("WARNING CONTROL_PLANE_CAPACITY_UNKNOWN: VM SKU capabilities or reservation model unavailable; capacity not verified")

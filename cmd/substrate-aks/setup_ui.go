@@ -313,7 +313,7 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.group("Cluster")
 	u.row("Cluster", c.AKS.ClusterName)
 	u.row("AKS version", c.AKS.KubernetesVersion)
-	u.row("Nodes", fmt.Sprintf("1 system + %d microVM", c.AKS.WorkerPool.Count))
+	u.row("Nodes", fmt.Sprintf("%d system + %d microVM", c.AKS.SystemPool.Count, c.AKS.WorkerPool.Count))
 	u.row("Node size", c.AKS.WorkerPool.VMSize)
 	if c.AKS.AllowUnrestrictedAPI {
 		u.row("API server access", "Anyone on the internet")

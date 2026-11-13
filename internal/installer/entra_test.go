@@ -76,7 +76,7 @@ func TestProvisionOperatorParametersAndLegacyCompatibility(t *testing.T) {
 				c.AKS.Operator = &OperatorConfig{ObjectID: "77777777-7777-4777-8777-777777777777", PrincipalType: "ServicePrincipal"}
 			}
 			r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
+				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 			if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 				t.Fatal(err)
 			}

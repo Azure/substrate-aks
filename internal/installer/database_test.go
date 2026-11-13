@@ -680,7 +680,7 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 				replies = append(replies, reply{contains: "group exists", output: "true"}, reply{contains: "group show", output: string(group)})
 				if !tc.reject {
 					replies = append(replies, reply{contains: "aks list", output: "[]"})
-					replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
+					replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 				}
 				r := script(t, replies...)
 				err = (App{Config: c, Runner: r}).Provision(t.Context(), true)
@@ -699,7 +699,7 @@ func TestManagedProvisionEnforcesDatabaseImmutability(t *testing.T) {
 func TestManagedPreviewDoesNotPersistCredentials(t *testing.T) {
 	c, _ := managedTestConfig(t, DatabaseFlexible)
 	r := script(t, accountReply(c), targetReply(), databaseRegionReply(c.Database.Backend), reply{contains: "group exists", output: "false"},
-		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(SystemVMSize))
+		reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 	if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
