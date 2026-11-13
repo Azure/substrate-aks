@@ -5,9 +5,7 @@ import (
 	"go.ate.dev/substrate/cmd/ate-setup/internal/steps"
 )
 
-// substrate-aks adds this file to its disposable checkout of the pinned
-// source. These read-only commands need neither Kubernetes clients nor the
-// normal configuration report on their structured-output channel.
+// substrate-aks adds these read-only commands to a disposable pinned checkout.
 func init() {
 	skip := func(*cobra.Command, []string) error { return nil }
 	publishCmd.AddCommand(&cobra.Command{
@@ -30,6 +28,41 @@ func init() {
 		PersistentPreRunE: skip, PersistentPostRunE: skip,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return steps.AssembleAzureMicroVMAssets(cmd.Context(), args[0], args[1], args[2])
+		},
+	}, &cobra.Command{
+		Use:    "resolve-check-images REPOSITORY TAG",
+		Hidden: true, Args: cobra.ExactArgs(2),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.ResolveCheckImages(cmd.Context(), args[0], args[1], cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}, &cobra.Command{
+		Use:    "restore-worker-pools KUBECONFIG CONTEXT",
+		Hidden: true, Args: cobra.ExactArgs(2),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.RestoreWorkerPools(cmd.Context(), args[0], args[1], cmd.OutOrStdout())
+		},
+	}, &cobra.Command{
+		Use:    "restore-namespace-resources KUBECONFIG CONTEXT",
+		Hidden: true, Args: cobra.ExactArgs(2),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.RestoreNamespaceResources(cmd.Context(), args[0], args[1], cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}, &cobra.Command{
+		Use:    "restore-inventory KUBECONFIG CONTEXT",
+		Hidden: true, Args: cobra.ExactArgs(2),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.RestoreInventory(cmd.Context(), args[0], args[1], cmd.OutOrStdout())
+		},
+	}, &cobra.Command{
+		Use:    "restore-census KUBECONFIG CONTEXT MODE",
+		Hidden: true, Args: cobra.ExactArgs(3),
+		PersistentPreRunE: skip, PersistentPostRunE: skip,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return steps.RestoreCensus(cmd.Context(), args[0], args[1], args[2], cmd.OutOrStdout())
 		},
 	})
 }

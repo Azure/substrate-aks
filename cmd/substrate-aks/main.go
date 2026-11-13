@@ -35,7 +35,7 @@ Commands:
   plan       Run Bicep subscription what-if; requires Azure access
   provision  Create/reconcile billable resources owned by this installation
   images     Build/push images to owned ACR and assemble microVM assets
-  check      Check cluster version, nodes and required certificate APIs
+  check      Check cluster compatibility; test memory restore on an empty installation
   prepare    Fetch exact source and adapt manifests in a managed checkout
   install    Install Substrate and microVM assets (requires compatible images)
   demo       Deploy upstream's counter-microvm demo
@@ -78,6 +78,10 @@ setup flags:
 client flags:
   --use-context                          Explicitly import/select this installation in your kubeconfig
   --context-file PATH                    Destination; defaults to a single KUBECONFIG file or ~/.kube/config
+
+check tests restore with temporary isolated resources on an empty installation.
+RESTORE_PASSED confirms the test; RESTORE_SKIPPED_NOT_INSTALLED and
+RESTORE_SKIPPED_BUSY mean restore was not tested. See docs/operations.md for recovery.
 `
 
 func main() {
@@ -397,7 +401,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		}
 		p.info("Diagnostic log: %s", log.Name())
 	}
-	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, Preview: func(changes []installer.ResourceChange) error {
+	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, RecoveryReceipt: p.recoveryReceipt, Preview: func(changes []installer.ResourceChange) error {
 		p.pause()
 		if session != nil {
 			return session.preview(c.Azure.SubscriptionID, changes)
@@ -457,7 +461,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		fmt.Fprintf(out, "Saved ACR image references and runtime assets for %s.\n", name)
 		return nil
 	case "check":
-		return a.Check(ctx)
+		return a.Check(ctx, false)
 	case "prepare":
 		root, err := a.Prepare(ctx)
 		if err == nil {

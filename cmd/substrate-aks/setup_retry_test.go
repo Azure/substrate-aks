@@ -74,7 +74,7 @@ func TestSetupFinalHandoffCancellationRetainsRecoveryGuidance(t *testing.T) {
 		home: recordHome(testCLIConfig(t)), name: "substrate-test", withDemo: true, discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader("yes\nyes\nyes\n"), &output, &output,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
-			if args[0] == "client" {
+			if args[0] == "demo" {
 				cancel()
 			}
 			return nil

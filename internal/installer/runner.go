@@ -21,6 +21,10 @@ type Command struct {
 	// BinaryOutput keeps non-text stdout out of the logs; stderr is still
 	// logged for diagnostics.
 	BinaryOutput bool
+	// MaxOutput bounds captured stdout when it is positive.
+	MaxOutput int
+	// StreamStderr receives subprocess diagnostics as they arrive.
+	StreamStderr io.Writer
 }
 
 type Runner interface {
@@ -69,19 +73,26 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	cmd.Env = append(cleanEnvironment(os.Environ()), c.Env...)
 	cmd.Stdin = bytes.NewReader(c.Input)
 	var stdout bytes.Buffer
+	var captured io.Writer = &stdout
+	if c.MaxOutput > 0 {
+		captured = &boundedOutput{buffer: &stdout, remaining: c.MaxOutput}
+	}
 	var stderr tailBuffer
 	diagnostics := log
 	if !c.ShowOutput {
 		diagnostics = io.MultiWriter(log, verbose)
 	}
 	output := &lockedWriter{dst: diagnostics}
-	stdoutWriters := []io.Writer{&stdout, output}
+	stdoutWriters := []io.Writer{captured, output}
 	stderrWriters := []io.Writer{&stderr, output}
+	if c.StreamStderr != nil && !c.SensitiveOutput {
+		stderrWriters = append(stderrWriters, c.StreamStderr)
+	}
 	if c.SensitiveOutput {
-		stdoutWriters = []io.Writer{&stdout}
+		stdoutWriters = []io.Writer{captured}
 		stderrWriters = []io.Writer{io.Discard}
 	} else if c.BinaryOutput {
-		stdoutWriters = []io.Writer{&stdout}
+		stdoutWriters = []io.Writer{captured}
 		fmt.Fprintln(log, "[binary output not logged]")
 	} else if c.ShowOutput {
 		if r.Stdout != nil {
@@ -110,6 +121,20 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	}
 	fmt.Fprintln(log)
 	return stdout.Bytes(), nil
+}
+
+type boundedOutput struct {
+	buffer    *bytes.Buffer
+	remaining int
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	if len(p) > b.remaining {
+		return 0, fmt.Errorf("command output exceeds limit")
+	}
+	n, err := b.buffer.Write(p)
+	b.remaining -= n
+	return n, err
 }
 
 type tailBuffer struct {

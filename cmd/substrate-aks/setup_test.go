@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -119,7 +120,40 @@ func testRuntimeAssets(t *testing.T) string {
 }
 
 func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
-	for _, fail := range []string{"", "images", "demo", "client"} {
+	t.Run("restore check order and labels", func(t *testing.T) {
+		for _, withDemo := range []bool{false, true} {
+			for _, reuse := range []bool{false, true} {
+				config := installer.Config{}
+				if reuse {
+					config.Substrate.Images = installer.ImagesConfig{Repository: "example.invalid/images"}
+				}
+				stages := setupStages(config, withDemo)
+				var suffix []string
+				for _, stage := range stages {
+					switch stage.command {
+					case "prepare", "install", "status", "client", "check", "demo":
+						suffix = append(suffix, stage.command)
+					}
+				}
+				want := []string{"prepare", "install", "status", "client", "check"}
+				if withDemo {
+					want = append(want, "demo")
+				}
+				if !reflect.DeepEqual(suffix, want) {
+					t.Fatalf("withDemo=%v reuse=%v: %v", withDemo, reuse, suffix)
+				}
+				if setupPhase("check", nil) != "connect" || setupPhase("client", nil) != "connect" {
+					t.Fatal("client and check must use the connect phase")
+				}
+				for _, stage := range stages {
+					if stage.command == "check" && stage.label != "Check cluster compatibility and memory restore" {
+						t.Fatalf("check label = %q", stage.label)
+					}
+				}
+			}
+		}
+	})
+	for _, fail := range []string{"", "images", "demo", "client", "check"} {
 		t.Run("failure="+fail, func(t *testing.T) {
 			path := testCLIConfig(t)
 			config, loadErr := installer.LoadConfig(path)
@@ -150,7 +184,7 @@ func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
 			var output bytes.Buffer
 			err := setupForTest(t.Context(), setupOptions{home: recordHome(path), name: recordName(path), yes: true, withDemo: true, discovery: subscriptionDisplayRunner(t)},
 				strings.NewReader(""), &output, &output, execute)
-			wantCommands := []string{"plan", "provision", "images", "images", "plan", "provision", "check", "prepare", "install", "status", "demo", "client"}
+			wantCommands := []string{"plan", "provision", "images", "images", "plan", "provision", "prepare", "install", "status", "client", "check", "demo"}
 			if i := slices.Index(wantCommands, fail); i >= 0 {
 				wantCommands = wantCommands[:i+1]
 			}
@@ -604,7 +638,7 @@ func TestSetupReusesConfiguredImagesOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(commands, ",") != "images,plan,provision,check,prepare,install,status,client" {
+	if strings.Join(commands, ",") != "images,plan,provision,prepare,install,status,client,check" {
 		t.Fatalf("retry rebuilt images or changed the requested demo selection: %v", commands)
 	}
 	if strings.Count(output.String(), "DONE  Setup complete.") != 1 ||

@@ -30,10 +30,13 @@ type Infrastructure struct {
 }
 
 type App struct {
-	Config             Config
-	Runner             Runner
-	ContainerEngine    string
-	Progress           func(string, ...any)
+	Config          Config
+	Runner          Runner
+	ContainerEngine string
+	Progress        func(string, ...any)
+	// RecoveryReceipt is required when the restore smoke runs; it must sync the
+	// private log and acknowledge presentation before returning success.
+	RecoveryReceipt    func(context.Context, string) error
 	Preview            func([]ResourceChange) error
 	ImageCheckProgress func(name string, done bool, err error)
 }

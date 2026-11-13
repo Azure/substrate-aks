@@ -31,6 +31,30 @@ type setupCancelledMsg struct{}
 type setupTickMsg time.Time
 type setupBrandTickMsg struct{}
 
+type setupRecoveryCommand struct {
+	ctx    context.Context
+	text   string
+	output io.Writer
+}
+
+func (c *setupRecoveryCommand) SetStdin(io.Reader)    {}
+func (c *setupRecoveryCommand) SetStderr(io.Writer)   {}
+func (c *setupRecoveryCommand) SetStdout(w io.Writer) { c.output = w }
+func (c *setupRecoveryCommand) Run() error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	if err := writeReceipt(c.output, c.text); err != nil {
+		return err
+	}
+	return c.ctx.Err()
+}
+
+type setupRecoveryDoneMsg struct {
+	reply chan error
+	err   error
+}
+
 const (
 	setupRailWidth = 27
 	setupPaneGap   = 6
@@ -294,6 +318,15 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupSyncMsg:
 		close(event)
 		next = m.waitEvent()
+	case setupRecoveryMsg:
+		// Bubble Tea v2.1.0 Exec releases the renderer, runs the command
+		// against its output, and restores the terminal before its callback.
+		command := &setupRecoveryCommand{ctx: event.ctx, text: event.text}
+		return m, tea.Batch(m.waitEvent(), tea.Exec(command, func(err error) tea.Msg {
+			return setupRecoveryDoneMsg{reply: event.reply, err: err}
+		}))
+	case setupRecoveryDoneMsg:
+		event.reply <- event.err
 	case setupCancelledMsg:
 		m.stopping = true
 		m.cancel()

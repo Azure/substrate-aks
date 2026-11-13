@@ -226,7 +226,7 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 					}
 					return nil
 				})
-			if err != nil || last != "client" {
+			if err != nil || last != "demo" {
 				t.Fatalf("setup failed before final handoff: last=%s, %v\n%s", last, err, &output)
 			}
 			after, err := os.ReadFile(destination)

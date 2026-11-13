@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func TestRunnerBoundsCapturedOutput(t *testing.T) {
+	for _, tc := range []struct {
+		limit int
+		ok    bool
+	}{{5, true}, {4, false}} {
+		output, err := (ExecRunner{}).Run(t.Context(), Command{
+			Args: []string{"sh", "-c", "printf 12345"}, MaxOutput: tc.limit,
+		})
+		if (err == nil) != tc.ok || len(output) > tc.limit {
+			t.Fatalf("limit %d returned %q, %v", tc.limit, output, err)
+		}
+	}
+}
+
 func TestRunnerPreservesFailureAndLogsBothStreams(t *testing.T) {
 	var output bytes.Buffer
 	r := ExecRunner{Log: &output}

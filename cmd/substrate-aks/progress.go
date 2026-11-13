@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -8,6 +10,44 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 )
+
+func writeReceipt(w io.Writer, text string) error {
+	n, err := w.Write([]byte(text + "\n"))
+	if err != nil {
+		return err
+	}
+	if n != len(text)+1 {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (p *progress) recoveryReceipt(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	syncer, ok := p.log.(interface{ Sync() error })
+	if !ok {
+		return errors.New("private log cannot be synced")
+	}
+	if err := writeReceipt(p.log, text); err != nil {
+		return fmt.Errorf("writing private log: %w", err)
+	}
+	if err := syncer.Sync(); err != nil {
+		return fmt.Errorf("syncing private log: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.session != nil {
+		return p.session.presentRecovery(ctx, text)
+	}
+	p.pause()
+	if err := writeReceipt(p.out, text); err != nil {
+		return fmt.Errorf("writing recovery receipt: %w", err)
+	}
+	return ctx.Err()
+}
 
 type progress struct {
 	mu             sync.Mutex

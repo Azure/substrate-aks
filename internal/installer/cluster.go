@@ -69,8 +69,14 @@ func (a App) RuntimePrerequisites(ctx context.Context) error {
 	return nil
 }
 
-func (a App) Check(ctx context.Context) error {
-	if _, err := a.infrastructure(ctx); err != nil {
+func (a App) Check(ctx context.Context, required bool) (err error) {
+	defer func() {
+		if err != nil {
+			a.progress("RESTORE_FAILED: %v", err)
+		}
+	}()
+	i, err := a.infrastructure(ctx)
+	if err != nil {
 		return err
 	}
 	if err := a.credentials(ctx); err != nil {
@@ -81,7 +87,61 @@ func (a App) Check(ctx context.Context) error {
 			return err
 		}
 	}
-	return a.checkCluster(ctx)
+	if err := a.checkCluster(ctx); err != nil {
+		return err
+	}
+	installed, err := a.restoreInstalled(ctx, i)
+	if err != nil {
+		return err
+	}
+	if !installed {
+		if required {
+			return errors.New("PREREQUISITE: Substrate is not installed; restore was not tested")
+		}
+		a.progress("RESTORE_SKIPPED_NOT_INSTALLED: cluster compatibility passed; restore was not tested")
+		return nil
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, restoreReadyTimeout)
+	defer cancel()
+	client, err := a.matchingClient(readyCtx)
+	if err != nil {
+		return err
+	}
+	busy, helper, err := a.restoreBusy(readyCtx, client)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, helper.close()) }()
+	if busy {
+		if required {
+			return errors.New("PREREQUISITE: existing workloads found; restore was not tested")
+		}
+		a.progress("RESTORE_SKIPPED_BUSY: cluster compatibility passed; existing workloads found; restore was not tested")
+		return nil
+	}
+	namespace, actor, token, err := restoreNames()
+	if err != nil {
+		return err
+	}
+	pool, template, err := a.restoreManifests(readyCtx, i, helper, namespace, token)
+	if err != nil {
+		return err
+	}
+	state := &restoreState{namespace: namespace, token: token, client: client, helper: helper}
+	receipt := a.restoreRecovery(state, actor)
+	if a.RecoveryReceipt == nil {
+		return errors.New("PREREQUISITE: recovery receipt presentation is unavailable")
+	}
+	if err := readyCtx.Err(); err != nil {
+		return err
+	}
+	if err := a.RecoveryReceipt(readyCtx, receipt); err != nil {
+		return fmt.Errorf("presenting restore recovery receipt before creation: %w", err)
+	}
+	if err := readyCtx.Err(); err != nil {
+		return err
+	}
+	return a.restoreRun(ctx, readyCtx, state, actor, pool, template)
 }
 
 func (a App) waitOperatorAccess(ctx context.Context) error {
@@ -375,6 +435,11 @@ func (a App) Install(ctx context.Context, component string) error {
 	// instead of failing on that revision's layout.
 	if err := a.credentials(ctx); err != nil {
 		return err
+	}
+	if a.Config.AKS.Operator != nil {
+		if err := a.waitOperatorAccess(ctx); err != nil {
+			return err
+		}
 	}
 	fp := fingerprint(a.Config, i)
 	if err := a.guardInstall(ctx, fp, component); err != nil {

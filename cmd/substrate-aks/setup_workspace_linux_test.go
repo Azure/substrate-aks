@@ -12,10 +12,93 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
 )
+
+func TestWorkspacePresentsRecoveryBeforeAcknowledgment(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	p := newSetupPTY(t, 110, 30)
+	ctx, cancel := context.WithCancel(t.Context())
+	session := &setupSession{ctx: ctx, events: make(chan any, 1)}
+	model := newSetupWorkspace(session, cancel, func() error { return nil }, p.slave)
+	program := tea.NewProgram(model, tea.WithInput(p.slave), tea.WithOutput(p.slave), tea.WithoutSignalHandler())
+	done := make(chan error, 1)
+	go func() { _, err := program.Run(); done <- err }()
+	t.Cleanup(func() {
+		cancel()
+		program.Quit()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("workspace did not stop")
+		}
+	})
+	p.until(t, "Quick start")
+	reply := make(chan error, 1)
+	go func() { reply <- session.presentRecovery(ctx, "isolated recovery commands") }()
+	p.until(t, "isolated recovery commands")
+	select {
+	case err := <-reply:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("workspace did not acknowledge the receipt")
+	}
+}
+
+func TestWorkspaceFailedRestoreRetryReinventoriesLeftovers(t *testing.T) {
+	t.Setenv("CI", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	testSetupActualCheck(t, func(options setupOptions, execute commandRunner) error {
+		p := newSetupPTY(t, 110, 30)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- setupForTest(ctx, options, p.slave, p.slave, p.slave, func(ctx context.Context, args []string, out, stderr io.Writer) error {
+				if args[0] == "plan" {
+					setupSessionFrom(ctx).send(setupPlanMsg{"test-subscription", []installer.ResourceChange{{ChangeType: "Create", ResourceID: "/subscriptions/test/resourceGroups/disposable"}}})
+				}
+				return execute(ctx, args, out, stderr)
+			})
+		}()
+		t.Cleanup(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("workspace did not stop")
+			}
+		})
+		p.until(t, "Quick start")
+		p.send(t, "\r")
+		p.until(t, "Continue with this billable")
+		p.send(t, "y\r")
+		p.until(t, "Apply these planned changes")
+		p.send(t, "y\r")
+		p.until(t, "Restore recovery:")
+		p.until(t, "Retry this stage")
+		if !strings.Contains(p.all, "synthetic template failure") {
+			t.Fatalf("retry prompt hid restore failure:\n%s", p.all)
+		}
+		if strings.Count(p.all, "Restore recovery:") < 2 || strings.Count(p.all, "delete actor-template") != 2 {
+			t.Fatalf("complete recovery instructions were not presented again after failure:\n%s", p.all)
+		}
+		p.send(t, "y\r")
+		select {
+		case err := <-done:
+			done <- err
+			return err
+		case <-time.After(20 * time.Second):
+			return errors.New("setup retry did not finish")
+		}
+	})
+}
 
 type setupPTY struct {
 	master, slave *os.File
