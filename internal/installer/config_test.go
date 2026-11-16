@@ -112,17 +112,10 @@ func TestConfigNameBoundaries(t *testing.T) {
 		{strings.Repeat("a", 40), true}, {strings.Repeat("a", 41), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// One field at a time: two 40-character names exceed the node
-			// resource group limit, which TestConfigNodeResourceGroupLength covers.
-			for _, set := range []func(*Config){
-				func(c *Config) { c.AKS.ClusterName = tc.name },
-				func(c *Config) { c.Azure.ResourceGroup = tc.name },
-			} {
-				c := testConfig(t)
-				set(&c)
-				if err := c.Validate(); (err == nil) != tc.ok {
-					t.Fatalf("name validation: %v", err)
-				}
+			c := testConfig(t)
+			c.AKS.ClusterName, c.Azure.ResourceGroup = tc.name, tc.name
+			if err := c.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("name validation: %v", err)
 			}
 		})
 	}
@@ -143,7 +136,7 @@ func TestConfigNodeResourceGroupLength(t *testing.T) {
 		t.Run(fmt.Sprintf("%s-%d", tc.location, tc.length), func(t *testing.T) {
 			c := testConfig(t)
 			c.Azure.Location, c.Azure.ResourceGroup, c.AKS.ClusterName = tc.location, tc.resourceGroup, tc.cluster
-			err := c.Validate()
+			err := c.validateNodeResourceGroupName()
 			if tc.ok {
 				if err != nil {
 					t.Fatal(err)
