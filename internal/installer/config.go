@@ -215,6 +215,8 @@ func DefaultConfig() Config {
 	}
 }
 
+const maxNodeResourceGroupName = 80
+
 var (
 	uuidPattern   = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
 	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
@@ -288,6 +290,14 @@ func (c Config) Validate() error {
 	}
 	if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.Azure.Location) {
 		return errors.New("azure.location must be an Azure region name such as eastus2")
+	}
+	// infra/resources.bicep leaves nodeResourceGroup unset, so AKS names it
+	// MC_<resourceGroup>_<clusterName>_<location> and rejects names over 80
+	// characters with InvalidParameter during deployment validation
+	// (Microsoft.ContainerService/managedClusters API version 2025-05-01).
+	if n := len("MC_" + c.Azure.ResourceGroup + "_" + c.AKS.ClusterName + "_" + c.Azure.Location); n > maxNodeResourceGroupName {
+		return fmt.Errorf("azure.resourceGroup and aks.clusterName make the AKS node resource group name %d characters (MC_<resourceGroup>_<clusterName>_<location>), over the limit of %d; in %s an installation name used for both can be at most %d characters",
+			n, maxNodeResourceGroupName, c.Azure.Location, (maxNodeResourceGroupName-len("MC___")-len(c.Azure.Location))/2)
 	}
 	if c.AKS.KubernetesVersion != "1.37" && !regexp.MustCompile(`^1\.37\.[0-9]+$`).MatchString(c.AKS.KubernetesVersion) {
 		return errors.New("this iteration targets Kubernetes 1.37 only")

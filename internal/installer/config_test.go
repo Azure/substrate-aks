@@ -112,10 +112,48 @@ func TestConfigNameBoundaries(t *testing.T) {
 		{strings.Repeat("a", 40), true}, {strings.Repeat("a", 41), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// One field at a time: two 40-character names exceed the node
+			// resource group limit, which TestConfigNodeResourceGroupLength covers.
+			for _, set := range []func(*Config){
+				func(c *Config) { c.AKS.ClusterName = tc.name },
+				func(c *Config) { c.Azure.ResourceGroup = tc.name },
+			} {
+				c := testConfig(t)
+				set(&c)
+				if err := c.Validate(); (err == nil) != tc.ok {
+					t.Fatalf("name validation: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigNodeResourceGroupLength(t *testing.T) {
+	// MC_ + 34 + _ + 34 + _ + westus3 = 80; germanywestcentral allows 28.
+	for _, tc := range []struct {
+		location, resourceGroup, cluster string
+		length                           int
+		ok                               bool
+	}{
+		{"westus3", strings.Repeat("a", 34), strings.Repeat("b", 34), 80, true},
+		{"westus3", strings.Repeat("a", 34), strings.Repeat("b", 35), 81, false},
+		{"germanywestcentral", strings.Repeat("a", 28), strings.Repeat("b", 29), 80, true},
+		{"germanywestcentral", strings.Repeat("a", 29), strings.Repeat("b", 29), 81, false},
+	} {
+		t.Run(fmt.Sprintf("%s-%d", tc.location, tc.length), func(t *testing.T) {
 			c := testConfig(t)
-			c.AKS.ClusterName, c.Azure.ResourceGroup = tc.name, tc.name
-			if err := c.Validate(); (err == nil) != tc.ok {
-				t.Fatalf("name validation: %v", err)
+			c.Azure.Location, c.Azure.ResourceGroup, c.AKS.ClusterName = tc.location, tc.resourceGroup, tc.cluster
+			err := c.Validate()
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want := fmt.Sprintf("%d characters (MC_<resourceGroup>_<clusterName>_<location>), over the limit of 80; in %s an installation name used for both can be at most %d characters",
+				tc.length, tc.location, (75-len(tc.location))/2)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate() = %v, want %q", err, want)
 			}
 		})
 	}
