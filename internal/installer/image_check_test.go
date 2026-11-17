@@ -31,7 +31,7 @@ func installGuardReplies(t *testing.T, c Config, record string) []reply {
 		t.Fatal(err)
 	}
 	replies := []reply{{contains: "group exists", output: "true"}, ownerReply(c),
-		{contains: "deployment sub show", output: string(outputs)}, {contains: "aks get-credentials"}}
+		{contains: "deployment sub list", output: string(outputs)}, {contains: "aks get-credentials"}}
 	if record == "" {
 		return append(replies, reply{contains: "get namespace ate-system", output: ""})
 	}

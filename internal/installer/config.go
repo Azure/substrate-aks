@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // The Substrate release and the Azure Blob object-store plugin revision the
@@ -29,9 +32,12 @@ const (
 
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
-	SystemVMSize        = "Standard_D4s_v6"
-	// The overlay pod CIDR (10.244.0.0/16) gives each node a /24, so the cluster holds at most 256 nodes.
-	MaxWorkerCount = 100
+	DefaultSystemVMSize = "Standard_D4s_v6"
+	// The overlay gives each node a /24 from a /16; AKS defaults to one surge node per pool:
+	// https://github.com/MicrosoftDocs/azure-aks-docs/blob/06cb62048bec26a37e731947fcb45f3e4f50741c/articles/aks/upgrade-aks-node-pools-rolling.md
+	MaxWorkerCount  = 100
+	MaxOverlayNodes = 256
+	MaxSystemCount  = MaxOverlayNodes - 2 - MaxWorkerCount
 )
 
 type Config struct {
@@ -39,6 +45,57 @@ type Config struct {
 	Azure        AzureConfig        `json:"azure"`
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
+	Database     DatabaseConfig     `json:"database"`
+}
+
+type DatabaseBackend string
+
+const (
+	DatabaseBundled  DatabaseBackend = "bundled"
+	DatabaseFlexible DatabaseBackend = "flexible-server"
+)
+
+type DatabaseConfig struct {
+	Backend  DatabaseBackend `json:"backend"`
+	Location string          `json:"location,omitempty"`
+	// SKU is the Flexible Server compute SKU; it can't change after creation.
+	SKU DatabaseSKU `json:"sku,omitzero"`
+}
+
+// DatabaseSKU names a Flexible Server compute SKU and its tier, as ARM does.
+type DatabaseSKU struct {
+	Name string `json:"name"`
+	Tier string `json:"tier"`
+}
+
+// DefaultDatabaseSKU is used when a managed database record does not choose a SKU.
+var DefaultDatabaseSKU = DatabaseSKU{Name: "Standard_D2ads_v5", Tier: "GeneralPurpose"}
+
+// ComputeSKU returns the configured SKU, or the default when none is set.
+func (d DatabaseConfig) ComputeSKU() DatabaseSKU {
+	if d.SKU == (DatabaseSKU{}) {
+		return DefaultDatabaseSKU
+	}
+	return d.SKU
+}
+
+// WithDefaults fills the SKU of a managed database that doesn't choose one.
+func (d DatabaseConfig) WithDefaults() DatabaseConfig {
+	if d.Backend != "" && d.Backend != DatabaseBundled {
+		d.SKU = d.ComputeSKU()
+	}
+	return d
+}
+
+func (c Config) ManagedDatabase() bool {
+	return c.Database.Backend != "" && c.Database.Backend != DatabaseBundled
+}
+
+func (c Config) DatabaseLocation() string {
+	if c.Database.Location != "" {
+		return c.Database.Location
+	}
+	return c.Azure.Location
 }
 
 type InstallationConfig struct {
@@ -76,8 +133,14 @@ type AKSConfig struct {
 	KubernetesVersion    string           `json:"kubernetesVersion"`
 	APIAuthorizedCIDRs   []string         `json:"apiAuthorizedCidrs"`
 	AllowUnrestrictedAPI bool             `json:"allowUnrestrictedApi,omitempty"`
+	SystemPool           SystemPoolConfig `json:"systemPool"`
 	WorkerPool           WorkerPoolConfig `json:"workerPool"`
 	Operator             *OperatorConfig  `json:"operator,omitempty"`
+}
+
+type SystemPoolConfig struct {
+	VMSize string `json:"vmSize"`
+	Count  int    `json:"count"`
 }
 
 type OperatorConfig struct {
@@ -132,6 +195,248 @@ type SubstrateConfig struct {
 	ImageSource ImageSource   `json:"imageSource,omitempty"`
 	Images      ImagesConfig  `json:"images"`
 	Runtime     RuntimeConfig `json:"runtime"`
+	Sizing      *SizingConfig `json:"sizing,omitempty"`
+	Atelet      *AteletConfig `json:"atelet,omitempty"`
+}
+
+type SizingConfig struct {
+	APIServer *APIServerSizing `json:"apiServer,omitempty"`
+	Router    *RouterSizing    `json:"router,omitempty"`
+}
+
+type ResourceRequirements struct {
+	Requests map[string]string `json:"requests,omitempty"`
+	Limits   map[string]string `json:"limits,omitempty"`
+}
+
+type APIServerSizing struct {
+	Replicas             *int                  `json:"replicas,omitempty"`
+	Resources            *ResourceRequirements `json:"resources,omitempty"`
+	PostgresPoolMaxConns *int                  `json:"postgresPoolMaxConns,omitempty"`
+}
+
+type RouterSizing struct {
+	Replicas  *int             `json:"replicas,omitempty"`
+	Resources *RouterResources `json:"resources,omitempty"`
+}
+
+type RouterResources struct {
+	AtenetRouter *ResourceRequirements `json:"atenetRouter,omitempty"`
+	Envoy        *ResourceRequirements `json:"envoy,omitempty"`
+}
+
+type sizedContainer struct {
+	name, field, identity string
+	resources             *ResourceRequirements
+}
+
+type sizedWorkload struct {
+	name, field string
+	replicas    *int
+	pool        *int
+	containers  []sizedContainer
+}
+
+func (s SubstrateConfig) sizedWorkloads() [2]sizedWorkload {
+	api := sizedWorkload{
+		name: "ate-api-server", field: "apiServer",
+		containers: []sizedContainer{{name: "ate-api-server", field: "apiServer.resources", identity: "apiServer"}},
+	}
+	router := sizedWorkload{
+		name: "atenet-router", field: "router",
+		containers: []sizedContainer{
+			{name: "atenet-router", field: "router.resources.atenetRouter", identity: "router.atenetRouter"},
+			{name: "envoy", field: "router.resources.envoy", identity: "router.envoy"},
+		},
+	}
+	if s.Sizing != nil {
+		if value := s.Sizing.APIServer; value != nil {
+			api.replicas, api.pool = value.Replicas, value.PostgresPoolMaxConns
+			api.containers[0].resources = value.Resources
+		}
+		if value := s.Sizing.Router; value != nil {
+			router.replicas = value.Replicas
+			if value.Resources != nil {
+				router.containers[0].resources = value.Resources.AtenetRouter
+				router.containers[1].resources = value.Resources.Envoy
+			}
+		}
+	}
+	return [2]sizedWorkload{api, router}
+}
+
+type AteletConfig struct {
+	SnapshotUploadDelay *string `json:"snapshotUploadDelay,omitempty"`
+	SnapshotDetachDelay *string `json:"snapshotDetachDelay,omitempty"`
+}
+
+const (
+	// Defaults at the release pin, used only to validate an omitted peer.
+	// https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/cmd/atelet/internal/snapshottracker/background.go
+	defaultSnapshotUploadDelay = 5 * time.Minute
+	defaultSnapshotDetachDelay = 30 * time.Minute
+	// https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/ate-api-server.yaml
+	defaultAPIServerReplicas   = 2
+	bundledPostgresConnections = 100
+)
+
+func validateConnectionBudget(replicas, pool, available int) error {
+	if replicas < 1 || pool < 1 || available/replicas < 6 || pool > available/replicas-6 {
+		return fmt.Errorf("API server replicas times (postgresPoolMaxConns + 6) exceeds the database connection budget of %d after headroom", available)
+	}
+	return nil
+}
+
+// Flexible Server creation defaults and reserved slots:
+// https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits#maximum-connections
+// Entries may be added or raised, but not removed or lowered without a load-path exemption for existing records.
+func managedDatabaseMaxConnections(sku DatabaseSKU) (int, bool) {
+	switch sku.Tier {
+	case "Burstable":
+		switch sku.Name {
+		case "Standard_B1ms":
+			return 50, true
+		case "Standard_B2s":
+			return 429, true
+		case "Standard_B2ms":
+			return 859, true
+		case "Standard_B4ms":
+			return 1718, true
+		case "Standard_B8ms":
+			return 3437, true
+		case "Standard_B12ms", "Standard_B16ms", "Standard_B20ms":
+			return 5000, true
+		}
+	case "GeneralPurpose":
+		switch sku.Name {
+		case "Standard_D2s_v3", "Standard_D2ds_v4", "Standard_D2ds_v5", "Standard_D2ads_v5":
+			return 859, true
+		case "Standard_D4s_v3", "Standard_D4ds_v4", "Standard_D4ds_v5", "Standard_D4ads_v5":
+			return 1718, true
+		case "Standard_D8s_v3", "Standard_D8ds_v4", "Standard_D8ds_v5", "Standard_D8ads_v5":
+			return 3437, true
+		case "Standard_D16s_v3", "Standard_D16ds_v4", "Standard_D16ds_v5", "Standard_D16ads_v5",
+			"Standard_D32s_v3", "Standard_D32ds_v4", "Standard_D32ds_v5", "Standard_D32ads_v5",
+			"Standard_D48s_v3", "Standard_D48ds_v4", "Standard_D48ds_v5", "Standard_D48ads_v5",
+			"Standard_D64s_v3", "Standard_D64ds_v4", "Standard_D64ds_v5", "Standard_D64ads_v5",
+			"Standard_D96ds_v5", "Standard_D96ads_v5":
+			return 5000, true
+		}
+	case "MemoryOptimized":
+		switch sku.Name {
+		case "Standard_E2s_v3", "Standard_E2ds_v4", "Standard_E2ds_v5", "Standard_E2ads_v5":
+			return 1718, true
+		case "Standard_E4s_v3", "Standard_E4ds_v4", "Standard_E4ds_v5", "Standard_E4ads_v5":
+			return 3437, true
+		case "Standard_E8s_v3", "Standard_E8ds_v4", "Standard_E8ds_v5", "Standard_E8ads_v5",
+			"Standard_E16s_v3", "Standard_E16ds_v4", "Standard_E16ds_v5", "Standard_E16ads_v5",
+			"Standard_E20ds_v4", "Standard_E20ds_v5", "Standard_E20ads_v5",
+			"Standard_E32s_v3", "Standard_E32ds_v4", "Standard_E32ds_v5", "Standard_E32ads_v5",
+			"Standard_E48s_v3", "Standard_E48ds_v4", "Standard_E48ds_v5", "Standard_E48ads_v5",
+			"Standard_E64s_v3", "Standard_E64ds_v4", "Standard_E64ds_v5", "Standard_E64ads_v5",
+			"Standard_E96ds_v5", "Standard_E96ads_v5":
+			return 5000, true
+		}
+	}
+	return 0, false
+}
+
+func (c Config) validateSizing() error {
+	if err := c.Substrate.validateSizing(); err != nil {
+		return err
+	}
+	for _, workload := range c.Substrate.sizedWorkloads() {
+		if workload.name != "ate-api-server" || workload.pool == nil {
+			continue
+		}
+		limit := bundledPostgresConnections
+		switch c.Database.Backend {
+		case "", DatabaseBundled:
+		case DatabaseFlexible:
+			var ok bool
+			limit, ok = managedDatabaseMaxConnections(c.Database.ComputeSKU())
+			if !ok {
+				return errors.New("connection budget unavailable for this database SKU")
+			}
+		default:
+			return errors.New("connection budget unavailable for this database backend")
+		}
+		headroom := limit / 10
+		if limit%10 != 0 {
+			headroom++
+		}
+		if c.Database.Backend == DatabaseFlexible {
+			headroom = max(headroom, 15)
+		}
+		replicas := defaultAPIServerReplicas
+		if workload.replicas != nil {
+			replicas = *workload.replicas
+		}
+		return validateConnectionBudget(replicas, *workload.pool, limit-headroom)
+	}
+	return nil
+}
+
+func (s SubstrateConfig) validateSizing() error {
+	validateResources := func(field string, r *ResourceRequirements) error {
+		if r == nil {
+			return nil
+		}
+		for _, values := range []map[string]string{r.Requests, r.Limits} {
+			for name, value := range values {
+				q, err := resource.ParseQuantity(value)
+				if err != nil || q.Sign() < 0 {
+					return fmt.Errorf("%s: invalid non-negative quantity for %s: %q", field, name, value)
+				}
+			}
+		}
+		return nil
+	}
+	for _, workload := range s.sizedWorkloads() {
+		if workload.replicas != nil && *workload.replicas < 1 {
+			return fmt.Errorf("substrate.sizing.%s.replicas must be at least 1", workload.field)
+		}
+		if workload.name == "ate-api-server" {
+			if workload.pool != nil && *workload.pool < 1 {
+				return errors.New("substrate.sizing.apiServer.postgresPoolMaxConns must be at least 1")
+			}
+			if workload.replicas != nil && workload.pool == nil {
+				return errors.New("substrate.sizing.apiServer.replicas requires an explicit postgresPoolMaxConns")
+			}
+		}
+		for _, container := range workload.containers {
+			if err := validateResources("substrate.sizing."+container.field, container.resources); err != nil {
+				return err
+			}
+		}
+	}
+	if s.Atelet != nil {
+		if s.Source.Commit != DefaultCommit && (s.Atelet.SnapshotUploadDelay == nil) != (s.Atelet.SnapshotDetachDelay == nil) {
+			return errors.New("set both substrate.atelet snapshot delays for a non-default source revision; its built-in defaults are not known")
+		}
+		upload, detach := defaultSnapshotUploadDelay, defaultSnapshotDetachDelay
+		for _, item := range []struct {
+			field  string
+			value  *string
+			target *time.Duration
+		}{
+			{"snapshotUploadDelay", s.Atelet.SnapshotUploadDelay, &upload},
+			{"snapshotDetachDelay", s.Atelet.SnapshotDetachDelay, &detach},
+		} {
+			if item.value == nil {
+				continue
+			}
+			d, err := time.ParseDuration(*item.value)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("substrate.atelet.%s must be a positive Go duration", item.field)
+			}
+			*item.target = d
+		}
+		if upload > detach {
+			return errors.New("substrate.atelet snapshot upload delay must not exceed the detach delay")
+		}
+	}
+	return nil
 }
 
 type ImageSource string
@@ -203,8 +508,10 @@ type RuntimeConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
+		Database:     DatabaseConfig{Backend: DatabaseBundled},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
+			SystemPool:        SystemPoolConfig{VMSize: DefaultSystemVMSize, Count: 1},
 			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,
 				OSDiskType: DefaultWorkerOSDiskType, OSDiskSizeGB: DefaultWorkerOSDiskSizeGB},
 		},
@@ -257,6 +564,7 @@ func readConfig(path string) (Config, error) {
 	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("%s must contain exactly one JSON object", path)
 	}
+	c.Database = c.Database.WithDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -272,6 +580,37 @@ func ValidateInstallationName(name string) error {
 }
 
 func (c Config) Validate() error {
+	switch c.Database.Backend {
+	case "", DatabaseBundled:
+		if c.Database.Location != "" {
+			return errors.New("database.location is only valid for managed PostgreSQL")
+		}
+		if c.Database.SKU != (DatabaseSKU{}) {
+			return errors.New("database.sku is only valid for managed PostgreSQL")
+		}
+	case DatabaseFlexible:
+		if !regexp.MustCompile(`^[a-z][a-z0-9]+$`).MatchString(c.DatabaseLocation()) {
+			return errors.New("database.location must be an Azure region name")
+		}
+		sku := c.Database.ComputeSKU()
+		if !regexp.MustCompile(`^Standard_[A-Z][A-Za-z0-9]*(_v[0-9]+)?$`).MatchString(sku.Name) {
+			return fmt.Errorf("database.sku.name %q must be a Flexible Server compute SKU such as %s", sku.Name, DefaultDatabaseSKU.Name)
+		}
+		switch sku.Tier {
+		case "Burstable", "GeneralPurpose", "MemoryOptimized":
+		default:
+			return fmt.Errorf("database.sku.tier %q must be Burstable, GeneralPurpose or MemoryOptimized", sku.Tier)
+		}
+		// The database credential vault grants access to the AKS operator.
+		if c.AKS.Operator == nil {
+			return errors.New("managed PostgreSQL requires aks.operator, which receives access to the database credential vault")
+		}
+	default:
+		return errors.New("database.backend must be bundled or flexible-server")
+	}
+	if err := c.validateSizing(); err != nil {
+		return err
+	}
 	if !uuidPattern.MatchString(c.Installation.ID) || !uuidPattern.MatchString(c.Azure.SubscriptionID) {
 		return errors.New("installation.id and azure.subscriptionId must be UUIDs (generate installation.id once and keep it for retries/cleanup)")
 	}
@@ -294,6 +633,12 @@ func (c Config) Validate() error {
 	}
 	if c.AKS.WorkerPool.Count < 1 || c.AKS.WorkerPool.Count > MaxWorkerCount {
 		return fmt.Errorf("aks.workerPool.count must be 1-%d", MaxWorkerCount)
+	}
+	if c.AKS.SystemPool.Count < 1 || c.AKS.SystemPool.Count > MaxSystemCount {
+		return fmt.Errorf("aks.systemPool.count must be 1-%d", MaxSystemCount)
+	}
+	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.SystemPool.VMSize) {
+		return errors.New("aks.systemPool.vmSize must be an explicit Standard_* Azure SKU")
 	}
 	if !regexp.MustCompile(`^Standard_[A-Za-z0-9_]+$`).MatchString(c.AKS.WorkerPool.VMSize) {
 		return errors.New("aks.workerPool.vmSize must be an explicit Standard_* Azure SKU")
@@ -419,3 +764,7 @@ func (c Config) ValidateInstall() error {
 
 func (c Config) workspace() string      { return c.Installation.Dir }
 func (c Config) deploymentName() string { return "substrate-" + c.Installation.ID }
+
+func (c Config) infrastructureDeploymentFilter() string {
+	return fmt.Sprintf("[?name=='%s' || starts_with(name, '%s-run-')]", c.deploymentName(), c.deploymentName())
+}

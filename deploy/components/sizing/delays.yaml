@@ -1,0 +1,13 @@
+- op: test
+  path: /spec/template/spec/containers/0/name
+  value: atelet
+{{- if .Sizing.UploadDelay}}
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: {{printf "%q" (printf "--snapshot-upload-delay=%s" .Sizing.UploadDelay)}}
+{{- end}}
+{{- if .Sizing.DetachDelay}}
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: {{printf "%q" (printf "--snapshot-detach-delay=%s" .Sizing.DetachDelay)}}
+{{- end}}

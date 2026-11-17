@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/substrate-aks/deploy"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -71,6 +72,18 @@ func runContractTests(m *testing.M) (code int) {
 		*pin.root = root
 	}
 	return m.Run()
+}
+
+func TestPinnedManagedPostgresContract(t *testing.T) {
+	root := pinnedContractRoot(t)
+	command := exec.Command("go", "test", "./cmd/ate-setup/internal/config", "./cmd/ate-setup/internal/steps",
+		"-run", "^(TestLoadPostgres.*|TestRecordNeverWritesASecret|TestPlanPostgres|TestBundledPostgresManifestExists|TestBuildAPIServerEnvVars|TestCreateAPIServerEnvVars.*|TestAnnotateAPIServerEnvHash|TestStampAPIServerEnvHash)$",
+		"-count=1")
+	command.Dir = root
+	data, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pinned external PostgreSQL selection, secret reconciliation or recording contract failed: %v\n%s", err, data)
+	}
 }
 
 func pinnedContractRoot(t *testing.T) string {
@@ -157,6 +170,26 @@ func TestPinnedUpstreamContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defaults, err := os.ReadFile(filepath.Join(root, "cmd/atelet/internal/snapshottracker/background.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		fmt.Sprintf("DefaultUploadDelay = %d * time.Minute", int(defaultSnapshotUploadDelay/time.Minute)),
+		fmt.Sprintf("DefaultDetachDelay = %d * time.Minute", int(defaultSnapshotDetachDelay/time.Minute)),
+	} {
+		if !strings.Contains(string(defaults), line) {
+			t.Fatalf("pinned atelet delay default changed: expected %s", line)
+		}
+	}
+	apiManifest, err := os.ReadFile(filepath.Join(root, "manifests/ate-install/ate-api-server.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiSpec, err := child(manifestObject(t, apiManifest, "Deployment", "ate-api-server"), "spec")
+	if err != nil || apiSpec["replicas"] != defaultAPIServerReplicas {
+		t.Fatalf("pinned API server replica default changed: %v, %v", apiSpec, err)
+	}
 	paths, err := adaptSource(dest, c, plugin)
 	if err != nil {
 		t.Fatal(err)
@@ -168,9 +201,212 @@ func TestPinnedUpstreamContract(t *testing.T) {
 		"manifests/ate-install/ate-otel-config.yaml",
 		"manifests/ate-install/base/kustomization.yaml",
 		"demos/counter/counter-microvm.yaml.tmpl",
+		"manifests/ate-install/atenet-router.yaml",
 	}) {
 		t.Fatalf("adapter changed managed-source paths consumed by full install and component redeploy: %v", paths)
 	}
+	// The checksums lock the pre-sizing renderer output for the pinned sources
+	// and synthetic installation values above.
+	baselineHashes := []string{
+		"ec187ac1ee357d0d72d2d2e7287baca88126100e46a9c6b2f6c713abd961ca3e",
+		"c02eea429a519d750f47845c2b8133d38ae5c26e618bbdb3354812821a117f67",
+		"63ae20e21f8d247aad7712b19f58a2de09166f5f03255f068d97e92442bbdb8e",
+		"56d8e49e46f782d89600f317f267944be14d5649b5fca048e411a734683821ae",
+		"fe434c96db1e93c8dcbd4ef58e97e367f48981f6bc33510b627c8015e00c5a29",
+		"29f26edae8eba7077c90c43f0399223fe727cd7b4f8850c8331fb1f54fe67d10",
+		"f3b7aa4af564e604d801faaec39a50beaf63a6ae4d263fc1c291fd65a049e1c0",
+	}
+	for n, rel := range paths {
+		original, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var baseline []byte
+		switch n {
+		case 0:
+			baseline, err = deploy.Render(original, deploy.Values{External: plugin, Component: "actor-images"})
+		case 1:
+			baseline, err = deploy.Render(original, deploy.Values{External: plugin})
+		case 2:
+			baseline, err = deploy.Render(original, deploy.Values{Component: "postgres"})
+		case 3:
+			baseline, err = deploy.Render(original, deploy.Values{Component: "telemetry"})
+		case 4:
+			baseline, err = deploy.AdaptBase(original)
+		case 5:
+			baseline, err = adaptDemo(original)
+		case 6:
+			baseline = original
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if checksum(baseline) != baselineHashes[n] {
+			t.Fatalf("pre-sizing renderer baseline changed for %s", rel)
+		}
+		actual, err := os.ReadFile(filepath.Join(dest, rel))
+		if err != nil || !bytes.Equal(baseline, actual) {
+			t.Fatalf("unset sizing changed %s: %v", rel, err)
+		}
+	}
+	for _, workload := range []struct {
+		path, name string
+		containers []string
+	}{
+		{paths[1], "ate-api-server", []string{"ate-api-server"}},
+		{paths[6], "atenet-router", []string{"atenet-router", "envoy"}},
+	} {
+		data, err := os.ReadFile(filepath.Join(dest, workload.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pod, err := nested(manifestObject(t, data, "Deployment", workload.name), "spec", "template", "spec")
+		if err != nil {
+			t.Fatal(err)
+		}
+		containers, ok := pod["containers"].([]any)
+		if !ok || len(containers) != len(workload.containers) {
+			t.Fatalf("pinned %s containers changed", workload.name)
+		}
+		for _, name := range workload.containers {
+			container, err := named(containers, name)
+			if err != nil || container["resources"] != nil {
+				t.Fatalf("pinned %s default requests changed: %v, %v", name, container, err)
+			}
+		}
+		if workload.name == "ate-api-server" {
+			sidecar, err := named(pod["initContainers"], "objectstore-plugin")
+			if err != nil || sidecar["resources"] != nil {
+				t.Fatalf("pinned API sidecar default requests changed: %v, %v", sidecar, err)
+			}
+		}
+	}
+	t.Run("individual sizing changes only its surface", func(t *testing.T) {
+		replicas, pool := 3, 10
+		for _, tc := range []struct {
+			name   string
+			target string
+			change func(*Config)
+		}{
+			{"api replicas", paths[1], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Replicas: &replicas, PostgresPoolMaxConns: &pool}}
+			}},
+			{"api resources", paths[1], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{Resources: &ResourceRequirements{Requests: map[string]string{"cpu": "500m"}}}}
+			}},
+			{"pool", "", func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{PostgresPoolMaxConns: &pool}}
+			}},
+			{"router replicas", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Replicas: &replicas}}
+			}},
+			{"router resources", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "250m"}}}}}
+			}},
+			{"envoy resources", paths[6], func(c *Config) {
+				c.Substrate.Sizing = &SizingConfig{Router: &RouterSizing{Resources: &RouterResources{Envoy: &ResourceRequirements{Limits: map[string]string{"memory": "1Gi"}}}}}
+			}},
+			{"upload delay", paths[0], func(c *Config) {
+				c.Substrate.Atelet = &AteletConfig{SnapshotUploadDelay: stringPointer("10s")}
+			}},
+			{"detach delay", paths[0], func(c *Config) {
+				c.Substrate.Atelet = &AteletConfig{SnapshotDetachDelay: stringPointer("6m")}
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				config := c
+				tc.change(&config)
+				if err := config.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				rendered := copyContractManifests(t, root)
+				if _, err := adaptSource(rendered, config, plugin); err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range paths {
+					before, err := os.ReadFile(filepath.Join(dest, path))
+					if err != nil {
+						t.Fatal(err)
+					}
+					after, err := os.ReadFile(filepath.Join(rendered, path))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if changed := !bytes.Equal(before, after); changed != (path == tc.target) {
+						t.Errorf("%s changed=%t; only %q should change", path, changed, tc.target)
+					}
+				}
+			})
+		}
+	})
+	t.Run("configured sizing on pinned workloads", func(t *testing.T) {
+		replicas, pool := 3, 10
+		c.Substrate.Sizing = &SizingConfig{
+			APIServer: &APIServerSizing{Replicas: &replicas, PostgresPoolMaxConns: &pool, Resources: &ResourceRequirements{
+				Requests: map[string]string{"cpu": "500m", "memory": "1Gi"},
+			}},
+			Router: &RouterSizing{Replicas: &replicas, Resources: &RouterResources{
+				AtenetRouter: &ResourceRequirements{Requests: map[string]string{"cpu": "250m"}},
+				Envoy:        &ResourceRequirements{Limits: map[string]string{"memory": "1Gi"}},
+			}},
+		}
+		c.Substrate.Atelet = &AteletConfig{stringPointer("10s"), stringPointer("30s")}
+		first, second := copyContractManifests(t, root), copyContractManifests(t, root)
+		if _, err := adaptSource(first, c, plugin); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adaptSource(second, c, plugin); err != nil {
+			t.Fatal(err)
+		}
+		for _, rel := range paths {
+			one, err := os.ReadFile(filepath.Join(first, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			two, err := os.ReadFile(filepath.Join(second, rel))
+			if err != nil || !bytes.Equal(one, two) {
+				t.Fatalf("repeat render changed %s: %v", rel, err)
+			}
+		}
+		for _, item := range []struct {
+			rel, kind, name string
+			replicas        int
+			resources       map[string]object
+		}{
+			{paths[1], "Deployment", "ate-api-server", 3, map[string]object{"ate-api-server": {"requests": object{"cpu": "500m", "memory": "1Gi"}}}},
+			{paths[6], "Deployment", "atenet-router", 3, map[string]object{"atenet-router": {"requests": object{"cpu": "250m"}}, "envoy": {"limits": object{"memory": "1Gi"}}}},
+		} {
+			data, err := os.ReadFile(filepath.Join(first, item.rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := manifestObject(t, data, item.kind, item.name)
+			spec, err := child(doc, "spec")
+			if err != nil || spec["replicas"] != item.replicas {
+				t.Fatalf("%s replicas: %v %v", item.name, spec, err)
+			}
+			pod, err := nested(spec, "template", "spec")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, want := range item.resources {
+				container, err := named(pod["containers"], name)
+				if err != nil || !reflect.DeepEqual(container["resources"], want) {
+					t.Fatalf("%s resources = %v, %v", name, container["resources"], err)
+				}
+			}
+		}
+		data, err := os.ReadFile(filepath.Join(first, paths[0]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertAzureWorkload(t, data, c, i, true)
+		for _, flag := range []string{"--snapshot-upload-delay=10s", "--snapshot-detach-delay=30s"} {
+			if strings.Count(string(data), flag) != 1 {
+				t.Fatalf("atelet missing configured %s", flag)
+			}
+		}
+	})
 	data, err := exec.Command("kubectl", "kustomize", "--load-restrictor=LoadRestrictionsNone", filepath.Join(dest, "manifests/ate-install/base")).CombinedOutput()
 	if err != nil {
 		t.Fatalf("upstream base overlay no longer renders: %v\n%s", err, data)
@@ -342,7 +578,10 @@ func TestPinnedUpstreamFlagsContract(t *testing.T) {
 			command = c
 			return nil, nil
 		})
-		if err := (App{Config: testConfig(t), Runner: r}).upstream(t.Context(), root, args...); err != nil {
+		c := testConfig(t)
+		pool := 12
+		c.Substrate.Sizing = &SizingConfig{APIServer: &APIServerSizing{PostgresPoolMaxConns: &pool}}
+		if err := (App{Config: c, Runner: r}).upstream(t.Context(), root, args...); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(command.Args[:3], []string{"go", "run", "./cmd/ate-setup"}) {

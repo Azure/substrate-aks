@@ -14,9 +14,70 @@ import (
 func clusterReply(c Config) reply {
 	managed := c.AKS.Operator != nil
 	return reply{contains: "aks list --resource-group " + c.Azure.ResourceGroup, output: fmt.Sprintf(
-		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":"Standard_D4s_v6","count":1},{"name":"microvm","vmSize":%q,"count":1,"osDiskType":%q,"osDiskSizeGb":%d,"maxPods":%d}]}]`,
-		c.AKS.ClusterName, managed, managed, managed, c.AKS.WorkerPool.VMSize,
+		`[{"name":%q,"disableLocalAccounts":%t,"aadProfile":{"managed":%t,"enableAzureRbac":%t},"agentPoolProfiles":[{"name":"system","vmSize":%q,"count":%d},{"name":"microvm","vmSize":%q,"count":1,"osDiskType":%q,"osDiskSizeGb":%d,"maxPods":%d}]}]`,
+		c.AKS.ClusterName, managed, managed, managed, c.AKS.SystemPool.VMSize, c.AKS.SystemPool.Count, c.AKS.WorkerPool.VMSize,
 		c.AKS.WorkerPool.osDiskType(), c.AKS.WorkerPool.osDiskSizeGB(), cmp.Or(c.AKS.WorkerPool.MaxPods, AKSDefaultMaxPods))}
+}
+
+func TestProvisionRejectsFixedSystemPoolChanges(t *testing.T) {
+	for _, whatIf := range []bool{false, true} {
+		for _, tc := range []struct {
+			name   string
+			change func(*SystemPoolConfig)
+			ok     bool
+		}{
+			{"unchanged", func(*SystemPoolConfig) {}, true},
+			{"count increase", func(s *SystemPoolConfig) { s.Count = 3 }, true},
+			{"case insensitive", func(s *SystemPoolConfig) { s.VMSize = "Standard_d4s_v6" }, true},
+			{"size change", func(s *SystemPoolConfig) { s.VMSize = "Standard_D8s_v6" }, false},
+		} {
+			t.Run(fmt.Sprintf("preview=%t/%s", whatIf, tc.name), func(t *testing.T) {
+				original := testConfig(t)
+				c := original
+				tc.change(&c.AKS.SystemPool)
+				replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
+					clusterReply(original), operatorRecordReply(original)}
+				if tc.ok {
+					action := "create"
+					if whatIf {
+						action = "what-if"
+					}
+					replies = append(replies, reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
+					if whatIf {
+						replies = append(replies, skuReply(c.AKS.SystemPool.VMSize))
+					}
+				}
+				err := (App{Config: c, Runner: script(t, replies...)}).provision(t.Context(), whatIf, false)
+				if tc.ok && err != nil || !tc.ok && (err == nil || !strings.Contains(err.Error(), "destroy and recreate")) {
+					t.Fatalf("fixed system pool guard: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestProvisionAllowsSystemPoolCountDecrease(t *testing.T) {
+	for _, whatIf := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preview=%t", whatIf), func(t *testing.T) {
+			original := testConfig(t)
+			original.AKS.SystemPool.Count = 3
+			c := original
+			c.AKS.SystemPool.Count = 1
+			action := "create"
+			if whatIf {
+				action = "what-if"
+			}
+			replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"},
+				ownerReply(c), clusterReply(original), operatorRecordReply(original),
+				{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`}}
+			if whatIf {
+				replies = append(replies, skuReply(c.AKS.SystemPool.VMSize))
+			}
+			if err := (App{Config: c, Runner: script(t, replies...)}).Provision(t.Context(), whatIf); err != nil {
+				t.Fatalf("count decrease rejected: %v", err)
+			}
+		})
+	}
 }
 
 func operatorRecordReply(c Config) reply {
@@ -59,6 +120,9 @@ func TestProvisionGuardsExistingOperator(t *testing.T) {
 							action = "what-if"
 						}
 						replies = append(replies, reply{contains: "deployment sub " + action, output: `{"status":"Succeeded","changes":[]}`})
+						if whatIf && !registryOnly {
+							replies = append(replies, skuReply(c.AKS.SystemPool.VMSize))
+						}
 					}
 					r := script(t, replies...)
 					err := (App{Config: c, Runner: r}).provision(t.Context(), whatIf, registryOnly)
@@ -95,7 +159,7 @@ func TestProvisionRejectsFixedWorkerPoolChanges(t *testing.T) {
 			replies := []reply{accountReply(c), targetReply(), {contains: "group exists", output: "true"}, ownerReply(c),
 				clusterReply(original), operatorRecordReply(original)}
 			if tc.ok {
-				replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+				replies = append(replies, reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 			}
 			err := (App{Config: c, Runner: script(t, replies...)}).provision(t.Context(), true, false)
 			if tc.ok && err != nil || !tc.ok && (err == nil || !strings.Contains(err.Error(), "destroy and recreate")) {
@@ -135,7 +199,7 @@ func TestProvisionSerializesIdentityPrincipalTypes(t *testing.T) {
 					c.Azure.SnapshotReaderPrincipalType = principalType
 				}
 				r := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
-					reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
+					reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}, skuReply(c.AKS.SystemPool.VMSize))
 				if err := (App{Config: c, Runner: r}).Provision(t.Context(), true); err != nil {
 					t.Fatal(err)
 				}

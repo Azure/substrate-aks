@@ -585,10 +585,12 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 		t.Fatalf("snapshot consent lost the installation plan:\n%s", p.all)
 	}
 	p.send(t, "n\r")
+	p.until(t, "PostgreSQL backend")
+	p.send(t, "\r")
 	p.until(t, "Continue with this billable")
 	c, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited")
 	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
-		c.Azure.SnapshotReaderObjectID != "" {
+		c.Azure.SnapshotReaderObjectID != "" || c.Database.Backend != installer.DatabaseBundled {
 		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
 	}
 	p.send(t, "\x03\x03")

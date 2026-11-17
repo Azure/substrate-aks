@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -44,6 +46,59 @@ func TestPlanTablePreservesScopeAndSeparatesSections(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing table content or section spacing %q: %s", want, text)
 		}
+	}
+}
+
+func TestCLIPlanWritesCapacityWarningsToStderr(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, warning string
+	}{
+		{"exceeded", `printf '{"value":[{"name":"Standard_D4s_v6","family":"D","capabilities":[{"name":"vCPUs","value":"4"},{"name":"MemoryGB","value":"16"}]}]}'`, "WARNING CONTROL_PLANE_CAPACITY:"},
+		{"unknown", `printf 'diagnostic\n' >&2; exit 19`, "WARNING CONTROL_PLANE_CAPACITY_UNKNOWN:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := testCLIConfig(t)
+			c, err := installer.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Substrate.Sizing = &installer.SizingConfig{APIServer: &installer.APIServerSizing{
+				Resources: &installer.ResourceRequirements{Requests: map[string]string{"cpu": "3"}},
+			}}
+			data, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			fakeTool(t, bin, "az", `
+case "$1 $2" in
+  "account show") printf '{"id":"22222222-2222-4222-8222-222222222222"}';;
+  "group list") printf '[]';;
+  "group exists") printf 'false';;
+  "deployment sub") printf '{"status":"Succeeded","changes":[]}';;
+  "rest --method") `+tc.response+`;;
+  *) exit 19;;
+esac
+`)
+			t.Setenv("PATH", bin)
+			var result, progress bytes.Buffer
+			if err := run(t.Context(), []string{"plan", recordName(path)}, &result, &progress); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(data, after) {
+				t.Fatalf("capacity warning changed the installation record: %v", err)
+			}
+			if !strings.Contains(progress.String(), tc.warning) || strings.Contains(result.String(), tc.warning) {
+				t.Fatalf("warning must be on stderr: stdout=%s stderr=%s", result.String(), progress.String())
+			}
+			if strings.Contains(progress.String(), "diagnostic\n") {
+				t.Fatalf("warning exposed a raw lookup failure: %s", progress.String())
+			}
+		})
 	}
 }
 

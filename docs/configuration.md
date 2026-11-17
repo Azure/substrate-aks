@@ -27,6 +27,7 @@ also create one through [guided setup](operations.md#guided-installation).
 | Node size | `Standard_D4s_v6` for the system node and the microVM worker (count 1); see [microVM worker pool](#microvm-worker-pool) |
 | AKS API access | Your detected public IPv4 address, restricted to `/32` |
 | Snapshot inspection | Disabled unless requested |
+| PostgreSQL | `bundled`; managed `flexible-server` is opt-in |
 
 Each installation is saved as `installations/NAME/installation.json` in the
 installer's home directory, a per-user state directory:
@@ -61,6 +62,9 @@ placeholders are not valid deployment values.
       "cluster": "created"
     }
   },
+  "database": {
+    "backend": "bundled"
+  },
   "azure": {
     "subscriptionId": "YOUR_SUBSCRIPTION_UUID",
     "location": "eastus2",
@@ -75,6 +79,10 @@ placeholders are not valid deployment values.
     "operator": {
       "objectId": "YOUR_OPERATOR_ENTRA_OBJECT_UUID",
       "principalType": "User"
+    },
+    "systemPool": {
+      "vmSize": "Standard_D4s_v6",
+      "count": 1
     },
     "workerPool": {
       "vmSize": "Standard_D4s_v6",
@@ -126,11 +134,102 @@ the incomplete deletion before retrying.
 If the resource group is deleted outside the installer, reset references to
 deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
 
-## MicroVM worker pool
+## Control-plane sizing
 
-Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
-always one `Standard_D4s_v6` node; [#23](https://github.com/Azure/substrate-aks/issues/23) tracks making it configurable. Set the worker pool in `installation.json`
-before running `plan` and `provision`:
+These settings are optional. Omit them to keep the pinned release's defaults.
+Set them before installation; changing them on an installed deployment changes
+its recorded deployment identity and is not an in-place resizing mechanism.
+The defaults below are from the pinned
+[API server](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/ate-api-server.yaml),
+[router](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/manifests/ate-install/atenet-router.yaml),
+and [atelet](https://github.com/agent-substrate/substrate/blob/b34fbee742906494b5eb4f1f36987176bf8770a4/cmd/atelet/internal/snapshottracker/background.go).
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `substrate.sizing.apiServer.replicas` | 2 | API server replicas; at least 1 |
+| `substrate.sizing.apiServer.resources` | none | API server container requests and limits |
+| `substrate.sizing.apiServer.postgresPoolMaxConns` | unset | Read/write PostgreSQL pool maximum per API server; at least 1 |
+| `substrate.sizing.router.replicas` | 1 | Router replicas; at least 1 |
+| `substrate.sizing.router.resources.atenetRouter` | none | Router container requests and limits |
+| `substrate.sizing.router.resources.envoy` | none | Envoy container requests and limits |
+| `substrate.atelet.snapshotUploadDelay` | 5m | Positive Go duration |
+| `substrate.atelet.snapshotDetachDelay` | 30m | Positive Go duration |
+
+Resources use Kubernetes quantities in `requests` and `limits`, for example:
+
+```json
+{
+  "sizing": {
+    "apiServer": {
+      "replicas": 2,
+      "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}},
+      "postgresPoolMaxConns": 10
+    },
+    "router": {
+      "resources": {
+        "atenetRouter": {"requests": {"cpu": "250m"}},
+        "envoy": {"limits": {"memory": "1Gi"}}
+      }
+    }
+  },
+  "atelet": {
+    "snapshotUploadDelay": "10s",
+    "snapshotDetachDelay": "30s"
+  }
+}
+```
+
+These are members of `substrate`. Effective upload delay must not exceed
+effective detach delay; an omitted delay uses the pinned default for this
+validation. Atelet's pinned resource requests remain 50m CPU and 128Mi memory.
+The pool's unset value is determined by the upstream database client.
+For a different source revision, set both delays or omit both: its built-in
+defaults are not known to the installer.
+
+When setting API server replicas, also set `postgresPoolMaxConns`. For the
+bundled database, the installer reserves 10% of its 100 connections and counts
+six additional connections per API replica. It requires replicas × (pool + 6)
+to fit the remaining budget. For Flexible Server, the check uses the configured
+SKU's documented creation-time default `max_connections`, with the smaller of
+90% after rounding down and the limit less 15 reserved slots available to the
+application. The installer refuses an explicit pool if the SKU's budget is
+unknown. This is an offline estimate, not live verification: out-of-band
+changes to server parameters, compute size, or reserved slots can invalidate it.
+If neither setting is supplied, the upstream pool default is not known to the
+installer and the budget is not verified.
+The check covers steady state; during a rollout or eviction one extra replica
+may hold connections, so leave room for its pool plus six when pools saturate.
+
+`plan` estimates system-pool allocatable CPU and memory from the VM SKU and
+configured requests (or limits when requests are absent). It warns when the
+estimate is exceeded or cannot be verified. This estimate excludes system and
+add-on pods and does not guarantee scheduling capacity.
+
+The sizing component is an interim implementation for the current pin. A
+future pin with upstream sizing components will replace the mechanism while
+retaining these configuration fields.
+
+## Node pools
+
+Set the system pool in `installation.json` before running `plan` and `provision`.
+It must have enough capacity for the control plane's resource requests, including
+API server and router replicas.
+
+| Field | Default | Limits |
+| --- | --- | --- |
+| `aks.systemPool.vmSize` | `Standard_D4s_v6` | An explicit Linux/amd64 (x86-64) `Standard_*` Azure VM size available in the region; regional availability alone does not establish compatibility |
+| `aks.systemPool.count` | `1` | 1-154 nodes |
+
+`plan` and `provision` refuse to change the system pool's VM size on an existing
+installation; destroy it and create a new one instead. The count can change in
+place. Direct Bicep deployments can set `systemVmSize` and `systemCount`.
+Reducing the count drains removed nodes and can briefly restart single-replica
+control-plane pods, interrupting service.
+
+### MicroVM worker pool
+
+Sandboxes run on a dedicated, tainted `microvm` node pool. Set the worker pool in
+`installation.json` before running `plan` and `provision`:
 
 | Field | Default | Limits |
 | --- | --- | --- |
@@ -144,9 +243,13 @@ AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
 `plan` and `provision` refuse to change them on an existing installation;
 destroy it and create a new one instead.
 
-The 100-node limit keeps the cluster within its overlay pod address range
-(`10.244.0.0/16`, one `/24` per node, so 256 nodes in total) with room for
-upgrade surge nodes. AKS itself allows up to 1,000 nodes per pool.
+The installer and direct `main.bicep` deployments limit the system pool to
+154 nodes and the worker pool to 100. Their sum is therefore at most 254.
+The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
+256 nodes total, leaving one upgrade surge node for each pool at AKS's default
+surge setting. If surge settings are changed outside the
+installer, reserve enough additional addresses for them. AKS itself allows up
+to 1,000 nodes per pool.
 
 ### Snapshot disk performance
 
@@ -195,17 +298,144 @@ a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
+## PostgreSQL backend
+
+Choose during guided setup, or when creating a new installation:
+
+```sh
+bin/substrate-aks init flex --database flexible-server --database-location westus3
+```
+
+The selection is saved in the new installation record:
+
+```json
+"database": {
+  "backend": "flexible-server",
+  "location": "westus3",
+  "sku": {
+    "name": "Standard_D2ads_v5",
+    "tier": "GeneralPurpose"
+  }
+}
+```
+
+`setup` accepts the same flags only when it creates a new installation;
+`setup NAME` rejects them for a saved installation, whose record is authoritative.
+Records without `database` use bundled PostgreSQL.
+
+| `database.backend` | Initial profile |
+| --- | --- |
+| `bundled` (default) | Kubernetes PostgreSQL; existing certificates and Azure Disk behavior unchanged |
+| `flexible-server` | PostgreSQL 17, `database.sku` (default General Purpose `Standard_D2ads_v5`), 32 GiB, seven-day locally redundant backups, no HA |
+
+`database.sku` sets the Flexible Server compute size. `name` is an Azure SKU
+name such as `Standard_D4ads_v5`, and `tier` is `Burstable`, `GeneralPurpose`, or
+`MemoryOptimized`. The region check requires the subscription to offer that SKU
+in that tier. New installations save the default explicitly, and a record without
+`database.sku` loads with it. To choose another size, edit the saved record after
+`init` and before the first `setup`. The SKU can't change once the server exists:
+`plan` and `provision` compare it with the resource group's
+`substrate-aks-database-sku` tag and stop on a difference. Direct Bicep
+deployments set the same values with the `databaseSkuName` and `databaseSkuTier`
+parameters of `infra/main.bicep`.
+
+Optional `database.location` defaults to `azure.location` and applies only to
+managed backends. It can differ from AKS, with cross-region latency and transfer
+cost implications. `init` and `setup` check subscription-specific regional
+capabilities for PostgreSQL 17 and the selected backend's fixed compute profile
+before saving a new installation or starting setup stages. Full `plan` and `provision`
+repeat this read-only check; registry-only operations do not require database
+availability. If Azure no longer advertises the profile, an existing installation
+can continue with a warning only after its deployment outputs and actual database
+resource ID, region and ownership are verified. Group tags alone are insufficient;
+missing resources, invalid responses and API access failures remain errors.
+Backend/region immutability checks still apply. For new interactive installations,
+the managed database picker offers only service regions whose subscription
+capabilities advertise the required profile. Azure answers each region
+separately, so Flexible Server discovery (about 50 regions) can take up to a
+minute; setup shows it as a timed check. Discovery runs only for the selected
+managed backend, never for bundled PostgreSQL or `--yes`. It uses up to four
+concurrent read-only checks and fails explicitly
+on API or malformed-response errors; it never falls back to the general region
+catalog. Accessible mode prints the eligible choices. A picked region is not
+checked again immediately; the validation checklist rechecks the saved region
+before billing approval. Regions given by flags are checked before saving.
+Other validation failures stop noninteractive commands and saved installations;
+no region is changed without user selection. Advertised support does **not**
+guarantee quota, live SKU capacity or successful provisioning. Live SQL probes succeeded
+in `westus3`; advertised regions and SKUs were not all deployable. Register
+`Microsoft.DBforPostgreSQL` in the target subscription before provisioning.
+
+**Acceptance:** fresh Flexible Server installations passed managed bootstrap,
+verified TLS, same-config reprovisioning and durable counter continuity.
+See [operations](operations.md#live-acceptance-and-limitations).
+
+Managed modes provision the database in the installation's owned resource group,
+plus an AKS cluster identity and a static Standard egress public IP. Database
+public endpoints accept only that AKS egress IPv4, not all Azure services and
+not the operator's AKS API CIDR. Bootstrap runs inside AKS. All database
+connections use hostname/certificate verification (`sslmode=verify-full`).
+These resources add compute, storage, backup, Key Vault and IP charges.
+
+**Fresh installations only.** Backend/region changes after provisioning are
+rejected before deployment. No migration, database adoption, password rotation,
+or production-readiness claim is included.
+
+The pinned application does not acquire/renew Entra database tokens. Both
+managed options therefore use generated passwords, separate owner/runtime
+logins and least-privilege roles. An installer-owned Standard Key Vault is the
+credential authority for both backends. Credentials are **not** in
+`installation.json` or persisted to local parameter/state files. The vault name
+is derived from the subscription, group and installation ID; keep the saved
+installation for retries.
+Provisioning uses an ARM Key Vault secret reference. Bootstrap and application
+installation retrieve secrets into process memory and use the existing temporary
+bootstrap Secret and upstream application Secret/environment integration.
+Kubernetes Secrets and application passwords remain; this is not passwordless
+database authentication or CSI integration.
+
+The AKS operator (`aks.operator`) receives **Key Vault Secrets Officer on this
+vault only**, not a subscription-wide grant. Its cluster admin role already
+exposes the application's database credentials, so this adds no new access. The
+upload identity gets no vault access. Run managed database commands as the
+operator or separately grant the installer equivalent vault access.
+The deployment identity also needs `Microsoft.KeyVault/vaults/deploy/action`.
+The vault has an authenticated public endpoint; pods need no Key Vault identity
+or direct vault access. After reconciling the vault and grant, provisioning waits
+up to three minutes for recognized RBAC/DNS propagation errors, with cancellation
+support. Other access errors fail immediately. The readiness probe lists only
+secret identifiers, so access diagnostics remain visible; password reads and
+writes still suppress subprocess output.
+Missing credentials after database deployment submission fail rather than
+generating replacement passwords. Do not edit the vault's `database-credentials`
+secret to rotate passwords; database changes and application rollouts must be
+coordinated, and automatic rotation is not implemented.
+
+**Resource-group teardown deletes the managed database and its retained service
+backups.** This installer provides no restore workflow or automatic recovery.
+The database, even in a different region from AKS, and its vault are in the
+installation's resource group, so `destroy` deletes them before removing the
+local installation. If group deletion fails, `destroy` reports the
+error and keeps the local installation for a retry. The vault and its secrets are soft-deleted
+with seven-day retention (purge protection is off); teardown does not purge
+them. A new installation gets a new ID and therefore a different vault name,
+even with the same installation name. A managed-database installation can't be
+reused after its resource group is deleted outside the installer; see
+[retry and teardown](operations.md#retry-and-teardown).
+
 ## Azure identity and permissions
 
 The operator needs permission to list resource groups, create subscription-scope
-deployments, provision the resources, and assign roles. Use **Owner**, or
+deployments, provision the resources (including the selected managed PostgreSQL
+server and its Key Vault), and assign roles. Use **Owner**, or
 **Contributor** plus **User Access Administrator** or **Role Based Access
 Control Administrator**, on the subscription. A Role Based Access Control
 Administrator assignment must not carry a condition that excludes the roles
 setup assigns (`AcrPush`, `AcrPull`, `Container Registry Data Importer and Data
 Reader`, `Storage Blob Data Contributor`, `Storage Blob Data Reader`, and
-`Azure Kubernetes Service RBAC Cluster Admin`), the principal types it assigns
-them to, or those principals. Setup assigns roles to the managed identities it
+`Azure Kubernetes Service RBAC Cluster Admin`, plus `Key Vault Secrets Officer`
+and `Network Contributor` with managed PostgreSQL), the principal types it
+assigns them to, or those principals. Setup assigns roles to the managed identities it
 creates, as service principals, and to the operator, upload, and optional
 snapshot reader identities, each as its own principal type. A condition that
 only allows specific named principals fails on a new installation, because

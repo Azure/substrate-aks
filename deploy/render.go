@@ -16,8 +16,12 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
-//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components
+//go:embed kustomization.yaml.tmpl base-monitoring.patch.yaml components database-bootstrap.yaml
 var manifests embed.FS
+
+func DatabaseBootstrap() ([]byte, error) {
+	return manifests.ReadFile("database-bootstrap.yaml")
+}
 
 // AdaptBase removes the pinned GKE monitoring reference without building the
 // upstream base or moving its other resources away from their original paths.
@@ -58,10 +62,27 @@ type Values struct {
 	CredentialConfigExists bool
 	// NodeSelectorExists reports whether demo input already has a nodeSelector.
 	NodeSelectorExists bool
+	Sizing             *Sizing
 }
 
-// Render applies external components, then one embedded component, to
-// upstream Kubernetes YAML. actor-images uses atelet.yaml; postgres and
+type Resources struct {
+	Requests map[string]string
+	Limits   map[string]string
+}
+
+type Sizing struct {
+	// Deployment overrides.
+	Workload       string
+	Replicas       *int
+	Containers     map[string]*Resources
+	ContainerOrder []string
+	// Atelet argument overrides.
+	UploadDelay string
+	DetachDelay string
+}
+
+// Render applies external components, then an embedded component, then sizing,
+// to upstream Kubernetes YAML. actor-images uses atelet.yaml; postgres and
 // telemetry use postgres/postgres.yaml and ate-otel-config.yaml. Demo uses the
 // WorkerPool from counter-microvm.yaml.tmpl. Callers supply the reviewed
 // upstream input and runtime values; Render does not validate source pins.
@@ -105,8 +126,14 @@ func Render(source []byte, v Values) ([]byte, error) {
 			return nil, err
 		}
 	}
+	var components []string
 	if v.Component != "" {
-		component := "components/" + v.Component
+		components = append(components, "components/"+v.Component)
+	}
+	if v.Sizing != nil {
+		components = append(components, "components/sizing")
+	}
+	for _, component := range components {
 		if err := fs.WalkDir(manifests, component, func(name string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err

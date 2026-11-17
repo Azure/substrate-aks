@@ -16,13 +16,16 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	t.Helper()
 	i := testInfrastructure()
 	fp := fingerprint(c, i)
-	root := filepath.Join(c.workspace(), "source-"+fp+"-v2")
+	root := filepath.Join(c.workspace(), "source-"+fp+"-v3")
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
 	}
 	p := prepared{Fingerprint: fp, Files: map[string]string{}}
-	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml"} {
+	for _, name := range adaptedSourcePaths {
 		data := []byte("prepared " + name)
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(root, name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +44,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	}
 	return root, []reply{
 		{contains: "group exists", output: "true"}, ownerReply(c),
-		{contains: "deployment sub show", output: string(outputs)},
+		{contains: "deployment sub list", output: string(outputs)},
 		{contains: "aks get-credentials"},
 		{contains: "get namespace", output: "{}"},
 		{contains: "get configmap", output: `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"` + fp + `","phase":"deployed"}}`},

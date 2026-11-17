@@ -80,6 +80,9 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		if err := a.guardWorkerPool(cluster); err != nil {
 			return err
 		}
+		if err := a.guardSystemPool(cluster); err != nil {
+			return err
+		}
 	}
 	a.progress("Checking subscription deployment and role-assignment permissions")
 	scope := "/subscriptions/" + a.Config.Azure.SubscriptionID
@@ -145,7 +148,7 @@ func (a App) CloudPreflight(ctx context.Context) error {
 	for _, pool := range []struct {
 		name, size string
 		count      int
-	}{{"system", SystemVMSize, 1}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
+	}{{"system", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.SystemPool.Count}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
 		count := pool.count
 		if cluster != nil {
 			for _, existing := range cluster.AgentPoolProfiles {
@@ -226,6 +229,10 @@ func (a App) CloudPreflight(ctx context.Context) error {
 }
 
 func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
+	return a.regionalSKUCatalogPages(ctx, 0)
+}
+
+func (a App) regionalSKUCatalogPages(ctx context.Context, maxPages int) ([]byte, error) {
 	// Azure CLI's list-skus can filter --location locally, downloading every region.
 	endpoint := "https://management.azure.com/subscriptions/" + a.Config.Azure.SubscriptionID + "/providers/Microsoft.Compute/skus"
 	params := url.Values{
@@ -233,10 +240,13 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		"$filter":     {"location eq '" + strings.ReplaceAll(a.Config.Azure.Location, "'", "''") + "'"},
 	}
 	next := endpoint + "?" + params.Encode()
-	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='%s' || name=='%s')],nextLink:nextLink}", SystemVMSize, a.Config.AKS.WorkerPool.VMSize)
+	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='%s' || name=='%s')],nextLink:nextLink}", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.WorkerPool.VMSize)
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {
+		if maxPages > 0 && len(seen) >= maxPages {
+			return nil, errors.New("VM SKU catalog exceeded the page limit")
+		}
 		pageURL, err := url.Parse(next)
 		if err != nil || pageURL.Scheme != "https" || pageURL.Host != "management.azure.com" ||
 			pageURL.User != nil || pageURL.Fragment != "" ||
@@ -250,6 +260,9 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		data, err := a.az(ctx, "rest", "--method", "get", "--url", next, "--query", query)
 		if err != nil {
 			return nil, err
+		}
+		if maxPages > 0 && len(data) > 4<<20 {
+			return nil, errors.New("VM SKU catalog page exceeded the size limit")
 		}
 		var page struct {
 			Value    []json.RawMessage
@@ -270,7 +283,14 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 	return json.Marshal(skus)
 }
 
-func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+type skuInfo struct {
+	family                          string
+	cpus                            int64
+	memory                          string
+	matches, cpusFound, memoryFound int
+}
+
+func (a App) readSKU(data []byte, size string) (skuInfo, error) {
 	var skus []struct {
 		Name, Family string
 		Capabilities []struct{ Name, Value string }
@@ -280,36 +300,62 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 		}
 	}
 	if err := json.Unmarshal(data, &skus); err != nil {
-		return "", 0, fmt.Errorf("reading VM SKU %s: %w", size, err)
+		return skuInfo{}, fmt.Errorf("reading VM SKU %s: %w", size, err)
 	}
+	var result skuInfo
 	for _, sku := range skus {
 		if !strings.EqualFold(sku.Name, size) {
+			continue
+		}
+		result.matches++
+		if result.matches > 1 {
 			continue
 		}
 		for _, restriction := range sku.Restrictions {
 			if strings.EqualFold(restriction.Type, "Location") {
 				if len(restriction.Values) == 0 {
-					return "", 0, fmt.Errorf("VM SKU %s has an unspecified location restriction; availability is unverified", size)
+					return skuInfo{}, fmt.Errorf("VM SKU %s has an unspecified location restriction; availability is unverified", size)
 				}
 				for _, location := range restriction.Values {
 					if strings.EqualFold(location, a.Config.Azure.Location) {
-						return "", 0, fmt.Errorf("VM SKU %s is restricted in %s for this subscription", size, location)
+						return skuInfo{}, fmt.Errorf("VM SKU %s is restricted in %s for this subscription", size, location)
 					}
 				}
 			}
 		}
+		result.family = sku.Family
 		for _, capability := range sku.Capabilities {
-			if capability.Name == "vCPUs" && sku.Family != "" {
+			if capability.Name == "vCPUs" {
+				result.cpusFound++
+				if result.cpusFound != 1 || sku.Family == "" {
+					continue
+				}
 				cpus, err := strconv.ParseInt(capability.Value, 10, 64)
 				if err != nil || cpus <= 0 || cpus > 1024 {
-					return "", 0, fmt.Errorf("VM SKU %s has invalid vCPU capability", size)
+					return skuInfo{}, fmt.Errorf("VM SKU %s has invalid vCPU capability", size)
 				}
-				return sku.Family, cpus, nil
+				result.cpus = cpus
+			}
+			if capability.Name == "MemoryGB" {
+				result.memoryFound++
+				if result.memoryFound == 1 {
+					result.memory = capability.Value
+				}
 			}
 		}
-		return "", 0, fmt.Errorf("VM SKU %s has no usable CPU/family information", size)
+		if result.cpus == 0 {
+			return skuInfo{}, fmt.Errorf("VM SKU %s has no usable CPU/family information", size)
+		}
 	}
-	return "", 0, fmt.Errorf("VM SKU %s is not available in %s", size, a.Config.Azure.Location)
+	if result.matches == 0 {
+		return skuInfo{}, fmt.Errorf("VM SKU %s is not available in %s", size, a.Config.Azure.Location)
+	}
+	return result, nil
+}
+
+func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+	sku, err := a.readSKU(data, size)
+	return sku.family, sku.cpus, err
 }
 
 // ephemeralOSDiskFits checks that size supports ephemeral OS disks and that

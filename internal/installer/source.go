@@ -9,7 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 type prepared struct {
@@ -36,8 +40,56 @@ func fingerprint(c Config, i Infrastructure) string {
 		Infrastructure Infrastructure
 		Adapter        int
 	}{source, i, 6})
+	settings := sizingIdentity(c.Substrate)
+	if len(settings) != 0 {
+		encoded, _ := json.Marshal(settings)
+		data = append(data, encoded...)
+	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func sizingIdentity(s SubstrateConfig) map[string]any {
+	values := make(map[string]any)
+	addResources := func(prefix string, r *ResourceRequirements) {
+		if r == nil {
+			return
+		}
+		for group, items := range map[string]map[string]string{"requests": r.Requests, "limits": r.Limits} {
+			for name, value := range items {
+				q, err := resource.ParseQuantity(value)
+				if err == nil {
+					value = q.String()
+				}
+				values[prefix+"."+group+"."+name] = value
+			}
+		}
+	}
+	for _, workload := range s.sizedWorkloads() {
+		if workload.replicas != nil {
+			values[workload.field+".replicas"] = *workload.replicas
+		}
+		if workload.pool != nil {
+			values[workload.field+".postgresPoolMaxConns"] = *workload.pool
+		}
+		for _, container := range workload.containers {
+			addResources(container.identity, container.resources)
+		}
+	}
+	if s.Atelet != nil {
+		for name, p := range map[string]*string{
+			"atelet.upload": s.Atelet.SnapshotUploadDelay, "atelet.detach": s.Atelet.SnapshotDetachDelay,
+		} {
+			if p != nil {
+				value := *p
+				if d, err := time.ParseDuration(value); err == nil {
+					value = d.String()
+				}
+				values[name] = value
+			}
+		}
+	}
+	return values
 }
 
 func checksum(data []byte) string {
@@ -47,12 +99,15 @@ func checksum(data []byte) string {
 
 func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 	a.progress("Validating the configured source and images")
+	if err := a.Config.validateSizing(); err != nil {
+		return "", err
+	}
 	if err := a.Config.ValidateInstall(); err != nil {
 		return "", err
 	}
 	fp := fingerprint(a.Config, i)
-	// Demo-only adaptations invalidate the cache without changing the installed fingerprint.
-	dest := filepath.Join(a.Config.workspace(), "source-"+fp+"-v2")
+	// Cache generations are independent of the installed fingerprint.
+	dest := filepath.Join(a.Config.workspace(), "source-"+fp+"-v3")
 	markerPath := filepath.Join(dest, ".substrate-aks-prepared.json")
 	if data, err := os.ReadFile(markerPath); err == nil {
 		a.progress("Verifying the cached managed source checkout")
@@ -60,8 +115,13 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 		if err := json.Unmarshal(data, &p); err != nil {
 			return "", err
 		}
-		if p.Fingerprint != fp || len(p.Files) != 6 {
+		if p.Fingerprint != fp || len(p.Files) != len(adaptedSourcePaths) {
 			return "", errors.New("managed source marker is inconsistent; do not modify managed checkouts")
+		}
+		for _, path := range adaptedSourcePaths {
+			if _, ok := p.Files[path]; !ok {
+				return "", errors.New("managed source marker has an unexpected path set; do not modify managed checkouts")
+			}
 		}
 		for rel, want := range p.Files {
 			if !filepath.IsLocal(rel) {
@@ -176,6 +236,11 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 	env := []string{
 		"NO_DEV_ENV=1", "KUBECONFIG=" + a.kubeconfig(), "VERSION=" + c.Substrate.Images.Tag,
 	}
+	databaseEnv, err := a.databaseEnvironment(ctx)
+	if err != nil {
+		return err
+	}
+	env = append(env, databaseEnv...)
 	host, _, _ := strings.Cut(c.Substrate.Images.Repository, "/")
 	if strings.HasSuffix(host, ".azurecr.io") {
 		r, err := a.registry(ctx)
@@ -211,14 +276,19 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		// replaces, so these placeholders are never used.
 		"--gcp-project-id", transferPlaceholderProject,
 		"--snapshot-transfer-gsa-name", transferPlaceholderAccount)
+	for _, workload := range c.Substrate.sizedWorkloads() {
+		if workload.pool != nil {
+			command = append(command, "--ateapi-postgres-pool-max-conns", strconv.Itoa(*workload.pool))
+		}
+	}
 	if args[1] == "ate-system" {
 		// ate-setup would stage microVM assets to GCS; the installer uploads
 		// them to Blob storage and applies the microvm SandboxConfig itself.
 		command = append(command, "--sandbox-classes", "gvisor")
 	}
 	a.progress("Deploying %s and waiting for workloads to become ready (up to 10 minutes per rollout)", strings.Join(args[1:], " "))
-	_, err := a.Runner.Run(ctx, Command{
-		Dir: root, Args: command, Env: env,
+	_, err = a.Runner.Run(ctx, Command{
+		Dir: root, Args: command, Env: env, SensitiveOutput: c.ManagedDatabase(),
 	})
 	return err
 }
