@@ -130,6 +130,9 @@ func CreateInstallation(home string, c Config) (string, error) {
 	if err := c.Validate(); err != nil {
 		return "", err
 	}
+	if err := c.validateNodeResourceGroupName(); err != nil {
+		return "", err
+	}
 	path := RecordPath(home, c.Installation.Name)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return "", err

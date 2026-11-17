@@ -174,6 +174,9 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := a.Config.Validate(); err != nil {
 		return err
 	}
+	if err := a.Config.validateNodeResourceGroupName(); err != nil {
+		return err
+	}
 	if err := a.account(ctx); err != nil {
 		return err
 	}

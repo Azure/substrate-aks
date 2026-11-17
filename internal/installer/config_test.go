@@ -121,6 +121,37 @@ func TestConfigNameBoundaries(t *testing.T) {
 	}
 }
 
+func TestConfigNodeResourceGroupLength(t *testing.T) {
+	// MC_ + 34 + _ + 34 + _ + westus3 = 80; germanywestcentral allows 28.
+	for _, tc := range []struct {
+		location, resourceGroup, cluster string
+		length                           int
+		ok                               bool
+	}{
+		{"westus3", strings.Repeat("a", 34), strings.Repeat("b", 34), 80, true},
+		{"westus3", strings.Repeat("a", 34), strings.Repeat("b", 35), 81, false},
+		{"germanywestcentral", strings.Repeat("a", 28), strings.Repeat("b", 29), 80, true},
+		{"germanywestcentral", strings.Repeat("a", 29), strings.Repeat("b", 29), 81, false},
+	} {
+		t.Run(fmt.Sprintf("%s-%d", tc.location, tc.length), func(t *testing.T) {
+			c := testConfig(t)
+			c.Azure.Location, c.Azure.ResourceGroup, c.AKS.ClusterName = tc.location, tc.resourceGroup, tc.cluster
+			err := c.validateNodeResourceGroupName()
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want := fmt.Sprintf("%d characters (MC_<resourceGroup>_<clusterName>_<location>), over the limit of 80; in %s an installation name used for both can be at most %d characters",
+				tc.length, tc.location, (75-len(tc.location))/2)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate() = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestConfigWorkerPoolBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		size  string

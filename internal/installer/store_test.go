@@ -183,3 +183,42 @@ func TestDiscardNewInstallationKeepsResumedState(t *testing.T) {
 		})
 	}
 }
+
+func TestOverlongNodeResourceGroupRecordStillLoads(t *testing.T) {
+	home := t.TempDir()
+	c := testConfig(t)
+	c.Installation.Name = "substrate-long"
+	c.Azure.ResourceGroup, c.AKS.ClusterName = strings.Repeat("a", 40), strings.Repeat("b", 40)
+	const want = "AKS node resource group name"
+	if _, err := CreateInstallation(home, c); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("CreateInstallation() = %v, want %q", err, want)
+	}
+
+	// A record saved before the check existed must still load so that
+	// destroy can remove its resource group.
+	if err := os.MkdirAll(filepath.Dir(RecordPath(home, c.Installation.Name)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c.Installation.Dir = ""
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(RecordPath(home, c.Installation.Name), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadInstallation(home, c.Installation.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := script(t)
+	for _, whatIf := range []bool{true, false} {
+		if err := (App{Config: loaded, Runner: r}).Provision(t.Context(), whatIf); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Provision(whatIf=%v) = %v, want %q", whatIf, err, want)
+		}
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("provision ran %d commands before refusing", len(r.calls))
+	}
+}
