@@ -40,7 +40,7 @@ func testRestoreCredentialInterruption(t *testing.T, root, binary string) {
 	source := filepath.Join(dir, "credential.go")
 	program := filepath.Join(dir, "credential")
 	const fixture = `package main
-import ("fmt"; "os"; "os/exec"; "path/filepath"; "strconv"; "time")
+import ("fmt"; "os"; "os/exec"; "path/filepath"; "strconv"; "syscall"; "time")
 func main() {
 	dir, mode := os.Args[1], os.Args[2]
 	if mode == "child" {
@@ -60,12 +60,14 @@ func main() {
 		os.WriteFile(filepath.Join(dir, "extra"), []byte("extra"), 0600)
 		os.Exit(1)
 	}
-	os.WriteFile(filepath.Join(dir, "call-"+strconv.Itoa(n)), []byte(strconv.Itoa(os.Getpid())), 0600)
+	os.WriteFile(filepath.Join(dir, "call-"+strconv.Itoa(n)), []byte(fmt.Sprint(os.Getpid(), " ", syscall.Getpgrp(), " ", os.Getppid())), 0600)
 	if mode == "initial" && n == 1 || mode == "refresh" && n == 2 {
 		child := exec.Command(os.Args[0], dir, "child")
 		child.Stdout, child.Stderr = os.Stdout, os.Stderr
 		if err := child.Start(); err != nil { os.Exit(1) }
-		if err := os.WriteFile(filepath.Join(dir, "child.tmp"), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil { os.Exit(1) }
+		pgid, err := syscall.Getpgid(child.Process.Pid)
+		if err != nil { os.Exit(1) }
+		if err := os.WriteFile(filepath.Join(dir, "child.tmp"), []byte(fmt.Sprint(child.Process.Pid, " ", pgid, " ", os.Getpid())), 0600); err != nil { os.Exit(1) }
 		if err := os.Rename(filepath.Join(dir, "child.tmp"), filepath.Join(dir, "child")); err != nil { os.Exit(1) }
 		if child.Wait() != nil { os.Exit(1) }
 		os.WriteFile(filepath.Join(dir, "late-plugin"), []byte("late"), 0600)
@@ -179,28 +181,50 @@ func main() {
 				if requests.Load() != expectedRequests {
 					t.Fatalf("requests=%d, want %d", requests.Load(), expectedRequests)
 				}
-				markers := []string{"child"}
+				var markers []string
 				for n := 1; n <= expectedCalls; n++ {
 					markers = append(markers, fmt.Sprintf("call-%d", n))
 				}
+				markers = append(markers, "child")
+				group := 0
 				for _, marker := range markers {
 					data, err := os.ReadFile(filepath.Join(work, marker))
 					if err != nil {
 						t.Fatal(err)
 					}
-					pid, err := strconv.Atoi(string(data))
-					if err != nil || pid <= 0 {
-						t.Fatalf("invalid credential PID %q: %v", data, err)
+					var pid, pgid, ppid int
+					if _, err := fmt.Sscan(string(data), &pid, &pgid, &ppid); err != nil || pid <= 0 || pgid <= 0 {
+						t.Fatalf("invalid credential process record %q: %v", data, err)
 					}
-					wait := time.Now().Add(2 * time.Second)
+					// The helper is the process ExecRunner starts with Setpgid, so it leads the group
+					// that cancellation kills; every credential process must belong to that group.
+					if marker == "call-1" {
+						group = ppid
+					}
+					if group != 0 && pgid != group || marker != "child" && pgid != ppid {
+						t.Fatalf("credential %s (pid %d, pgid %d, parent %d) is outside the helper's process group", marker, pid, pgid, ppid)
+					}
+					// A process in the killed group has an uncatchable SIGKILL pending, but under CPU
+					// contention it can still be exiting (state R, descriptors closed) after Run returns.
+					wait := time.Now().Add(10 * time.Second)
 					for restoreCredentialProcessAlive(pid) && time.Now().Before(wait) {
 						time.Sleep(20 * time.Millisecond)
 					}
 					if restoreCredentialProcessAlive(pid) {
+						stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+						state := fmt.Sprintf("stat unreadable: %v", err)
+						if f := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:])); err == nil && len(f) > 2 {
+							state = fmt.Sprintf("state %s ppid %s pgrp %s", f[0], f[1], f[2])
+						}
+						status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+						pending := fmt.Sprintf("status unreadable: %v", err)
+						if _, value, ok := strings.Cut(string(status), "ShdPnd:"); err == nil && ok {
+							pending = "ShdPnd " + strings.Fields(value + " ?")[0]
+						}
 						if p, err := os.FindProcess(pid); err == nil {
 							p.Kill()
 						}
-						t.Errorf("credential descendant %d remains live", pid)
+						t.Errorf("credential %s (pid %d) remains live 10s after interruption: %s, %s (helper group %d)", marker, pid, state, pending, group)
 					}
 				}
 				if err := os.WriteFile(filepath.Join(work, "release"), []byte("release"), 0600); err != nil {
