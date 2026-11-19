@@ -284,7 +284,7 @@ func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.
 			}
 		}
 	}
-	expected := map[string]int{"images": 3 + len(installer.ImageCheckSteps()), "cluster": 3, "substrate": 3, "demo": 1, "connect": 1}
+	expected := map[string]int{"images": 3 + len(installer.ImageCheckSteps()), "cluster": 2, "substrate": 3, "demo": 1, "connect": 2}
 	seen := map[string]string{}
 	err := setupForTest(ctx, setupOptions{
 		home: recordHome(testCLIConfig(t)), name: "substrate-test", yes: true, withDemo: true, skipContextHandoff: true,

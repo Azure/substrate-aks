@@ -210,7 +210,12 @@ interactive `setup` asks for a name, and `destroy` refuses to run.
 | `bin/substrate-aks plan` | Preview real infrastructure changes using Bicep what-if |
 | `bin/substrate-aks status` | Inspect Substrate pods and persistent volume claims |
 | `bin/substrate-aks client` | Install the matching `kubectl ate` and print shell exports |
+| `bin/substrate-aks check` | Check compatibility and test memory restore on an empty installation |
 | `bin/substrate-aks setup --verbose` | Show underlying commands and detailed output |
+
+`check` prints `RESTORE_PASSED` only after the restore test. A pre-install or
+busy-installation skip means restore was not tested; see
+[operations](docs/operations.md#restore-check-and-recovery).
 
 - **Failures keep resources.** Fix the reported error and rerun `setup NAME`;
   there is no automatic rollback. See [retry and teardown](docs/operations.md#retry-and-teardown).

@@ -1,7 +1,10 @@
 package steps
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,18 +13,612 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/cmd/ate-setup/internal/images"
+	"go.ate.dev/substrate/internal/ateclient"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/stats"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // azureDemoImage is the demo substrate-aks deploys. Releases do not publish
 // it, so substrate-aks builds it into the same repository as the rest.
 const azureDemoImage = "demos/counter"
+
+type restoreInventoryResult struct {
+	Workers        bool `json:"workers"`
+	Actors         bool `json:"actors"`
+	ActorTemplates bool `json:"actorTemplates"`
+}
+
+type restoreDiscoveryTransport struct {
+	base       http.RoundTripper
+	incomplete atomic.Bool
+}
+
+func (t *restoreDiscoveryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil || len(data) > 8<<20 || response.StatusCode == http.StatusOK && !json.Valid(data) {
+		t.incomplete.Store(true)
+		return nil, errors.New("incomplete or oversized Kubernetes discovery response")
+	}
+	response.Body = io.NopCloser(bytes.NewReader(data))
+	return response, nil
+}
+
+func RestoreNamespaceResources(ctx context.Context, kubeconfig, contextName string, out, warnings io.Writer) error {
+	if kubeconfig == "" || contextName == "" {
+		return errors.New("explicit kubeconfig and context are required")
+	}
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
+		&clientcmd.ConfigOverrides{CurrentContext: contextName},
+	).ClientConfig()
+	if err != nil {
+		return fmt.Errorf("loading Kubernetes connection: %w", err)
+	}
+	if config.Host == "" {
+		return errors.New("invalid Kubernetes server URL")
+	}
+	base, _, err := rest.DefaultServerUrlFor(config)
+	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return errors.New("invalid Kubernetes server URL")
+	}
+	bounded := &restoreDiscoveryTransport{}
+	previous := config.WrapTransport
+	config.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		if previous != nil {
+			base = previous(base)
+		}
+		bounded.base = base
+		return bounded
+	}
+	client, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return fmt.Errorf("preparing Kubernetes discovery: %w", err)
+	}
+	lists, err := discovery.ServerPreferredResourcesWithContext(ctx, client)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if bounded.incomplete.Load() {
+		return errors.New("incomplete or oversized Kubernetes discovery")
+	}
+	return restoreNamespaceResourceOutput(ctx, lists, err, out, warnings)
+}
+
+func restoreNamespaceResourceOutput(ctx context.Context, lists []*metav1.APIResourceList, discoveryErr error, out, warnings io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if discoveryErr != nil {
+		failed, ok := discoveryErr.(*discovery.ErrGroupDiscoveryFailed)
+		if !ok || failed == nil || len(failed.Groups) == 0 {
+			return fmt.Errorf("discovering namespace resources: %w", discoveryErr)
+		}
+		for gv, cause := range failed.Groups {
+			var joined interface{ Unwrap() []error }
+			if gv.Group != "metrics.k8s.io" || len(validation.IsDNS1035Label(gv.Version)) != 0 || cause == nil ||
+				errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || errors.As(cause, &joined) {
+				return fmt.Errorf("discovering namespace resources: %w", discoveryErr)
+			}
+		}
+		const warning = "Warning: pod metrics API discovery failed; checking all other discovered namespace resources.\n"
+		n, err := io.WriteString(warnings, warning)
+		if err != nil {
+			return err
+		}
+		if n != len(warning) {
+			return io.ErrShortWrite
+		}
+	}
+	seen := map[string]bool{}
+	effective := 0
+	corePods := false
+	for _, list := range lists {
+		if list == nil {
+			return errors.New("invalid namespace discovery resource list")
+		}
+		gv, err := schema.ParseGroupVersion(list.GroupVersion)
+		if err != nil || len(validation.IsDNS1035Label(gv.Version)) != 0 ||
+			gv.Group != "" && len(validation.IsDNS1123Subdomain(gv.Group)) != 0 {
+			return errors.New("invalid namespace discovery group version")
+		}
+		for _, resource := range list.APIResources {
+			if !resource.Namespaced {
+				continue
+			}
+			listable := false
+			for _, verb := range resource.Verbs {
+				listable = listable || verb == "list"
+			}
+			if !listable {
+				continue
+			}
+			if len(validation.IsDNS1035Label(resource.Name)) != 0 {
+				return errors.New("invalid namespace discovery resource name")
+			}
+			if gv.Group == "" && gv.Version == "v1" && resource.Name == "pods" {
+				corePods = true
+			}
+			name := resource.Name
+			if gv.Group != "" {
+				name += "." + gv.Group
+			}
+			if !seen[name] {
+				seen[name] = true
+				if len(seen) > 1024 {
+					return errors.New("namespace discovery exceeds resource limit")
+				}
+				if name != "pods.metrics.k8s.io" {
+					effective++
+				}
+			}
+		}
+	}
+	if effective == 0 {
+		return errors.New("namespace discovery has no inventory resources")
+	}
+	if !corePods {
+		return errors.New("incomplete or oversized Kubernetes discovery")
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	data := []byte(strings.Join(names, "\n") + "\n")
+	if len(data) > 8<<20 {
+		return errors.New("namespace discovery exceeds output limit")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	n, err := out.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return ctx.Err()
+}
+
+func RestoreWorkerPools(ctx context.Context, kubeconfig, contextName string, out io.Writer) error {
+	if kubeconfig == "" || contextName == "" {
+		return errors.New("explicit kubeconfig and context are required")
+	}
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
+		&clientcmd.ConfigOverrides{CurrentContext: contextName},
+	).ClientConfig()
+	if err != nil {
+		return fmt.Errorf("loading Kubernetes connection: %w", err)
+	}
+	if config.Host == "" {
+		return errors.New("invalid Kubernetes server URL")
+	}
+	base, _, err := rest.DefaultServerUrlFor(config)
+	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return errors.New("invalid Kubernetes server URL")
+	}
+	endpoint := base.JoinPath("apis", "ate.dev", "v1", "workerpools")
+	endpoint.RawQuery = "limit=1"
+	client, err := rest.HTTPClientFor(config)
+	if err != nil {
+		return fmt.Errorf("preparing Kubernetes connection: %w", err)
+	}
+	data, err := restoreWorkerPoolPage(ctx, client, endpoint.String())
+	if err != nil {
+		return err
+	}
+	n, err := out.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func restoreWorkerPoolPage(ctx context.Context, original *http.Client, endpoint string) ([]byte, error) {
+	const limit = 8 << 20
+	client := *original
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("reading WorkerPools: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("reading WorkerPools: HTTP status %d", response.StatusCode)
+	}
+	encodings := response.Header.Values("Content-Encoding")
+	if len(encodings) > 1 {
+		return nil, errors.New("unsupported WorkerPool response encoding")
+	}
+	encoding := ""
+	if len(encodings) == 1 {
+		encoding = strings.ToLower(strings.TrimSpace(encodings[0]))
+	}
+	if encoding != "" && encoding != "identity" && encoding != "gzip" {
+		return nil, errors.New("unsupported WorkerPool response encoding")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading WorkerPool response: %w", err)
+	}
+	if len(data) > limit {
+		return nil, errors.New("WorkerPool response exceeds size limit")
+	}
+	if encoding == "gzip" {
+		reader, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("decoding WorkerPool response: %w", err)
+		}
+		decoded, readErr := io.ReadAll(io.LimitReader(reader, limit+1))
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return nil, fmt.Errorf("decoding WorkerPool response: %w", err)
+		}
+		if len(decoded) > limit {
+			return nil, errors.New("decoded WorkerPool response exceeds size limit")
+		}
+		data = decoded
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// The pinned PostgreSQL store encodes scoped page tokens as base64 JSON.
+// Source: b34fbee742906494b5eb4f1f36987176bf8770a4,
+// cmd/ateapi/internal/store/atepg/pagetoken.go:42-84.
+func validRestoreToken(token, kind string) bool {
+	if token == "" {
+		return true
+	}
+	if len(token) > 256 {
+		return false
+	}
+	data, err := base64.StdEncoding.Strict().DecodeString(token)
+	if err != nil {
+		return false
+	}
+	var value struct {
+		Version int
+		Kind    string
+		Scope   string
+		Last    []string
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	if start, err := decoder.Token(); err != nil || start != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		field, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := field.(string)
+		if !ok || seen[name] {
+			return false
+		}
+		seen[name] = true
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil || strings.TrimSpace(string(raw)) == "null" {
+			return false
+		}
+		switch name {
+		case "v":
+			err = json.Unmarshal(raw, &value.Version)
+		case "kind":
+			err = json.Unmarshal(raw, &value.Kind)
+		case "scope":
+			err = json.Unmarshal(raw, &value.Scope)
+		case "last":
+			err = json.Unmarshal(raw, &value.Last)
+		default:
+			return false
+		}
+		if err != nil {
+			return false
+		}
+	}
+	if end, err := decoder.Token(); err != nil || end != json.Delim('}') || len(seen) != 4 ||
+		decoder.Decode(new(any)) != io.EOF || value.Version != 1 || value.Kind != kind || value.Scope != "" {
+		return false
+	}
+	count := 2
+	if kind == "worker" {
+		count = 1
+	}
+	if len(value.Last) != count {
+		return false
+	}
+	for _, key := range value.Last {
+		if key == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func restoreInventory(ctx context.Context, client ateapi.ControlClient) (restoreInventoryResult, error) {
+	var result restoreInventoryResult
+	identities := map[string]string{}
+	// grpc-go v1.83.2 rpc_util.go enforces this limit before unmarshalling.
+	options := grpc.MaxCallRecvMsgSize(8 << 20)
+	workers, err := client.ListWorkers(ctx, &ateapi.ListWorkersRequest{Options: &ateapi.ListOptions{PageSize: 1}}, options)
+	if err != nil {
+		return result, fmt.Errorf("listing workers: %w", err)
+	}
+	if workers == nil || len(workers.ProtoReflect().GetUnknown()) != 0 || len(workers.GetWorkers()) > 1 || !validRestoreToken(workers.GetNextPageToken(), "worker") || len(workers.GetWorkers()) == 0 && workers.GetNextPageToken() != "" {
+		return result, errors.New("incomplete worker inventory")
+	}
+	for _, worker := range workers.GetWorkers() {
+		if err := restoreCensusIdentity(identities, "worker", worker.GetMetadata()); err != nil {
+			return result, errors.New("invalid worker inventory")
+		}
+	}
+	result.Workers = len(workers.GetWorkers()) != 0
+
+	actors, err := client.ListActors(ctx, &ateapi.ListActorsRequest{Options: &ateapi.ListOptions{PageSize: 1}}, options)
+	if err != nil {
+		return result, fmt.Errorf("listing actors: %w", err)
+	}
+	if actors == nil || len(actors.ProtoReflect().GetUnknown()) != 0 || len(actors.GetActors()) > 1 || !validRestoreToken(actors.GetNextPageToken(), "actor") || len(actors.GetActors()) == 0 && actors.GetNextPageToken() != "" {
+		return result, errors.New("incomplete actor inventory")
+	}
+	for _, actor := range actors.GetActors() {
+		if err := restoreCensusIdentity(identities, "actor", actor.GetMetadata()); err != nil {
+			return result, errors.New("invalid actor inventory")
+		}
+	}
+	result.Actors = len(actors.GetActors()) != 0
+
+	templates, err := client.ListActorTemplates(ctx, &ateapi.ListActorTemplatesRequest{Options: &ateapi.ListOptions{PageSize: 1}}, options)
+	if err != nil {
+		return result, fmt.Errorf("listing actor templates: %w", err)
+	}
+	if templates == nil || len(templates.ProtoReflect().GetUnknown()) != 0 || len(templates.GetActorTemplates()) > 1 || !validRestoreToken(templates.GetNextPageToken(), "actor-template") || len(templates.GetActorTemplates()) == 0 && templates.GetNextPageToken() != "" {
+		return result, errors.New("incomplete actor template inventory")
+	}
+	for _, template := range templates.GetActorTemplates() {
+		if err := restoreCensusIdentity(identities, "actor-template", template.GetMetadata()); err != nil {
+			return result, errors.New("invalid actor template inventory")
+		}
+	}
+	result.ActorTemplates = len(templates.GetActorTemplates()) != 0
+	return result, nil
+}
+
+type restorePayloadCounter struct {
+	bytes, events atomic.Int64
+}
+
+func (*restorePayloadCounter) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+func (c *restorePayloadCounter) HandleRPC(_ context.Context, event stats.RPCStats) {
+	if payload, ok := event.(*stats.InPayload); ok && payload.Client {
+		// grpc-go v1.83.2 stats/stats.go defines Length as uncompressed payload bytes.
+		c.bytes.Add(int64(payload.Length))
+		c.events.Add(1)
+	}
+}
+func (*restorePayloadCounter) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+func (*restorePayloadCounter) HandleConn(context.Context, stats.ConnStats) {}
+
+type restoreCensusResult struct {
+	Workers        []json.RawMessage `json:"workers"`
+	Actors         bool              `json:"actors"`
+	ActorTemplates bool              `json:"actorTemplates"`
+}
+
+func restoreCensus(ctx context.Context, client ateapi.ControlClient, payloads *restorePayloadCounter, mode string) (restoreCensusResult, error) {
+	result := restoreCensusResult{Workers: []json.RawMessage{}}
+	if mode != "workers" && mode != "full" {
+		return result, errors.New("invalid restore census mode")
+	}
+	const maxBytes, maxRecords, maxPages = 8 << 20, 10000, 1000
+	pages, records := 0, 0
+	identities := map[string]string{}
+	for _, kind := range []string{"actor", "actor-template", "worker"} {
+		if mode == "workers" && kind != "worker" {
+			continue
+		}
+		token := ""
+		tokens := map[string]bool{}
+		for {
+			if pages >= maxPages {
+				return result, errors.New("restore census exceeded response limit")
+			}
+			remaining := int64(maxBytes) - payloads.bytes.Load()
+			if remaining <= 0 {
+				return result, errors.New("restore census exceeded aggregate size limit")
+			}
+			before := payloads.bytes.Load()
+			beforeEvents := payloads.events.Load()
+			options := &ateapi.ListOptions{PageSize: 1000, PageToken: token}
+			call := grpc.MaxCallRecvMsgSize(int(remaining))
+			var response proto.Message
+			var next string
+			var entries int
+			var err error
+			switch kind {
+			case "actor":
+				var page *ateapi.ListActorsResponse
+				page, err = client.ListActors(ctx, &ateapi.ListActorsRequest{Options: options}, call)
+				if err == nil && page != nil {
+					response, next, entries = page, page.GetNextPageToken(), len(page.GetActors())
+					if records+entries > maxRecords {
+						return result, errors.New("restore census exceeded record limit")
+					}
+					for _, actor := range page.GetActors() {
+						if err = restoreCensusIdentity(identities, kind, actor.GetMetadata()); err != nil {
+							break
+						}
+					}
+					result.Actors = result.Actors || entries != 0
+				}
+			case "actor-template":
+				var page *ateapi.ListActorTemplatesResponse
+				page, err = client.ListActorTemplates(ctx, &ateapi.ListActorTemplatesRequest{Options: options}, call)
+				if err == nil && page != nil {
+					response, next, entries = page, page.GetNextPageToken(), len(page.GetActorTemplates())
+					if records+entries > maxRecords {
+						return result, errors.New("restore census exceeded record limit")
+					}
+					for _, template := range page.GetActorTemplates() {
+						if err = restoreCensusIdentity(identities, kind, template.GetMetadata()); err != nil {
+							break
+						}
+					}
+					result.ActorTemplates = result.ActorTemplates || entries != 0
+				}
+			case "worker":
+				var page *ateapi.ListWorkersResponse
+				page, err = client.ListWorkers(ctx, &ateapi.ListWorkersRequest{Options: options}, call)
+				if err == nil && page != nil {
+					response, next, entries = page, page.GetNextPageToken(), len(page.GetWorkers())
+					if records+entries > maxRecords {
+						return result, errors.New("restore census exceeded record limit")
+					}
+					for _, worker := range page.GetWorkers() {
+						if err = restoreCensusIdentity(identities, kind, worker.GetMetadata()); err != nil {
+							break
+						}
+						var data []byte
+						data, err = protojson.Marshal(worker)
+						if err != nil {
+							break
+						}
+						result.Workers = append(result.Workers, data)
+					}
+				}
+			}
+			if err != nil {
+				return result, fmt.Errorf("reading %s census: %w", kind, err)
+			}
+			pages++
+			records += entries
+			if response == nil || len(response.ProtoReflect().GetUnknown()) != 0 || payloads.events.Load() != beforeEvents+1 ||
+				payloads.bytes.Load() < before || payloads.bytes.Load() > maxBytes || !validRestoreToken(next, kind) {
+				return result, errors.New("invalid or oversized restore census")
+			}
+			if next == "" {
+				break
+			}
+			if tokens[next] {
+				return result, errors.New("repeated restore census token")
+			}
+			tokens[next] = true
+			token = next
+		}
+	}
+	return result, nil
+}
+
+func restoreCensusIdentity(seen map[string]string, kind string, metadata *ateapi.ResourceMetadata) error {
+	name, uid, space := metadata.GetName(), metadata.GetUid(), metadata.GetAtespace()
+	if name == "" || uid == "" || kind == "worker" && space != "" || kind != "worker" && space == "" {
+		return errors.New("invalid restore census identity")
+	}
+	key := "name:" + kind + "/" + space + "/" + name
+	if _, exists := seen[key]; exists {
+		return errors.New("duplicate or changed restore census identity")
+	}
+	uidKey := "uid:" + kind + "/" + uid
+	if _, exists := seen[uidKey]; exists {
+		return errors.New("duplicate restore census UID")
+	}
+	seen[key] = uid
+	seen[uidKey] = name
+	return nil
+}
+
+// RestoreCensus returns complete, bounded pages from the pinned API.
+func RestoreCensus(ctx context.Context, kubeconfig, contextName, mode string, out io.Writer) error {
+	counter := &restorePayloadCounter{}
+	client, err := ateclient.NewClient(ctx, kubeconfig, contextName, "", "", false,
+		grpc.WithStatsHandler(counter))
+	if err != nil {
+		return fmt.Errorf("connecting to the Substrate API: %w", err)
+	}
+	defer client.Close()
+	result, err := restoreCensus(ctx, client, counter, mode)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(result)
+}
+
+// RestoreInventory uses the pinned client's authenticated connection, but
+// requests one page instead of the client's automatic pagination.
+func RestoreInventory(ctx context.Context, kubeconfig, contextName string, out io.Writer) error {
+	client, err := ateclient.NewClient(ctx, kubeconfig, contextName, "", "", false)
+	if err != nil {
+		return fmt.Errorf("connecting to the Substrate API: %w", err)
+	}
+	defer client.Close()
+	result, err := restoreInventory(ctx, client)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(result)
+}
+
+// ResolveCheckImages applies the pinned installer's image resolver to
+// in-memory manifests without modifying a managed checkout.
+func ResolveCheckImages(ctx context.Context, repository, tag string, in io.Reader, out io.Writer) error {
+	var manifests []string
+	if err := json.NewDecoder(io.LimitReader(in, 8<<20)).Decode(&manifests); err != nil {
+		return err
+	}
+	if len(manifests) != 2 {
+		return errors.New("expected two manifests")
+	}
+	resolver := images.NewPrebuilt(images.Source{Repo: repository, Tag: tag}, images.RemoteDigest)
+	for i, manifest := range manifests {
+		resolved, err := resolver.ResolveBytes(ctx, []byte(manifest))
+		if err != nil {
+			return err
+		}
+		manifests[i] = string(resolved)
+	}
+	return json.NewEncoder(out).Encode(manifests)
+}
 
 // CheckAzureImages reports, as JSON, whether repository holds every image a
 // release publishes, the demo image and the exact plugin digest.

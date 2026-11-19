@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
 	}
+
 	p := prepared{Fingerprint: fp, Files: map[string]string{}}
 	for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml"} {
 		data := []byte("prepared " + name)
@@ -48,6 +50,43 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 		{contains: "git rev-parse HEAD", output: c.Substrate.Source.Commit},
 		{contains: "git diff --name-only HEAD"},
 		{contains: "git ls-files --others -z --", output: ".substrate-aks-prepared.json\x00"},
+	}
+}
+
+func TestMatchingClientRejectsWrongOrUnstampedBuilds(t *testing.T) {
+	c := testConfig(t)
+	build := func() *debug.BuildInfo {
+		return &debug.BuildInfo{Path: "go.ate.dev/substrate/cmd/kubectl-ate", Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: c.Substrate.Source.Commit},
+			{Key: "GOOS", Value: runtime.GOOS},
+			{Key: "GOARCH", Value: runtime.GOARCH},
+		}}
+	}
+	if err := validateClientBuild(build(), c.Substrate.Source.Commit); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*debug.BuildInfo){
+		func(b *debug.BuildInfo) { b.Path = "other" },
+		func(b *debug.BuildInfo) { b.Settings[0].Value = "different" },
+		func(b *debug.BuildInfo) { b.Settings = nil },
+		func(b *debug.BuildInfo) { b.Settings[1].Value = "different" },
+		func(b *debug.BuildInfo) { b.Settings[2].Value = "different" },
+	} {
+		b := build()
+		mutate(b)
+		if err := validateClientBuild(b, c.Substrate.Source.Commit); err == nil {
+			t.Fatalf("accepted client metadata: %+v", b)
+		}
+	}
+}
+
+func TestMatchingClientReportsMissingBeforeUse(t *testing.T) {
+	c := testConfig(t)
+	dir := t.TempDir()
+	r := script(t, reply{contains: "go env -json GOBIN GOPATH", output: `{"GOBIN":"` + dir + `"}`})
+	_, err := (App{Config: c, Runner: r}).matchingClient(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "substrate-aks client "+c.Installation.Name) {
+		t.Fatalf("missing client did not include setup guidance: %v", err)
 	}
 }
 

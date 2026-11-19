@@ -43,6 +43,31 @@ func (s *setupSession) send(event any) {
 	}
 }
 
+type setupRecoveryMsg struct {
+	ctx   context.Context
+	text  string
+	reply chan error
+}
+
+func (s *setupSession) presentRecovery(ctx context.Context, text string) error {
+	reply := make(chan error, 1)
+	select {
+	case s.events <- setupRecoveryMsg{ctx: ctx, text: text, reply: reply}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
 type setupSectionMsg string
 type setupNoteMsg struct {
 	text    string
@@ -110,13 +135,11 @@ func setupPhase(command string, flags []string) string {
 		return "cluster"
 	case "images":
 		return "images"
-	case "check":
-		return "cluster"
 	case "prepare", "install", "status":
 		return "substrate"
 	case "demo":
 		return "demo"
-	case "client":
+	case "client", "check":
 		return "connect"
 	default:
 		return ""

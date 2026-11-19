@@ -45,7 +45,7 @@ are; the main pane lists each stage's operations as they run.
 flowchart LR
     prep["1 · Preparation<br/><i>confirm installation</i>"] --> images["2 · Images and assets<br/><i>approve registry</i>"]
     images --> aks["3 · AKS cluster<br/><i>approve infrastructure</i>"] --> substrate["4 · Substrate"]
-    substrate --> demo["5 · Counter demo<br/>(optional)"] --> connect["6 · Connect"]
+    substrate --> connect["5 · Connect and check"] --> demo["6 · Counter demo<br/>(optional)"]
 ```
 
 Italics mark where a stage waits for your confirmation or approval.
@@ -54,10 +54,12 @@ Italics mark where a stage waits for your confirmation or approval.
 | --- | --- |
 | Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
 | Images and assets | Previews the private registry and creates it after your approval, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and prepares runtime assets. Skipped when the config already has published images; they are only verified. |
-| AKS cluster | Previews AKS, storage, and identities, provisions them after your approval, then checks the cluster. |
+| AKS cluster | Previews AKS, storage, and identities and provisions them after your approval. |
 | Substrate | Renders the Azure settings, uploads the runtime assets to Blob storage, and installs Substrate. |
+| Connect | Installs the matching `kubectl ate` and checks cluster compatibility and memory restore before the optional demo. |
 | Counter demo | Optional; deploys the counter microVM demo. |
-| Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
+
+After these stages, setup offers to select the new kube-context.
 
 Setup previews the registry and the full infrastructure separately and waits
 for your approval before each deployment. Image imports and asset uploads
@@ -247,21 +249,24 @@ After image publication:
 ```sh
 bin/substrate-aks plan
 bin/substrate-aks provision
-bin/substrate-aks check
 bin/substrate-aks prepare
 bin/substrate-aks install
 bin/substrate-aks status
 bin/substrate-aks client
+bin/substrate-aks check NAME
 ```
 
 | Command | Result |
 | --- | --- |
 | `provision` | Create AKS, Blob containers, identities, and permissions; reuse the ACR |
-| `check` | Verify node versions, microVM worker count, and required certificate APIs |
+| `check` | Verify cluster compatibility and, when the installation is empty, test memory restore |
 | `prepare` | Render Azure settings into the managed upstream source checkout |
 | `install` | Verify images and KVM, upload runtime assets, and deploy Substrate |
 | `status` | Show pods and persistent volume claims |
 | `client` | Install the matching `kubectl ate` and print shell exports |
+
+For install verification, require `RESTORE_PASSED`; either skip means the
+restore was not tested. Reconcile interrupted installations with `setup NAME`.
 
 The cluster uses Azure CNI Overlay and Cilium network policy, with a separate
 tainted microVM node pool. Automatic Kubernetes version upgrades are disabled to
@@ -329,6 +334,48 @@ tenant. If refreshing credentials fails, the previous kubeconfig is kept.
 `check` asks Kubernetes whether you may create CRDs, waiting up to five minutes
 for a new grant to take effect. It confirms authorization only, not that
 workloads are healthy.
+
+### Restore check and recovery
+
+On an empty installed cluster, `check NAME` creates a temporary namespace,
+atespace, worker pool, template, and actor; it calls the counter, suspends it,
+and calls it again before cleaning up. Only `RESTORE_PASSED` confirms restore.
+Before each counter call, the check retries a non-incrementing readiness request
+within that call's time limit. Each counter call is sent only once: a timed-out
+call may already have executed, so the check fails rather than replaying it.
+`RESTORE_SKIPPED_NOT_INSTALLED` and `RESTORE_SKIPPED_BUSY` mean compatibility
+passed but restore was not tested. Busy includes existing pools, workers, actors,
+and templates; unreadable inventory is an error, not a skip. Install the matching
+client with `bin/substrate-aks client NAME` before checking an installation.
+
+Installed checks need Git and Go, access to the configured source, and access
+to any uncached Go dependencies. Each check prepares a disposable helper even
+when the installation is busy. This preparation shares the ten-minute readiness
+budget; a preparation failure is an error, not a skip.
+
+The WorkerPool inventory request does not retry HTTP statuses or wait on
+`Retry-After`. A 401 authentication response fails the check even if credentials
+are refreshed; check your sign-in and rerun. For 429 or 503, retry explicitly
+after throttling or service recovery. A probe failure is not a busy skip and
+occurs before restore resources are created.
+
+If output to the terminal, an output pipe, or the private command log stalls during `check`, cancellation and cleanup can also wait. Pressing Ctrl+C or reaching a timeout may not interrupt a blocked output write. When output resumes, the check continues and attempts any remaining cleanup. The cleanup time limit still applies, so resources may remain if it expires.
+
+Before creating temporary resources, the check saves their recovery commands in the private command log and presents them to you. If you kill the process while output is stuck, automatic cleanup is not guaranteed. Use the saved recovery commands to clean up remaining test resources, checking their identities as described below.
+
+Do not create other workloads during the test: the installation lock does not
+block other API clients. If cleanup fails or the process is forcibly stopped,
+use the printed recovery commands and private diagnostic log. Verify the
+recorded identities and that no foreign actors are on the temporary workers
+before deleting anything. An unreadable inventory or unresolved foreign
+template or placement is a stop condition. Never delete or drain other actors,
+templates, or their workers.
+
+Namespace cleanup and recovery inventories exclude the pod-usage metrics projection
+`pods.metrics.k8s.io`. Metrics are not proof of ownership or absence; inspect
+the actual pods and other resources. Automatic cleanup can tolerate a verified
+metrics-only discovery failure. The saved manual `kubectl` inventory may stop
+until metrics discovery is repaired; do not ignore its errors.
 
 ### Optional kube-context handoff
 

@@ -1,0 +1,1125 @@
+package steps
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"go.ate.dev/substrate/api/ateapi/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+)
+
+type restorePoolRoundTrip func(*http.Request) (*http.Response, error)
+
+type restoreShortWriter struct{}
+
+func (restoreShortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestRestoreInventoryExec401DoesNotResend(t *testing.T) {
+	for _, refreshFails := range []bool{false, true} {
+		t.Run(strconv.FormatBool(refreshFails), func(t *testing.T) {
+			dir := t.TempDir()
+			program := filepath.Join(dir, "credential")
+			second := "sleep 2"
+			if refreshFails {
+				second = "exit 1"
+			}
+			script := fmt.Sprintf("#!/bin/sh\nif test -e \"$PROBE_SECOND\"; then touch \"$PROBE_EXTRA\"; exit 1; elif test -e \"$PROBE_FIRST\"; then touch \"$PROBE_SECOND\"; %s; else touch \"$PROBE_FIRST\"; fi\nprintf '%%s' '{\"apiVersion\":\"client.authentication.k8s.io/v1\",\"kind\":\"ExecCredential\",\"status\":{\"token\":\"synthetic-token\"}}'\n", second)
+			if err := os.WriteFile(program, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodGet || r.URL.RequestURI() != "/apis/ate.dev/v1/workerpools?limit=1" || r.Header.Get("Authorization") != "Bearer synthetic-token" {
+					t.Errorf("incorrect request: %s %s", r.Method, r.URL.RequestURI())
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			defer server.Close()
+			cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+			first, secondMarker, extra := filepath.Join(dir, "first"), filepath.Join(dir, "second"), filepath.Join(dir, "extra")
+			config := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","current-context":"selected","contexts":[{"name":"selected","context":{"cluster":"local","user":"test"}}],"clusters":[{"name":"local","cluster":{"server":%q,"certificate-authority-data":%q}}],"users":[{"name":"test","user":{"exec":{"apiVersion":"client.authentication.k8s.io/v1","interactiveMode":"Never","command":%q,"env":[{"name":"PROBE_FIRST","value":%q},{"name":"PROBE_SECOND","value":%q},{"name":"PROBE_EXTRA","value":%q}]}}}]}`, server.URL, base64.StdEncoding.EncodeToString(cert), program, first, secondMarker, extra)
+			path := filepath.Join(dir, "kubeconfig")
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
+			var output bytes.Buffer
+			err := RestoreWorkerPools(ctx, path, "selected", &output)
+			if err == nil || !strings.Contains(err.Error(), "HTTP status 401") || output.Len() != 0 || calls.Load() != 1 {
+				t.Fatalf("error=%v output=%q requests=%d", err, output.String(), calls.Load())
+			}
+			for _, marker := range []string{first, secondMarker} {
+				if _, err := os.Stat(marker); err != nil {
+					t.Fatalf("missing credential invocation %s: %v", filepath.Base(marker), err)
+				}
+			}
+			if _, err := os.Stat(extra); !os.IsNotExist(err) {
+				t.Fatalf("unexpected additional credential invocation: %v", err)
+			}
+		})
+	}
+}
+
+func (f restorePoolRoundTrip) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type restorePoolBody struct {
+	reader io.Reader
+	reads  int
+	closed bool
+}
+
+func (b *restorePoolBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
+}
+
+func (b *restorePoolBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestRestoreInventoryWorkerPoolStatusDoesNotReadBody(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusForbidden} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			body := &restorePoolBody{reader: io.LimitReader(strings.NewReader(strings.Repeat("x", 9<<20)), 9<<20)}
+			calls := 0
+			originalRedirect := func(*http.Request, []*http.Request) error { return errors.New("original redirect") }
+			client := &http.Client{CheckRedirect: originalRedirect, Transport: restorePoolRoundTrip(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if req.Method != http.MethodGet || req.URL.RequestURI() != "/apis/ate.dev/v1/workerpools?limit=1" {
+					t.Errorf("unexpected request: %s %s", req.Method, req.URL.RequestURI())
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": {"60"}}, Body: body}, nil
+			})}
+			data, err := restoreWorkerPoolPage(t.Context(), client, "http://example.invalid/apis/ate.dev/v1/workerpools?limit=1")
+			if err == nil || len(data) != 0 || calls != 1 || body.reads != 0 || !body.closed {
+				t.Fatalf("status=%d error=%v calls=%d reads=%d closed=%v", status, err, calls, body.reads, body.closed)
+			}
+			if err := client.CheckRedirect(nil, nil); err == nil || err.Error() != "original redirect" {
+				t.Fatal("probe changed the original HTTP client")
+			}
+		})
+	}
+}
+
+func TestRestoreInventoryWorkerPoolBoundedResponses(t *testing.T) {
+	const limit = 8 << 20
+	const empty = `{"apiVersion":"ate.dev/v1","kind":"WorkerPoolList","items":[]}`
+	gzipBody := func(data string) []byte {
+		var output bytes.Buffer
+		writer := gzip.NewWriter(&output)
+		if _, err := io.WriteString(writer, data); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return output.Bytes()
+	}
+	exact := empty + strings.Repeat(" ", limit-len(empty))
+	for _, tc := range []struct {
+		name, encoding string
+		body           []byte
+		readErr        error
+		ok             bool
+	}{
+		{"normal", "", []byte(empty), nil, true},
+		{"exact limit", "", []byte(exact), nil, true},
+		{"over limit", "", []byte(exact + " "), nil, false},
+		{"gzip exact decompressed limit", "gzip", gzipBody(exact), nil, true},
+		{"gzip over decompressed limit", "gzip", gzipBody(exact + " "), nil, false},
+		{"gzip truncated", "gzip", gzipBody(empty)[:10], nil, false},
+		{"gzip raw over limit", "gzip", make([]byte, limit+1), nil, false},
+		{"unsupported encoding", "br", []byte(empty), nil, false},
+		{"incomplete", "", []byte(empty), io.ErrUnexpectedEOF, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := io.Reader(bytes.NewReader(tc.body))
+			if tc.readErr != nil {
+				source = io.MultiReader(source, restoreErrorReader{tc.readErr})
+			}
+			body := &restorePoolBody{reader: source}
+			client := &http.Client{Transport: restorePoolRoundTrip(func(*http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				if tc.encoding != "" {
+					header.Set("Content-Encoding", tc.encoding)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: header, Body: body, ContentLength: 1 << 60}, nil
+			})}
+			data, err := restoreWorkerPoolPage(t.Context(), client, "http://example.invalid/apis/ate.dev/v1/workerpools?limit=1")
+			if (err == nil) != tc.ok || !body.closed || (!tc.ok && len(data) != 0) {
+				t.Fatalf("error=%v size=%d closed=%v", err, len(data), body.closed)
+			}
+			if tc.ok && (len(data) > limit || !bytes.HasPrefix(data, []byte(empty))) {
+				t.Fatalf("invalid result of size %d", len(data))
+			}
+		})
+	}
+}
+
+type restoreErrorReader struct{ err error }
+
+func (r restoreErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestRestoreInventoryWorkerPoolTargetAndTransport(t *testing.T) {
+	const empty = `{"apiVersion":"ate.dev/v1","kind":"WorkerPoolList","items":[]}`
+	for _, mode := range []string{"normal", "server prefix", "server query", "server fragment", "server userinfo", "unknown length", "chunked", "gzip", "truncated", "redirect", "throttle", "unavailable", "deadline", "body deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				target := "/apis/ate.dev/v1/workerpools?limit=1"
+				if mode == "server prefix" {
+					target = "/proxy" + target
+				}
+				if r.Method != http.MethodGet || r.URL.RequestURI() != target ||
+					r.Header.Get("Authorization") != "Bearer synthetic-token" || r.Header.Get("Accept-Encoding") != "gzip" {
+					t.Errorf("incorrect request: %s %s", r.Method, r.URL.RequestURI())
+				}
+				switch mode {
+				case "throttle":
+					w.Header().Set("Retry-After", "60")
+					w.WriteHeader(http.StatusTooManyRequests)
+				case "unavailable":
+					w.Header().Set("Retry-After", "60")
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "redirect":
+					http.Redirect(w, r, "/other", http.StatusFound)
+				case "deadline":
+					<-r.Context().Done()
+				case "body deadline":
+					fmt.Fprint(w, "{")
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				case "unknown length":
+					w.(http.Flusher).Flush()
+					fmt.Fprint(w, empty)
+				case "chunked":
+					fmt.Fprint(w, empty[:10])
+					w.(http.Flusher).Flush()
+					fmt.Fprint(w, empty[10:])
+				case "gzip":
+					w.Header().Set("Content-Encoding", "gzip")
+					writer := gzip.NewWriter(w)
+					fmt.Fprint(writer, empty)
+					writer.Close()
+				case "truncated":
+					w.Header().Set("Content-Length", strconv.Itoa(len(empty)+1))
+					fmt.Fprint(w, empty)
+				default:
+					fmt.Fprint(w, empty)
+				}
+			}))
+			defer server.Close()
+			cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+			host := server.URL
+			if mode == "server prefix" {
+				host += "/proxy"
+			} else if mode == "server query" {
+				host += "?scope=other"
+			} else if mode == "server fragment" {
+				host += "#fragment"
+			} else if mode == "server userinfo" {
+				host = "https://synthetic:synthetic@" + strings.TrimPrefix(host, "https://")
+			}
+			config := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","current-context":"other","contexts":[{"name":"selected","context":{"cluster":"local","user":"test"}},{"name":"other","context":{"cluster":"wrong","user":"test"}}],"clusters":[{"name":"local","cluster":{"server":%q,"certificate-authority-data":%q}},{"name":"wrong","cluster":{"server":"https://127.0.0.1:1"}}],"users":[{"name":"test","user":{"token":"synthetic-token"}}]}`, host, base64.StdEncoding.EncodeToString(cert))
+			path := filepath.Join(t.TempDir(), "kubeconfig")
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			if mode == "deadline" || mode == "body deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 200*time.Millisecond)
+				defer cancel()
+			} else if mode == "throttle" || mode == "unavailable" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+			}
+			var output bytes.Buffer
+			err := RestoreWorkerPools(ctx, path, "selected", &output)
+			invalidServer := mode == "server query" || mode == "server fragment" || mode == "server userinfo"
+			fail := invalidServer || mode == "truncated" || mode == "redirect" || mode == "throttle" || mode == "unavailable" || mode == "deadline" || mode == "body deadline"
+			wantCalls := int32(1)
+			if invalidServer {
+				wantCalls = 0
+			}
+			if (err != nil) != fail || calls.Load() != wantCalls || (fail && output.Len() != 0) || (!fail && output.String() != empty) {
+				t.Fatalf("error=%v calls=%d output=%q", err, calls.Load(), output.String())
+			}
+			if (mode == "deadline" || mode == "body deadline") && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("deadline lost: %v", err)
+			}
+			if (mode == "throttle" || mode == "unavailable") && errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("status response waited for a retry: %v", err)
+			}
+		})
+	}
+}
+
+func TestRestoreInventoryWorkerPoolSchemeLessServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/apis/ate.dev/v1/workerpools?limit=1" || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected request: %s", r.URL.RequestURI())
+		}
+		fmt.Fprint(w, `{"apiVersion":"ate.dev/v1","kind":"WorkerPoolList","items":[]}`)
+	}))
+	defer server.Close()
+	config := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","current-context":"selected","contexts":[{"name":"selected","context":{"cluster":"local","user":"test"}}],"clusters":[{"name":"local","cluster":{"server":%q}}],"users":[{"name":"test","user":{"token":"synthetic-token"}}]}`, strings.TrimPrefix(server.URL, "http://"))
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := RestoreWorkerPools(t.Context(), path, "selected", &output); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type inventoryTestServer struct {
+	ateapi.UnimplementedControlServer
+	t                                                         *testing.T
+	mu                                                        sync.Mutex
+	calls                                                     map[string]int
+	present, continuation, invalid, denied, unknown, overflow string
+	workerName                                                string
+	stall                                                     bool
+	failureCode                                               codes.Code
+	actorState                                                ateapi.ActorState
+	workerState                                               ateapi.WorkerState
+	invalidScope                                              string
+	deleting                                                  bool
+}
+
+func (s *inventoryTestServer) request(ctx context.Context, kind string, options *ateapi.ListOptions, atespace string) error {
+	s.mu.Lock()
+	s.calls[kind]++
+	s.mu.Unlock()
+	if options.GetPageSize() != 1 || options.GetPageToken() != "" || atespace != "" {
+		s.t.Errorf("unexpected %s list scope or pagination: %v %q", kind, options, atespace)
+	}
+	if s.stall {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if s.denied == kind {
+		code := s.failureCode
+		if code == codes.OK {
+			code = codes.PermissionDenied
+		}
+		return status.Error(code, "request failed")
+	}
+	return nil
+}
+
+func (s *inventoryTestServer) token(kind string) string {
+	if s.continuation == kind {
+		return inventoryTestToken(kind, 1)
+	}
+	return ""
+}
+
+func inventoryTestToken(kind string, sequence int) string {
+	last := []string{"space", "item-" + strconv.Itoa(sequence)}
+	switch kind {
+	case "workers":
+		kind, last = "worker", []string{"item-" + strconv.Itoa(sequence)}
+	case "actors":
+		kind = "actor"
+	case "templates":
+		kind = "actor-template"
+	}
+	data, _ := json.Marshal(map[string]any{"v": 1, "kind": kind, "scope": "", "last": last})
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+func TestRestoreInventoryRejectsInvalidTokens(t *testing.T) {
+	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	for _, token := range []string{
+		"%%%",
+		strings.Repeat("x", 257),
+		inventoryTestToken("actors", 1),
+		encode(`{"v":1,"kind":"worker","scope":null,"last":["item"]}`),
+		encode(`{"v":1,"kind":"worker","scope":"","last":["item"],"kind":"worker"}`),
+		encode(`{"v":1,"kind":"worker","scope":"","last":["item"],"other":true}`),
+	} {
+		if validRestoreToken(token, "worker") {
+			t.Fatalf("invalid token accepted: %q", token)
+		}
+	}
+}
+
+func (s *inventoryTestServer) metadata(kind string) *ateapi.ResourceMetadata {
+	if s.invalid == kind {
+		return &ateapi.ResourceMetadata{}
+	}
+	name := "item"
+	if kind == "workers" && s.workerName != "" {
+		name = s.workerName
+	}
+	space := "space"
+	if kind == "workers" {
+		space = ""
+	}
+	if s.invalidScope == kind {
+		if kind == "workers" {
+			space = "other"
+		} else {
+			space = ""
+		}
+	}
+	metadata := &ateapi.ResourceMetadata{Name: name, Uid: "uid", Atespace: space}
+	if s.deleting {
+		metadata.DeleteTime = timestamppb.Now()
+	}
+	return metadata
+}
+
+func (s *inventoryTestServer) ListWorkers(ctx context.Context, req *ateapi.ListWorkersRequest) (*ateapi.ListWorkersResponse, error) {
+	if err := s.request(ctx, "workers", req.GetOptions(), ""); err != nil {
+		return nil, err
+	}
+	result := &ateapi.ListWorkersResponse{NextPageToken: s.token("workers")}
+	if s.unknown == "workers" {
+		result.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 99, protowire.VarintType), 1))
+	}
+	if s.present == "workers" || s.invalid == "workers" {
+		worker := &ateapi.Worker{Metadata: s.metadata("workers")}
+		if s.workerState != ateapi.WorkerState_WORKER_STATE_UNSPECIFIED {
+			worker.Status = &ateapi.WorkerStatus{State: s.workerState}
+		}
+		result.Workers = []*ateapi.Worker{worker}
+	}
+	if s.overflow == "workers" {
+		result.Workers = []*ateapi.Worker{{Metadata: s.metadata("workers")}, {Metadata: s.metadata("workers")}}
+	}
+	return result, nil
+}
+
+func (s *inventoryTestServer) ListActors(ctx context.Context, req *ateapi.ListActorsRequest) (*ateapi.ListActorsResponse, error) {
+	if err := s.request(ctx, "actors", req.GetOptions(), req.GetAtespace()); err != nil {
+		return nil, err
+	}
+	result := &ateapi.ListActorsResponse{NextPageToken: s.token("actors")}
+	if s.unknown == "actors" {
+		result.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 99, protowire.VarintType), 1))
+	}
+	if s.present == "actors" || s.invalid == "actors" {
+		actor := &ateapi.Actor{Metadata: s.metadata("actors")}
+		if s.actorState != ateapi.ActorState_ACTOR_STATE_UNSPECIFIED {
+			actor.Status = &ateapi.ActorStatus{State: s.actorState}
+		}
+		result.Actors = []*ateapi.Actor{actor}
+	}
+	if s.overflow == "actors" {
+		result.Actors = []*ateapi.Actor{{Metadata: s.metadata("actors")}, {Metadata: s.metadata("actors")}}
+	}
+	return result, nil
+}
+
+func (s *inventoryTestServer) ListActorTemplates(ctx context.Context, req *ateapi.ListActorTemplatesRequest) (*ateapi.ListActorTemplatesResponse, error) {
+	if err := s.request(ctx, "templates", req.GetOptions(), req.GetAtespace()); err != nil {
+		return nil, err
+	}
+	result := &ateapi.ListActorTemplatesResponse{NextPageToken: s.token("templates")}
+	if s.unknown == "templates" {
+		result.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 99, protowire.VarintType), 1))
+	}
+	if s.present == "templates" || s.invalid == "templates" {
+		result.ActorTemplates = []*ateapi.ActorTemplate{{Metadata: s.metadata("templates")}}
+	}
+	if s.overflow == "templates" {
+		result.ActorTemplates = []*ateapi.ActorTemplate{{Metadata: s.metadata("templates")}, {Metadata: s.metadata("templates")}}
+	}
+	return result, nil
+}
+
+func TestRestoreInventoryRejectsMultipleItems(t *testing.T) {
+	for _, kind := range []string{"workers", "actors", "templates"} {
+		t.Run(kind, func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, overflow: kind}
+			if _, err := restoreInventory(t.Context(), inventoryTestClient(t, server)); err == nil {
+				t.Fatal("over-one response was accepted")
+			}
+		})
+	}
+}
+
+func TestRestoreInventoryIncludesAllStatesAndScopes(t *testing.T) {
+	for _, state := range []ateapi.ActorState{
+		ateapi.ActorState_ACTOR_STATE_RUNNING, ateapi.ActorState_ACTOR_STATE_SUSPENDED, ateapi.ActorState_ACTOR_STATE_DELETING,
+	} {
+		t.Run(state.String(), func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: "actors", actorState: state}
+			result, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if err != nil || !result.Actors {
+				t.Fatalf("actor state=%v result=%+v error=%v", state, result, err)
+			}
+		})
+	}
+	for _, state := range []ateapi.WorkerState{
+		ateapi.WorkerState_WORKER_STATE_ACTIVE, ateapi.WorkerState_WORKER_STATE_UNAVAILABLE, ateapi.WorkerState_WORKER_STATE_DRAINING,
+	} {
+		t.Run(state.String(), func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: "workers", workerState: state}
+			result, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if err != nil || !result.Workers {
+				t.Fatalf("worker state=%v result=%+v error=%v", state, result, err)
+			}
+		})
+	}
+	for _, kind := range []string{"workers", "actors", "templates"} {
+		t.Run(kind+"-deleting", func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: kind, deleting: true}
+			result, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if err != nil || !(result.Workers || result.Actors || result.ActorTemplates) {
+				t.Fatalf("deleting item not detected: %+v %v", result, err)
+			}
+		})
+		t.Run(kind+"-invalid-scope", func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: kind, invalidScope: kind}
+			if _, err := restoreInventory(t.Context(), inventoryTestClient(t, server)); err == nil {
+				t.Fatal("invalid scope was accepted")
+			}
+		})
+	}
+}
+
+func TestRestoreInventoryFinalRPCErrors(t *testing.T) {
+	for _, code := range []codes.Code{codes.Unavailable, codes.ResourceExhausted} {
+		t.Run(code.String(), func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, denied: "workers", failureCode: code}
+			_, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if status.Code(err) != code {
+				t.Fatalf("final RPC error lost: %v", err)
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if server.calls["workers"] != 1 {
+				t.Fatalf("worker inventory observed %d calls, want one", server.calls["workers"])
+			}
+		})
+	}
+}
+
+func inventoryTestClient(t *testing.T, s *inventoryTestServer) ateapi.ControlClient {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.MaxSendMsgSize(16 << 20))
+	ateapi.RegisterControlServer(server, s)
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return ateapi.NewControlClient(conn)
+}
+
+func TestRestoreInventoryPages(t *testing.T) {
+	for _, tc := range []struct {
+		name, present, continuation, invalid, denied, unknown string
+		wantBusy, wantError                                   bool
+	}{
+		{"empty", "", "", "", "", "", false, false},
+		{"worker", "workers", "workers", "", "", "", true, false},
+		{"actor", "actors", "actors", "", "", "", true, false},
+		{"template", "templates", "templates", "", "", "", true, false},
+		{"worker continuation", "", "workers", "", "", "", false, true},
+		{"actor continuation", "", "actors", "", "", "", false, true},
+		{"template continuation", "", "templates", "", "", "", false, true},
+		{"invalid worker", "", "", "workers", "", "", false, true},
+		{"invalid actor", "", "", "actors", "", "", false, true},
+		{"invalid template", "", "", "templates", "", "", false, true},
+		{"worker denied", "", "", "", "workers", "", false, true},
+		{"actor denied", "", "", "", "actors", "", false, true},
+		{"template denied", "", "", "", "templates", "", false, true},
+		{"unknown worker", "", "", "", "", "workers", false, true},
+		{"unknown actor", "", "", "", "", "actors", false, true},
+		{"unknown template", "", "", "", "", "templates", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: tc.present, continuation: tc.continuation, invalid: tc.invalid, denied: tc.denied, unknown: tc.unknown}
+			result, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if (err != nil) != tc.wantError || !tc.wantError && (result.Workers || result.Actors || result.ActorTemplates) != tc.wantBusy {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			for kind, calls := range server.calls {
+				if calls != 1 {
+					t.Fatalf("%s inventory observed %d calls, want one", kind, calls)
+				}
+			}
+			if err == nil && len(server.calls) != 3 {
+				t.Fatalf("incomplete scope: %v", server.calls)
+			}
+			if err != nil {
+				failedKind := tc.invalid
+				if failedKind == "" {
+					failedKind = tc.denied
+				}
+				if failedKind == "" {
+					failedKind = tc.unknown
+				}
+				if failedKind == "" {
+					failedKind = tc.continuation
+				}
+				afterFailure := false
+				for _, kind := range []string{"workers", "actors", "templates"} {
+					want := 1
+					if afterFailure {
+						want = 0
+					}
+					if server.calls[kind] != want {
+						t.Fatalf("%s inventory observed %d calls, want %d", kind, server.calls[kind], want)
+					}
+					if kind == failedKind {
+						afterFailure = true
+					}
+				}
+				if !afterFailure {
+					t.Fatal("failure kind was not identified")
+				}
+			}
+		})
+	}
+}
+
+type censusTestServer struct {
+	ateapi.UnimplementedControlServer
+	t     *testing.T
+	mode  string
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (s *censusTestServer) request(ctx context.Context, kind string, options *ateapi.ListOptions, atespace string) (int, error) {
+	s.mu.Lock()
+	s.calls[kind]++
+	n := s.calls[kind]
+	s.mu.Unlock()
+	if options.GetPageSize() != 1000 || atespace != "" {
+		s.t.Errorf("incorrect %s census request: %v %q", kind, options, atespace)
+	}
+	if n == 1 && options.GetPageToken() != "" {
+		s.t.Errorf("nonempty initial %s token", kind)
+	}
+	if s.mode == "deadline" && kind == "workers" {
+		<-ctx.Done()
+		return n, ctx.Err()
+	}
+	return n, nil
+}
+
+func (s *censusTestServer) ListActors(ctx context.Context, req *ateapi.ListActorsRequest) (*ateapi.ListActorsResponse, error) {
+	_, err := s.request(ctx, "actors", req.GetOptions(), req.GetAtespace())
+	page := &ateapi.ListActorsResponse{}
+	switch s.mode {
+	case "actor-records":
+		for i := 0; i < 1000; i++ {
+			page.Actors = append(page.Actors, &ateapi.Actor{Metadata: &ateapi.ResourceMetadata{
+				Name: fmt.Sprintf("actor-%d", i), Uid: fmt.Sprintf("uid-%d", i), Atespace: "space",
+			}})
+		}
+	case "actor-bytes":
+		page.Actors = []*ateapi.Actor{{Metadata: &ateapi.ResourceMetadata{
+			Name: strings.Repeat("x", 5<<20), Uid: "uid", Atespace: "space",
+		}}}
+	}
+	return page, err
+}
+
+func (s *censusTestServer) ListActorTemplates(ctx context.Context, req *ateapi.ListActorTemplatesRequest) (*ateapi.ListActorTemplatesResponse, error) {
+	_, err := s.request(ctx, "templates", req.GetOptions(), req.GetAtespace())
+	return &ateapi.ListActorTemplatesResponse{}, err
+}
+
+func (s *censusTestServer) ListWorkers(ctx context.Context, req *ateapi.ListWorkersRequest) (*ateapi.ListWorkersResponse, error) {
+	n, err := s.request(ctx, "workers", req.GetOptions(), "")
+	if err != nil {
+		return nil, err
+	}
+	page := &ateapi.ListWorkersResponse{}
+	switch s.mode {
+	case "pages", "repeated":
+		page.NextPageToken = inventoryTestToken("workers", n)
+		if s.mode == "repeated" {
+			page.NextPageToken = inventoryTestToken("workers", 1)
+		}
+	case "invalid":
+		page.NextPageToken = "%%%"
+	case "multipage":
+		if n == 1 {
+			page.NextPageToken = inventoryTestToken("workers", n)
+		} else {
+			page.Workers = []*ateapi.Worker{{Metadata: &ateapi.ResourceMetadata{Name: "worker", Uid: "uid"}}}
+		}
+	case "later-items":
+		page.Workers = []*ateapi.Worker{{Metadata: &ateapi.ResourceMetadata{
+			Name: fmt.Sprintf("worker-%d", n), Uid: fmt.Sprintf("uid-%d", n),
+		}}}
+		if n == 1 {
+			page.NextPageToken = inventoryTestToken("workers", n)
+		}
+	case "later-foreign":
+		namespace := "space"
+		if n == 2 {
+			namespace = "other"
+		}
+		page.Workers = []*ateapi.Worker{{
+			Metadata:        &ateapi.ResourceMetadata{Name: fmt.Sprintf("worker-%d", n), Uid: fmt.Sprintf("uid-%d", n)},
+			WorkerNamespace: namespace,
+			WorkerPool:      "counter-microvm",
+			WorkerPod:       fmt.Sprintf("pod-%d", n),
+			WorkerPodUid:    fmt.Sprintf("pod-uid-%d", n),
+			Labels:          map[string]string{"substrate-aks.io/check": "fixture-token", "substrate-aks.io/installation": "fixture-install"},
+			Status:          &ateapi.WorkerStatus{State: ateapi.WorkerState_WORKER_STATE_ACTIVE},
+		}}
+		if n == 1 {
+			page.NextPageToken = inventoryTestToken("workers", n)
+		}
+	case "records", "actor-records":
+		page.NextPageToken = inventoryTestToken("workers", n)
+		for i := 0; i < 1000; i++ {
+			page.Workers = append(page.Workers, &ateapi.Worker{Metadata: &ateapi.ResourceMetadata{
+				Name: fmt.Sprintf("worker-%d-%d", n, i), Uid: fmt.Sprintf("uid-%d-%d", n, i),
+			}})
+		}
+	case "bytes", "actor-bytes":
+		page.Workers = []*ateapi.Worker{{Metadata: &ateapi.ResourceMetadata{
+			Name: strings.Repeat("x", 5<<20) + strconv.Itoa(n), Uid: "uid",
+		}}}
+		if n == 1 && s.mode == "bytes" {
+			page.NextPageToken = inventoryTestToken("workers", n)
+		}
+	}
+	return page, nil
+}
+
+func censusTestClient(t *testing.T, s *censusTestServer, counter *restorePayloadCounter) ateapi.ControlClient {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.MaxSendMsgSize(16 << 20))
+	ateapi.RegisterControlServer(server, s)
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(counter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return ateapi.NewControlClient(conn)
+}
+
+func TestRestoreCensusLaterForeignOutput(t *testing.T) {
+	server := &censusTestServer{t: t, mode: "later-foreign", calls: map[string]int{}}
+	counter := &restorePayloadCounter{}
+	result, err := restoreCensus(t.Context(), censusTestClient(t, server, counter), counter, "full")
+	if err != nil || len(result.Workers) != 2 || result.Actors || result.ActorTemplates {
+		t.Fatalf("unexpected census: %+v %v", result, err)
+	}
+	server.mu.Lock()
+	calls := server.calls["workers"]
+	server.mu.Unlock()
+	var last struct {
+		Namespace string `json:"workerNamespace"`
+	}
+	if err := json.Unmarshal(result.Workers[1], &last); err != nil || calls != 2 || last.Namespace != "other" {
+		t.Fatalf("later foreign page missing: calls=%d output=%s", calls, result.Workers[1])
+	}
+	target := os.Getenv("RESTORE_CENSUS_FIXTURE")
+	if target == "" {
+		target = filepath.Join(t.TempDir(), "census.json")
+	}
+	var output bytes.Buffer
+	if err := json.NewEncoder(&output).Encode(result); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, output.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreCensusBoundsAndPages(t *testing.T) {
+	for _, tc := range []struct {
+		mode, scope            string
+		wantWorkers, wantCalls int
+		wantError              bool
+	}{
+		{"multipage", "full", 1, 2, false},
+		{"later-items", "full", 2, 2, false},
+		{"repeated", "workers", 0, 2, true},
+		{"invalid", "workers", 0, 1, true},
+		{"pages", "workers", 0, 1000, true},
+		{"pages", "full", 0, 998, true},
+		{"records", "workers", 0, 11, true},
+		{"actor-records", "full", 0, 10, true},
+		{"bytes", "workers", 0, 2, true},
+		{"actor-bytes", "full", 0, 1, true},
+		{"deadline", "workers", 0, 1, true},
+	} {
+		t.Run(tc.mode+"-"+tc.scope, func(t *testing.T) {
+			server := &censusTestServer{t: t, mode: tc.mode, calls: map[string]int{}}
+			counter := &restorePayloadCounter{}
+			client := censusTestClient(t, server, counter)
+			ctx := t.Context()
+			if tc.mode == "deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+				defer cancel()
+			}
+			result, err := restoreCensus(ctx, client, counter, tc.scope)
+			if (err != nil) != tc.wantError || !tc.wantError && len(result.Workers) != tc.wantWorkers {
+				t.Fatalf("workers=%d error=%v", len(result.Workers), err)
+			}
+			if tc.mode == "later-items" {
+				var item struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				}
+				if err := json.Unmarshal(result.Workers[1], &item); err != nil || item.Metadata.Name != "worker-2" {
+					t.Fatalf("later page was not retained: %s (%v)", result.Workers[1], err)
+				}
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if server.calls["workers"] != tc.wantCalls {
+				t.Fatalf("worker calls=%d, want %d", server.calls["workers"], tc.wantCalls)
+			}
+			if tc.scope == "full" && (server.calls["actors"] != 1 || server.calls["templates"] != 1) {
+				t.Fatalf("missing global inventories: %v", server.calls)
+			}
+		})
+	}
+}
+func TestRestoreInventoryReceiveLimitAndDeadline(t *testing.T) {
+	payloadSize := func(name string) int {
+		return proto.Size(&ateapi.ListWorkersResponse{Workers: []*ateapi.Worker{{Metadata: &ateapi.ResourceMetadata{Name: name, Uid: "uid"}}}})
+	}
+	name := strings.Repeat("x", (8<<20)-128)
+	name += strings.Repeat("x", (8<<20)-payloadSize(name))
+	if payloadSize(name) != 8<<20 {
+		t.Fatal("could not construct exact-limit protobuf")
+	}
+	for _, tc := range []struct {
+		name       string
+		workerName string
+		fail       bool
+	}{{"exact limit", name, false}, {"above limit", name + "x", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &inventoryTestServer{t: t, calls: map[string]int{}, present: "workers", workerName: tc.workerName}
+			result, err := restoreInventory(t.Context(), inventoryTestClient(t, server))
+			if (err != nil) != tc.fail || !tc.fail && !result.Workers || tc.fail && status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("busy=%v error=%v", result.Workers, err)
+			}
+		})
+	}
+	t.Run("deadline", func(t *testing.T) {
+		server := &inventoryTestServer{t: t, calls: map[string]int{}, stall: true}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		_, err := restoreInventory(ctx, inventoryTestClient(t, server))
+		if !errors.Is(err, context.DeadlineExceeded) && status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("deadline not propagated: %v", err)
+		}
+	})
+}
+
+func TestRestoreInventoryNamespaceDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name                                            string
+		metrics, other, core, top                       int
+		multiple, truncate, malformed, oversized, exact bool
+		empty, transport, tooMany, partial              bool
+		fail                                            bool
+	}{
+		{name: "healthy"},
+		{name: "exact response limit", exact: true},
+		{name: "metrics failure", metrics: 503, partial: true},
+		{name: "multiple metrics versions", metrics: 503, multiple: true, partial: true},
+		{name: "mixed metrics and other", metrics: 503, other: 503, fail: true},
+		{name: "other group failure", other: 503, fail: true},
+		{name: "core failure", core: 503, fail: true},
+		{name: "core not found", core: 404, fail: true},
+		{name: "core not found with metrics failure", core: 404, metrics: 503, fail: true},
+		{name: "authentication failure", top: 401, fail: true},
+		{name: "generic failure", top: 500, fail: true},
+		{name: "transport failure", transport: true, fail: true},
+		{name: "truncated metrics", truncate: true, fail: true},
+		{name: "malformed metrics", malformed: true, fail: true},
+		{name: "oversized metrics", oversized: true, fail: true},
+		{name: "too many resources", tooMany: true, fail: true},
+		{name: "empty effective", empty: true, metrics: 503, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var coreRequests atomic.Int32
+			versions := `{"groupVersion":"metrics.k8s.io/v1beta1","version":"v1beta1"}`
+			if tc.multiple {
+				versions += `,{"groupVersion":"metrics.k8s.io/v1alpha1","version":"v1alpha1"}`
+			}
+			groups := `{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"metrics.k8s.io","versions":[` + versions + `],"preferredVersion":{"groupVersion":"metrics.k8s.io/v1beta1","version":"v1beta1"}},{"name":"other.example.test","versions":[{"groupVersion":"other.example.test/v1","version":"v1"}],"preferredVersion":{"groupVersion":"other.example.test/v1","version":"v1"}}]}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api":
+					if tc.transport {
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						conn.Close()
+						return
+					}
+					fmt.Fprint(w, `{"kind":"APIVersions","versions":["v1"]}`)
+				case r.URL.Path == "/apis":
+					if tc.top != 0 {
+						w.WriteHeader(tc.top)
+						return
+					}
+					fmt.Fprint(w, groups)
+				case r.URL.Path == "/api/v1":
+					coreRequests.Add(1)
+					if tc.core != 0 {
+						w.WriteHeader(tc.core)
+						if tc.core == http.StatusNotFound {
+							fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`)
+						}
+						return
+					}
+					resources := `[{"name":"pods","namespaced":true,"kind":"Pod","verbs":["get","list"]}]`
+					if tc.empty {
+						resources = `[]`
+					}
+					if tc.tooMany {
+						var entries []string
+						for i := 0; i < 1025; i++ {
+							entries = append(entries, fmt.Sprintf(`{"name":"item%d","namespaced":true,"kind":"Item","verbs":["list"]}`, i))
+						}
+						resources = "[" + strings.Join(entries, ",") + "]"
+					}
+					fmt.Fprintf(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":%s}`, resources)
+				case strings.HasPrefix(r.URL.Path, "/apis/metrics.k8s.io/"):
+					if tc.truncate {
+						w.Header().Set("Content-Length", "200")
+						fmt.Fprint(w, "{")
+						return
+					}
+					if tc.oversized {
+						fmt.Fprint(w, strings.Repeat("x", (8<<20)+1))
+						return
+					}
+					if tc.malformed {
+						fmt.Fprint(w, "{")
+						return
+					}
+					if tc.exact {
+						body := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"metrics.k8s.io/v1beta1","resources":[{"name":"pods","namespaced":true,"kind":"PodMetrics","verbs":["list"]}]}`
+						fmt.Fprint(w, body+strings.Repeat(" ", (8<<20)-len(body)))
+						return
+					}
+					if tc.metrics != 0 {
+						w.WriteHeader(tc.metrics)
+						return
+					}
+					fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"metrics.k8s.io/v1beta1","resources":[{"name":"pods","namespaced":true,"kind":"PodMetrics","verbs":["get","list"]}]}`)
+				case r.URL.Path == "/apis/other.example.test/v1":
+					if tc.other != 0 {
+						w.WriteHeader(tc.other)
+						return
+					}
+					resources := `[{"name":"things","namespaced":true,"kind":"Thing","verbs":["list"]}]`
+					if tc.empty {
+						resources = `[]`
+					}
+					fmt.Fprintf(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"other.example.test/v1","resources":%s}`, resources)
+				default:
+					t.Errorf("unexpected discovery request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			config := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","current-context":"selected","contexts":[{"name":"selected","context":{"cluster":"local"}}],"clusters":[{"name":"local","cluster":{"server":%q}}]}`, server.URL)
+			path := filepath.Join(t.TempDir(), "kubeconfig")
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var out, warnings bytes.Buffer
+			err := RestoreNamespaceResources(t.Context(), path, "selected", &out, &warnings)
+			if tc.core == http.StatusNotFound && coreRequests.Load() == 0 {
+				t.Fatal("core discovery request was not exercised")
+			}
+			if (err != nil) != tc.fail {
+				t.Fatalf("error=%v output=%q warnings=%q", err, out.String(), warnings.String())
+			}
+			if tc.fail && out.Len() != 0 {
+				t.Fatalf("failure emitted discovery: %q", out.String())
+			}
+			if !tc.fail && (!strings.Contains(out.String(), "pods\n") || !strings.Contains(out.String(), "things.other.example.test\n")) {
+				t.Fatalf("lost real resources: %q", out.String())
+			}
+			if !tc.fail && (strings.Contains(warnings.String(), "metrics API discovery failed") != tc.partial) {
+				t.Fatalf("incorrect warning: %q", warnings.String())
+			}
+		})
+	}
+}
+
+func TestRestoreInventoryNamespaceDiscoveryClassification(t *testing.T) {
+	metrics := schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	failure := &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{metrics: errors.New("unavailable")}}
+	lists := []*metav1.APIResourceList{{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Namespaced: true, Verbs: metav1.Verbs{"list"}}}}}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"joined", errors.Join(failure, errors.New("other error"))},
+		{"wrapped", fmt.Errorf("wrapped: %w", failure)},
+		{"empty groups", &discovery.ErrGroupDiscoveryFailed{}},
+		{"nil cause", &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{metrics: nil}}},
+		{"invalid version", &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{{Group: "metrics.k8s.io"}: errors.New("failed")}}},
+		{"cancelled cause", &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{metrics: context.Canceled}}},
+		{"joined cause", &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{metrics: errors.Join(errors.New("failed"), errors.New("other"))}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, warnings bytes.Buffer
+			if err := restoreNamespaceResourceOutput(t.Context(), lists, tc.err, &out, &warnings); err == nil || out.Len() != 0 {
+				t.Fatalf("unclassified discovery accepted: %v %q", err, out.String())
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := restoreNamespaceResourceOutput(ctx, lists, failure, io.Discard, io.Discard); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost: %v", err)
+	}
+	var out bytes.Buffer
+	if err := restoreNamespaceResourceOutput(t.Context(), lists, failure, &out, restoreShortWriter{}); !errors.Is(err, io.ErrShortWrite) || out.Len() != 0 {
+		t.Fatalf("incomplete warning accepted: %v", err)
+	}
+}
+
+func TestRestoreInventoryNamespaceDiscoveryRequiresCorePods(t *testing.T) {
+	other := &metav1.APIResourceList{GroupVersion: "other.example.test/v1", APIResources: []metav1.APIResource{
+		{Name: "pods", Namespaced: true, Verbs: metav1.Verbs{"list"}},
+	}}
+	for _, tc := range []struct {
+		name  string
+		core  *metav1.APIResourceList
+		valid bool
+	}{
+		{"missing core", nil, false},
+		{"wrong version", &metav1.APIResourceList{GroupVersion: "v2", APIResources: []metav1.APIResource{{Name: "pods", Namespaced: true, Verbs: metav1.Verbs{"list"}}}}, false},
+		{"not namespaced", &metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Verbs: metav1.Verbs{"list"}}}}, false},
+		{"not listable", &metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Namespaced: true, Verbs: metav1.Verbs{"get"}}}}, false},
+		{"different resource", &metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "services", Namespaced: true, Verbs: metav1.Verbs{"list"}}}}, false},
+		{"core pods", &metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Namespaced: true, Verbs: metav1.Verbs{"list"}}}}, true},
+	} {
+		for _, metricsFailure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/metrics=%t", tc.name, metricsFailure), func(t *testing.T) {
+				lists := []*metav1.APIResourceList{other}
+				if tc.core != nil {
+					lists = append(lists, tc.core)
+				}
+				var discoveryErr error
+				if metricsFailure {
+					discoveryErr = &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{
+						{Group: "metrics.k8s.io", Version: "v1beta1"}: errors.New("unavailable"),
+					}}
+				}
+				var out, warnings bytes.Buffer
+				err := restoreNamespaceResourceOutput(t.Context(), lists, discoveryErr, &out, &warnings)
+				if (err == nil) != tc.valid || !tc.valid && out.Len() != 0 {
+					t.Fatalf("core pods validation: error=%v output=%q", err, out.String())
+				}
+			})
+		}
+	}
+}
+
+func TestRestoreInventoryNamespaceDiscoveryInterruption(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deadline), func(t *testing.T) {
+			started := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(started)
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			config := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","current-context":"selected","contexts":[{"name":"selected","context":{"cluster":"local"}}],"clusters":[{"name":"local","cluster":{"server":%q}}]}`, server.URL)
+			path := filepath.Join(t.TempDir(), "kubeconfig")
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var ctx context.Context
+			var cancel context.CancelFunc
+			want := context.Canceled
+			if deadline {
+				ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
+				want = context.DeadlineExceeded
+			} else {
+				ctx, cancel = context.WithCancel(t.Context())
+				go func() {
+					select {
+					case <-started:
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
+			}
+			defer cancel()
+			var out, warnings bytes.Buffer
+			err := RestoreNamespaceResources(ctx, path, "selected", &out, &warnings)
+			select {
+			case <-started:
+			default:
+				t.Fatal("discovery did not reach the server")
+			}
+			if !errors.Is(err, want) || out.Len() != 0 {
+				t.Fatalf("interruption=%v output=%q warnings=%q", err, out.String(), warnings.String())
+			}
+		})
+	}
+}

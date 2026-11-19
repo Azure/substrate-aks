@@ -50,14 +50,15 @@ func setupStages(c installer.Config, withDemo bool) []setupStage {
 		setupStage{"Verify configured images before provisioning AKS", "images", []string{"--check"}},
 		setupStage{"Preview full infrastructure", "plan", nil},
 		setupStage{"Provision AKS, storage, and identities", "provision", nil},
-		setupStage{"Check cluster compatibility", "check", nil},
 		setupStage{"Prepare Azure deployment manifests", "prepare", nil},
 		setupStage{"Install Substrate and runtime assets", "install", nil},
-		setupStage{"Inspect workload status", "status", nil})
+		setupStage{"Inspect workload status", "status", nil},
+		setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil},
+		setupStage{"Check cluster compatibility and memory restore", "check", nil})
 	if withDemo {
 		stages = append(stages, setupStage{"Deploy and warm the counter microVM demo", "demo", nil})
 	}
-	return append(stages, setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil})
+	return stages
 }
 
 func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
