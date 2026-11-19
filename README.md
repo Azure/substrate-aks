@@ -75,8 +75,33 @@ the microVM node once the cluster exists. Docker with buildx or Podman is needed
 ```sh
 git clone https://github.com/Azure/substrate-aks.git
 cd substrate-aks
+```
+
+```sh
 az login
+```
+
+Check the active subscription before starting setup:
+
+```sh
+az account show --query "{name:name, id:id}" --output table
+```
+
+To select a different subscription:
+
+```sh
+az account set --subscription SUBSCRIPTION_UUID
+```
+
+Install Bicep for Azure resource deployments:
+
+```sh
 az bicep install
+```
+
+### 3. Run guided setup
+
+```sh
 make setup
 ```
 
@@ -100,7 +125,6 @@ choices are saved as a named installation in your user state directory, so
 
 | Command | Use |
 | --- | --- |
-| `az account set --subscription SUBSCRIPTION_UUID` | Select a different subscription **before** creating an installation |
 | `bin/substrate-aks setup NAME` | Resume or reconcile a saved installation |
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
@@ -124,6 +148,15 @@ Bicep creates the Azure resources, Kustomize components adapt Substrate's
 manifests for Azure, and the installer runs the pinned upstream `ate-setup` to
 deploy them. See [architecture](docs/architecture.md) for the full picture.
 
+Actors run in microVMs on a dedicated AKS worker pool. Their snapshots go to
+Blob Storage through the Azure Blob plugin; PostgreSQL uses a separate Azure
+Disk for database data. ACR supplies the container images:
+
+![Substrate on AKS architecture showing actor microVMs, snapshot storage in Azure Blob Storage, and PostgreSQL persistence on Azure Disk.](docs/images/installation-overview.svg)
+
+The diagram shows logical relationships, not network routes or resource-group
+boundaries.
+
 | Component | Default |
 | --- | --- |
 | AKS | Kubernetes 1.37; one system node and one dedicated microVM node, `Standard_D4s_v6` |
@@ -139,7 +172,8 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 > **This is not a production or multi-tenant deployment.** The AKS API is public
 > and IP-restricted by default; Substrate has no public ingress. ACR and Blob
 > endpoints are publicly reachable but require authentication. Actor image access
-> and Blob permissions are installation-wide, not per actor or tenant. See
+> and Blob permissions are 
+--wide, not per actor or tenant. See
 > [network and authorization boundaries](docs/configuration.md#network-and-authorization-boundaries).
 
 > [!NOTE]
@@ -161,46 +195,57 @@ Each request increments three counters: one in process memory, one in a file on
 a durable volume, and one on the root filesystem.
 
 Apply setup's printed shell exports first. If you skipped the optional demo,
-deploy it with `bin/substrate-aks demo`. Then create an actor:
+deploy it now:
 
 ```sh
-kubectl ate create actor my-counter \
-  -a ate-demo-counter-microvm --template counter-microvm
+bin/substrate-aks demo
 ```
 
-In a second terminal, apply the same exports, then forward local port 8000 to
-the actor:
+1. Create a counter actor:
 
-```sh
-kubectl ate proxy actor my-counter -a ate-demo-counter-microvm
-```
+   ```sh
+   kubectl ate create actor my-counter \
+     -a ate-demo-counter-microvm --template counter-microvm
+   ```
 
-Back in the first terminal, increment the counters, suspend the actor, and call
-it again. The next request resumes the actor from its snapshot, and every
-counter continues where it left off:
+1. Inspect the actor:
 
-```console
-$ curl -X POST http://localhost:8000
-preserved memory count: 1 | preserved file counter: 1 | preserved rootfs counter: 1
+   ```sh
+   kubectl ate get actor my-counter -a ate-demo-counter-microvm
+   ```
 
-$ kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
+1. Suspend the actor:
 
-$ curl -X POST http://localhost:8000
-preserved memory count: 2 | preserved file counter: 2 | preserved rootfs counter: 2
-```
+   ```sh
+   kubectl ate suspend actor my-counter -a ate-demo-counter-microvm --mode=sync
+   ```
 
-`--mode=sync` waits until the snapshot is uploaded to Blob storage. See the
-[upstream counter guide](https://github.com/agent-substrate/substrate/tree/v1.0.0/demos/counter)
-for more, and [client setup and authentication](docs/operations.md#client-and-counter-demo)
-for how `kubectl ate` reaches the cluster. Setup's closing output shows the
-same steps with `kubectl port-forward` and an `ate-target-actor` header instead
-of `kubectl ate proxy`; either works.
+1. Resume the actor:
+
+   ```sh
+   kubectl ate resume actor my-counter -a ate-demo-counter-microvm
+   ```
+
+Follow the [upstream counter guide](https://github.com/agent-substrate/substrate/tree/main/demos/counter)
+to call the actor over HTTP and compare its state before and after suspension.
+See [client setup and authentication](docs/operations.md#client-and-counter-demo) for details.
 
 ## Manage your installation
 
-Commands take an installation `NAME`, which is optional when only one is saved.
-The exceptions: without a name, `init` and `setup --yes` create `substrate-dev`,
-interactive `setup` asks for a name, and `destroy` refuses to run.
+### Select an installation
+
+Use `bin/substrate-aks list` to find saved installation names. Commands take an
+installation `NAME`; most let you omit it when only one installation is saved.
+The exceptions are:
+
+- `init` and `setup --yes` use `substrate-dev` when you omit the name.
+- Interactive `setup` without a name asks for a new installation name.
+- `destroy` always requires an explicit name.
+
+### Run common commands
+
+Add your installation name to target it explicitly, for example
+`bin/substrate-aks status substrate-dev`.
 
 | Command | Purpose |
 | --- | --- |
