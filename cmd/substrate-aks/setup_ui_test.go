@@ -38,7 +38,7 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 				"Substrate on AKS",
 				"Installation summary", "Configuration saved: deploy.json", "No Azure resources have been created.",
 				"Development (" + c.Azure.SubscriptionID + ")", "Azure identity", c.Azure.AssetPublisherObjectID,
-				"Resource group", "Region", "1 system + 1 microVM", "API server access",
+				"Resource group", "Region", "System pool 1 × Standard_D4s_v6", "MicroVM pool 1 × Standard_D4s_v6", "API server access",
 				"Snapshot inspection", "No new operator access", "Existing operator grants are not revoked.",
 				"Version " + installer.DefaultTag + " (" + installer.DefaultCommit[:12] + ")",
 				"Release images imported into the installation's ACR", installer.DefaultReleaseImages,
@@ -57,19 +57,24 @@ func TestSetupUIStylesAndReadableSummary(t *testing.T) {
 	}
 }
 
-func TestSetupSummarySystemPoolCount(t *testing.T) {
+func TestSetupSummaryShowsEachPool(t *testing.T) {
 	c, err := installer.LoadConfig(testCLIConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.AKS.WorkerPool.Count, c.AKS.WorkerPool.VMSize = 3, "Standard_D8s_v6"
 	for _, count := range []int{1, 4} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
-			c.AKS.SystemPool.Count = count
+			c.AKS.SystemPool.Count, c.AKS.SystemPool.VMSize = count, "Standard_F4s_v6"
 			var output bytes.Buffer
 			newSetupUI(&output).summary(c, azureDefaults{}, "deploy.json", false, "")
-			want := fmt.Sprintf("%d system + 1 microVM", count)
-			if !strings.Contains(strings.Join(strings.Fields(output.String()), " "), want) {
-				t.Fatalf("summary omitted %q: %s", want, output.String())
+			for _, want := range []string{
+				fmt.Sprintf("System pool %d × Standard_F4s_v6", count),
+				"MicroVM pool 3 × Standard_D8s_v6",
+			} {
+				if !strings.Contains(strings.Join(strings.Fields(output.String()), " "), want) {
+					t.Fatalf("summary omitted %q: %s", want, output.String())
+				}
 			}
 		})
 	}
