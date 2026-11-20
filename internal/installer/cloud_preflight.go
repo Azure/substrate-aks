@@ -302,6 +302,18 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 				}
 			}
 		}
+		architecture := ""
+		for _, capability := range sku.Capabilities {
+			if capability.Name == "CpuArchitectureType" {
+				architecture = capability.Value
+			}
+		}
+		if architecture == "" {
+			return "", 0, fmt.Errorf("VM SKU %s has no CPU architecture information; x64 compatibility is unverified", size)
+		}
+		if !strings.EqualFold(architecture, "x64") {
+			return "", 0, fmt.Errorf("VM size %s uses the %s CPU architecture, but Substrate needs x64 (amd64) nodes; choose an x64 size such as %s before provisioning", size, architecture, DefaultSystemVMSize)
+		}
 		for _, capability := range sku.Capabilities {
 			if capability.Name == "vCPUs" && sku.Family != "" {
 				cpus, err := strconv.ParseInt(capability.Value, 10, 64)

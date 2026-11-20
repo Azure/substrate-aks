@@ -15,7 +15,7 @@ const skuCatalogQuery = "{value:value[?resourceType=='virtualMachines'],nextLink
 
 func skuReply(size string) reply {
 	return reply{contains: "/providers/Microsoft.Compute/skus?", output: fmt.Sprintf(
-		`{"value":[{"name":%q,"family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}],"restrictions":[{"type":"Zone","values":["eastus2"],"restrictionInfo":{"zones":["3"]}}]}]}`, size)}
+		`{"value":[{"name":%q,"family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"},{"name":"CpuArchitectureType","value":"x64"}],"restrictions":[{"type":"Zone","values":["eastus2"],"restrictionInfo":{"zones":["3"]}}]}]}`, size)}
 }
 
 func cloudReplies(c Config) []reply {
@@ -137,7 +137,11 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 	system.output = strings.ReplaceAll(system.output, "StandardDsv6Family", "StandardFsv6Family")
 	worker := skuReply(c.AKS.WorkerPool.VMSize)
 	worker.output = strings.Replace(worker.output, `"value":"4"`, `"value":"8"`, 1)
-	replies[5].output = strings.TrimSuffix(system.output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
+	join := func(system, worker string) string {
+		return strings.TrimSuffix(system, "]}") + "," + strings.TrimPrefix(worker, `{"value":[`)
+	}
+	arm := func(sku string) string { return strings.Replace(sku, `"value":"x64"`, `"value":"Arm64"`, 1) }
+	replies[5].output = join(system.output, worker.output)
 	replies[5].effect = func(command Command) {
 		args := strings.Join(command.Args, " ")
 		if !slices.Contains(command.Args, skuCatalogQuery) {
@@ -160,6 +164,9 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 		{"available", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, ""},
 		{"system unavailable", worker.output, "", "Standard_F4s_v6 is not available"},
 		{"system restricted", `{"value":[{"name":"Standard_F4s_v6","restrictions":[{"type":"Location","values":["eastus2"]}]}]}`, "", "Standard_F4s_v6 is restricted"},
+		{"system Arm64", join(arm(system.output), worker.output), "", "Standard_F4s_v6 uses the Arm64 CPU architecture"},
+		{"worker Arm64", join(system.output, arm(worker.output)), "", "Standard_D8s_v6 uses the Arm64 CPU architecture"},
+		{"worker architecture missing", join(system.output, strings.Replace(worker.output, `,{"name":"CpuArchitectureType","value":"x64"}`, "", 1)), "", "Standard_D8s_v6 has no CPU architecture information"},
 		{"system family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":7}]`, "8 additional required"},
 		{"worker family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":24},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":15},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, "16 additional required"},
 		{"regional insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":23},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":16},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":8}]`, "24 additional required"},

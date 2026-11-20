@@ -37,7 +37,7 @@ func successfulCloudRunnerFor(home, name string) installer.Runner {
 		case strings.HasPrefix(args, "az group exists "):
 			return []byte(`false`), nil
 		case strings.Contains(args, "/providers/Microsoft.Compute/skus?"):
-			return []byte(`{"value":[{"name":"Standard_D4s_v6","family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"}]}]}`), nil
+			return []byte(`{"value":[{"name":"Standard_D4s_v6","family":"StandardDsv6Family","capabilities":[{"name":"vCPUs","value":"4"},{"name":"CpuArchitectureType","value":"x64"}]}]}`), nil
 		case strings.HasPrefix(args, "az rest --method get "):
 			return []byte(`{"value":[{"actions":["*"],"notActions":[]}]}`), nil
 		case strings.HasPrefix(args, "az aks get-versions "):
