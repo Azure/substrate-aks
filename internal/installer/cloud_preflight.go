@@ -238,7 +238,8 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 	}
 	next := endpoint + "?" + params.Encode()
 	// JMESPath compares strings case-sensitively; cloudSKU matches names with EqualFold.
-	query := "{value:value[?resourceType=='virtualMachines'],nextLink:nextLink}"
+	// Project only the fields the checks read, since command output is logged.
+	query := "{value:value[?resourceType=='virtualMachines'].{name:name,family:family,capabilities:capabilities,restrictions:restrictions},nextLink:nextLink}"
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {

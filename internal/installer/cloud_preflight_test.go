@@ -11,7 +11,7 @@ import (
 
 const allCloudPermissions = `{"value":[{"actions":["*"],"notActions":[]}]}`
 const availableAKS = `{"values":[{"version":"1.37","patchVersions":{"1.37.2":{}}}]}`
-const skuCatalogQuery = "{value:value[?resourceType=='virtualMachines'],nextLink:nextLink}"
+const skuCatalogQuery = "{value:value[?resourceType=='virtualMachines'].{name:name,family:family,capabilities:capabilities,restrictions:restrictions},nextLink:nextLink}"
 
 func skuReply(size string) reply {
 	return reply{contains: "/providers/Microsoft.Compute/skus?", output: fmt.Sprintf(
