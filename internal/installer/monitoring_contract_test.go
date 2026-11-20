@@ -166,6 +166,10 @@ func snapshotResources(t *testing.T, template string, params map[string]string) 
 		"--subscription-id", "22222222-2222-4222-8222-222222222222", "--resource-group", "substrate-test",
 		"--location", "eastus2", "--tenant-id", "66666666-6666-4666-8666-666666666666")
 	if output, err := command.CombinedOutput(); err != nil {
+		if exec.CommandContext(t.Context(), "az", "bicep", "snapshot", "--help").Run() != nil {
+			t.Fatalf("contract tests need az bicep snapshot, which requires Bicep CLI 0.41.2 or later; "+
+				"run az bicep upgrade, and update the Azure CLI if the command is still missing: %v\n%s", err, output)
+		}
 		t.Fatalf("evaluating %s: %v\n%s", template, err, output)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, name+".snapshot.json"))
