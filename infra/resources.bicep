@@ -24,6 +24,8 @@ param operatorObjectId string = ''
 @allowed(['User', 'ServicePrincipal', 'Group'])
 param operatorPrincipalType string = 'User'
 param registryName string
+param monitoringEnabled bool = false
+param monitoringLocation string = location
 @allowed(['bundled', 'flexible-server'])
 param databaseBackend string = 'bundled'
 param databaseLocation string = location
@@ -91,6 +93,14 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
     dnsPrefix: clusterName
     kubernetesVersion: kubernetesVersion
     enableRBAC: true
+    // Opt-in only: when monitoring is off, send no profile rather than enabled=false.
+    ...(monitoringEnabled ? {
+      azureMonitorProfile: {
+        metrics: {
+          enabled: true
+        }
+      }
+    } : {})
     ...(operatorObjectId != '' ? {
       aadProfile: {
         managed: true
@@ -323,6 +333,17 @@ resource operatorSnapshots 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
+module monitoring 'monitoring.bicep' = if (monitoringEnabled) {
+  name: 'substrate-monitoring-${installationId}'
+  params: {
+    location: monitoringLocation
+    installationId: installationId
+    clusterName: cluster.name
+    grafanaAdminObjectId: assetPublisherObjectId
+    grafanaAdminPrincipalType: assetPublisherPrincipalType
+  }
+}
+
 output infrastructure object = {
   clusterName: cluster.name
   resourceGroup: resourceGroup().name
@@ -333,6 +354,9 @@ output infrastructure object = {
   nodeClientId: nodeIdentity.properties.clientId
   controlClientId: controlIdentity.properties.clientId
   tenantId: tenant().tenantId
+  ...(monitoringEnabled ? {
+    monitoring: monitoring!.outputs.monitoring
+  } : {})
   ...(managedDatabase ? {
     database: {
       backend: databaseBackend

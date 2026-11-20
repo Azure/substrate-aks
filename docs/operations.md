@@ -596,7 +596,8 @@ with the earlier Dsv3 default.
 - Regions and VM sizes other than those in the runs above
 
 Not part of this quickstart: installing into an existing cluster, upgrades,
-autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared filesystems.
+autoscaling, and shared filesystems. [Managed metrics and Grafana](monitoring.md)
+are available as an opt-in capability.
 
 ### Managed PostgreSQL
 

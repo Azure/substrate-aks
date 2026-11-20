@@ -362,7 +362,7 @@ func adaptSource(root string, c Config, plugin []deploy.External) ([]string, err
 		case 2:
 			data, err = adaptPostgres(data)
 		case 3:
-			data, err = deploy.Render(data, deploy.Values{Component: "telemetry"})
+			data, err = deploy.Render(data, deploy.Values{Component: "telemetry", MonitoringEnabled: c.Monitoring.Enabled})
 		case 4:
 			data, err = deploy.AdaptBase(data)
 		case 5:

@@ -106,7 +106,7 @@ needed. Upstream `ate-setup` handles the base installation and component redeplo
 | MicroVM assets | Content-addressed blobs in the assets container, served by the node sidecar |
 | Actor image access | Native AKS ACR credential provider using the node's identity |
 | PostgreSQL | Bundled default: one replica with a 32 GiB Azure Disk; no backups or HA. Optional Azure Database for PostgreSQL Flexible Server uses upstream's external-database contract |
-| Telemetry | GKE monitoring removed; exporters disabled (managed monitoring: [#14](https://github.com/Azure/substrate-aks/pull/14)) |
+| Telemetry | GKE monitoring removed; exporters disabled by default, with opt-in Azure OTLP metrics and managed Prometheus/Grafana |
 | Demo workers | Scheduled on the dedicated microVM node pool |
 
 The sandbox runtime assets are adapted separately in Go. The counter demo

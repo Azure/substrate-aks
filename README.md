@@ -105,6 +105,7 @@ choices are saved as a named installation in your user state directory, so
 | `bin/substrate-aks setup --accessible` | Screen-reader-friendly, line-oriented prompts |
 | `bin/substrate-aks setup --api-cidr YOUR_PUBLIC_IPV4/32` | Set API access explicitly instead of detecting your IP |
 | `bin/substrate-aks init flex --database flexible-server --database-location westus3` | Save a new installation that uses Azure Database for PostgreSQL Flexible Server |
+| `bin/substrate-aks setup --monitoring` | Opt in managed Prometheus and Grafana for a new installation |
 | `bin/substrate-aks setup --yes --with-demo` | Install `substrate-dev` without prompts; accepts billing and selects the kube-context |
 
 Use `NO_COLOR=1` for plain output. See [configuration](docs/configuration.md)
@@ -135,6 +136,7 @@ deploy them. See [architecture](docs/architecture.md) for the full picture.
 | Images | Release images imported into a private Azure Container Registry (ACR); the demo and Azure Blob plugin images are built with ko and pushed there |
 | Storage | Azure Blob containers for snapshots and runtime assets, served by the Azure Blob object-store plugin |
 | Demo | Optional counter microVM workload |
+| Monitoring | Optional managed Prometheus and Standard Grafana, with Substrate, AKS, Blob and selected PostgreSQL dashboards |
 
 > [!IMPORTANT]
 > **This is not a production or multi-tenant deployment.** The AKS API is public
@@ -158,6 +160,10 @@ for what has been tested.
 Managed PostgreSQL uses passwords retained in Key Vault because the pinned client
 cannot renew Entra database tokens. See [database configuration](docs/configuration.md#postgresql-backend)
 for costs, availability, credential retention, and destructive teardown.
+
+[Managed metrics and Grafana](docs/monitoring.md) are opt-in and add ongoing
+charges. Collection is metrics-only; logs, traces and alert policies are not
+configured.
 
 ## Try the demo
 

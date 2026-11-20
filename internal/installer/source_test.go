@@ -178,6 +178,45 @@ func TestPreparedSourceReplacesLegacyDemoCache(t *testing.T) {
 	}
 }
 
+func TestPreparedSourceReplacesMonitoredCacheWithGenericOTLPEndpoint(t *testing.T) {
+	for _, generation := range []string{"-v2", "-v3"} {
+		t.Run(generation, func(t *testing.T) {
+			c, i := testConfig(t), testInfrastructure()
+			c.Monitoring.Enabled = true
+			i.Monitoring = testMonitoring(c)
+			previous := filepath.Join(c.workspace(), "source-"+fingerprint(c, i)+generation)
+			if err := os.MkdirAll(previous, 0700); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(previous, ".substrate-aks-prepared.json")
+			p := prepared{Fingerprint: fingerprint(c, i), Files: map[string]string{}}
+			for _, name := range []string{"atelet.yaml", "api.yaml", "postgres.yaml", "otel.yaml", "base.yaml", "demo.yaml"} {
+				data := []byte("prepared " + name)
+				if err := os.WriteFile(filepath.Join(previous, name), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				p.Files[name] = checksum(data)
+			}
+			previousMarker, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(marker, previousMarker, 0600); err != nil {
+				t.Fatal(err)
+			}
+			want := errors.New("stopped before fetching fresh source")
+			r := script(t, reply{contains: "git init", err: want})
+			if _, err := (App{Config: c, Runner: r}).prepare(t.Context(), i); !errors.Is(err, want) {
+				t.Fatalf("prepare reused or rejected a monitored cache that sends traces to the metrics collector: %v", err)
+			}
+			data, err := os.ReadFile(marker)
+			if err != nil || string(data) != string(previousMarker) {
+				t.Fatalf("prepare modified the previous managed checkout: %s, %v", data, err)
+			}
+		})
+	}
+}
+
 func TestUpstreamRefreshesOwnedRegistryCredentials(t *testing.T) {
 	for _, component := range []string{"ate-system", "atelet", "apiserver", "demo counter-microvm"} {
 		t.Run(component, func(t *testing.T) {

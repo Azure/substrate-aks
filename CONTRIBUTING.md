@@ -22,7 +22,7 @@ make bicep
 | --- | --- |
 | `make verify` | Formatting, vet, and module consistency |
 | `make test-unit` | Race-enabled unit tests |
-| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins, and the compiled managed PostgreSQL templates and bootstrap |
+| `make test-contract` | Compatibility with disposable checkouts of the exact Substrate and plugin pins, the compiled managed PostgreSQL templates and bootstrap, and the evaluated monitoring templates |
 | `make test` | Unit tests and contracts |
 | `make bicep` | Compile the infrastructure template |
 
@@ -31,8 +31,12 @@ plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
 GitHub. The managed PostgreSQL contracts also need the Azure CLI with Bicep, which
 compiles the templates and evaluates queries locally without signing in, and a
 running Docker daemon, which runs the pinned bootstrap SQL twice against a
-disposable PostgreSQL container. Missing prerequisites fail the tests rather
-than skipping them. No check above provisions Azure resources.
+disposable PostgreSQL container. The monitoring template contracts evaluate the
+templates with `az bicep snapshot`, which needs Bicep CLI 0.41.2 or later and
+also runs locally without signing in. Check with `az bicep version` and
+`az bicep snapshot --help`; run `az bicep upgrade` if needed. Missing
+prerequisites fail the tests rather than skipping them. No check above
+provisions Azure resources.
 
 To use existing pristine checkouts of the pins:
 

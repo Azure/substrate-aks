@@ -20,16 +20,17 @@ const ownershipTag = "substrate-aks-installation"
 var errGroupAbsent = errors.New("installation resource group does not exist")
 
 type Infrastructure struct {
-	ClusterName        string                  `json:"clusterName"`
-	ResourceGroup      string                  `json:"resourceGroup"`
-	StorageAccount     string                  `json:"storageAccount"`
-	AccountURL         string                  `json:"accountUrl"`
-	SnapshotsContainer string                  `json:"snapshotsContainer"`
-	AssetsContainer    string                  `json:"assetsContainer"`
-	NodeClientID       string                  `json:"nodeClientId"`
-	ControlClientID    string                  `json:"controlClientId"`
-	TenantID           string                  `json:"tenantId"`
-	Database           *DatabaseInfrastructure `json:"database,omitempty"`
+	ClusterName        string                    `json:"clusterName"`
+	ResourceGroup      string                    `json:"resourceGroup"`
+	StorageAccount     string                    `json:"storageAccount"`
+	AccountURL         string                    `json:"accountUrl"`
+	SnapshotsContainer string                    `json:"snapshotsContainer"`
+	AssetsContainer    string                    `json:"assetsContainer"`
+	NodeClientID       string                    `json:"nodeClientId"`
+	ControlClientID    string                    `json:"controlClientId"`
+	TenantID           string                    `json:"tenantId"`
+	Database           *DatabaseInfrastructure   `json:"database,omitempty"`
+	Monitoring         *MonitoringInfrastructure `json:"monitoring,omitempty"`
 }
 
 type App struct {
@@ -135,6 +136,11 @@ func (a App) inspectOwnedGroup(ctx context.Context, required bool) (bool, error)
 				recordedSKU != a.Config.Database.ComputeSKU().Name)) {
 			return false, errors.New("database backend, region or SKU differs from the provisioned installation; switching, resizing and adoption are not supported, use the original config or a fresh installation")
 		}
+		monitoring := strings.EqualFold(group.Tags["substrate-aks-monitoring"], "true")
+		if monitoring != a.Config.Monitoring.Enabled ||
+			(monitoring && group.Tags["substrate-aks-monitoring-location"] != a.Config.MonitoringLocation()) {
+			return false, errors.New("monitoring mode or region differs from the provisioned installation; use the original config or a fresh installation")
+		}
 	}
 	return true, nil
 }
@@ -184,6 +190,15 @@ func (a App) guardTarget(ctx context.Context) error {
 				}
 				return fmt.Errorf("AKS-managed node resource group %q remains for cluster %q, but the tagged installation resource group %q was not found; refusing target reuse or image-reference reset. Wait for any in-progress teardown to finish, then retry. If it persists, inspect Azure for incomplete teardown or changed ownership tags before reusing this configuration", group.Name, clusterID, a.Config.Azure.ResourceGroup)
 			}
+			if a.Config.Monitoring.Enabled && validMonitoringResourceID(a.Config, group.ManagedBy, "Microsoft.Monitor/accounts") {
+				if targetExists {
+					continue
+				}
+				return fmt.Errorf("Azure Monitor-managed resource group %q remains for workspace %q, but the tagged installation resource group %q was not found; refusing target reuse or image-reference reset. Wait for any in-progress teardown to finish, then retry. If it persists, inspect Azure for incomplete teardown or changed ownership tags before reusing this configuration", group.Name, group.ManagedBy, a.Config.Azure.ResourceGroup)
+			}
+			if !a.Config.Monitoring.Enabled && validMonitoringResourceID(a.Config, group.ManagedBy, "Microsoft.Monitor/accounts") {
+				return fmt.Errorf("resource group %q is managed by this installation's Azure Monitor workspace %q, but monitoring.enabled is false; monitoring mode differs from the provisioned installation. Restore monitoring.enabled and monitoring.location to this installation's original values; use a new configuration for a separate installation", group.Name, group.ManagedBy)
+			}
 			if group.ManagedBy != "" {
 				return fmt.Errorf("resource group %q is managed by %q, which does not match configured AKS cluster %q; refusing to reuse this installation ID. Restore aks.clusterName and azure.resourceGroup to this installation's original values for management or teardown; use a new configuration for a separate installation", group.Name, group.ManagedBy, clusterID)
 			}
@@ -230,7 +245,7 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, name := range []string{"main.bicep", "resources.bicep", "registry.bicep", "flexible-server.bicep", "database-vault.bicep", "vault.bicep"} {
+	for _, name := range []string{"main.bicep", "resources.bicep", "registry.bicep", "flexible-server.bicep", "database-vault.bicep", "vault.bicep", "monitoring.bicep"} {
 		data, err := infra.Files.ReadFile(name)
 		if err != nil {
 			return err
@@ -258,6 +273,8 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		"databaseLocation":            c.DatabaseLocation(),
 		"databaseSkuName":             c.Database.ComputeSKU().Name,
 		"databaseSkuTier":             c.Database.ComputeSKU().Tier,
+		"monitoringEnabled":           c.Monitoring.Enabled,
+		"monitoringLocation":          c.MonitoringLocation(),
 	} {
 		params[key] = map[string]any{"value": value}
 	}
@@ -398,6 +415,9 @@ func (a App) infrastructure(ctx context.Context) (Infrastructure, error) {
 	}
 	i.AccountURL = strings.TrimSuffix(i.AccountURL, "/")
 	if err := validateDatabaseInfrastructure(a.Config, i.Database); err != nil {
+		return i, err
+	}
+	if err := validateMonitoringInfrastructure(a.Config, i.Monitoring); err != nil {
 		return i, err
 	}
 	return i, nil
