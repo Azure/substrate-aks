@@ -167,10 +167,12 @@ destroy it and create a new one instead.
 The installer and direct `main.bicep` deployments limit the system pool to
 154 nodes and the worker pool to 100. Their sum is therefore at most 254.
 The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
-256 nodes total, leaving one upgrade surge node for each pool at AKS's default
-surge setting. If surge settings are changed outside the
-installer, reserve enough additional addresses for them. AKS itself allows up
-to 1,000 nodes per pool.
+256 nodes total, leaving one upgrade surge node for each pool. Upgrades,
+including the automatic node-image upgrades, add one surge node per pool, so
+they replace one node at a time and take longer on large pools; this keeps
+upgrades within the pod address range that the count limits assume. If surge
+settings are changed outside the installer, reserve enough additional addresses
+for them. AKS itself allows up to 1,000 nodes per pool.
 
 ### Snapshot disk performance
 
