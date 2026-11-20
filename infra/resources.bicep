@@ -93,11 +93,14 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
     dnsPrefix: clusterName
     kubernetesVersion: kubernetesVersion
     enableRBAC: true
-    azureMonitorProfile: {
-      metrics: {
-        enabled: monitoringEnabled
+    // Opt-in only: when monitoring is off, send no profile rather than enabled=false.
+    ...(monitoringEnabled ? {
+      azureMonitorProfile: {
+        metrics: {
+          enabled: true
+        }
       }
-    }
+    } : {})
     ...(operatorObjectId != '' ? {
       aadProfile: {
         managed: true

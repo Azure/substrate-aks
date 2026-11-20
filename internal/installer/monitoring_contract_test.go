@@ -4,6 +4,7 @@ package installer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,5 +129,94 @@ func TestPinnedUpstreamMonitoringContract(t *testing.T) {
 	labels, err := child(selector, "matchLabels")
 	if err != nil || labels["app"] != "atenet-router" {
 		t.Fatalf("Envoy monitor no longer matches the upstream router: %v", err)
+	}
+}
+
+type predictedResource struct {
+	Type       string
+	Properties map[string]any
+}
+
+// snapshotResources evaluates an infra template locally, without Azure
+// access, and returns the resources it predicts. Parameter values are Bicep
+// literals.
+func snapshotResources(t *testing.T, template string, params map[string]string) []predictedResource {
+	t.Helper()
+	dir := t.TempDir()
+	path, err := filepath.Abs(filepath.Join("../../infra", template))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bicep accepts only relative template references.
+	using, err := filepath.Rel(dir, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file strings.Builder
+	fmt.Fprintf(&file, "using '%s'\n", filepath.ToSlash(using))
+	for name, value := range params {
+		fmt.Fprintf(&file, "param %s = %s\n", name, value)
+	}
+	name := strings.TrimSuffix(template, ".bicep")
+	paramFile := filepath.Join(dir, name+".bicepparam")
+	if err := os.WriteFile(paramFile, []byte(file.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), "az", "bicep", "snapshot", "--file", paramFile, "--only-show-errors",
+		"--subscription-id", "22222222-2222-4222-8222-222222222222", "--resource-group", "substrate-test",
+		"--location", "eastus2", "--tenant-id", "66666666-6666-4666-8666-666666666666")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("evaluating %s: %v\n%s", template, err, output)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, name+".snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct{ PredictedResources []predictedResource }
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot.PredictedResources
+}
+
+func TestManagedBicepMonitoringContract(t *testing.T) {
+	root := func(overrides ...string) map[string]string {
+		params := map[string]string{
+			"location": "'eastus2'", "installationId": "'11111111-1111-4111-8111-111111111111'",
+			"clusterName": "'substrate-test'", "kubernetesVersion": "'1.37'", "workerVmSize": "'Standard_D4s_v6'",
+			"workerCount": "1", "apiAuthorizedCidrs": "[]", "assetPublisherObjectId": "'33333333-3333-4333-8333-333333333333'",
+			"registryName": "'substratetest'",
+		}
+		for i := 0; i+1 < len(overrides); i += 2 {
+			params[overrides[i]] = overrides[i+1]
+		}
+		return params
+	}
+	for _, tc := range []struct {
+		name       string
+		params     map[string]string
+		monitoring bool
+	}{
+		{"monitoring=false", root("monitoringEnabled", "false"), false},
+		{"monitoring=true", root("monitoringEnabled", "true"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var clusters []predictedResource
+			for _, resource := range snapshotResources(t, "resources.bicep", tc.params) {
+				if resource.Type == "Microsoft.ContainerService/managedClusters" {
+					clusters = append(clusters, resource)
+				}
+			}
+			if len(clusters) != 1 {
+				t.Fatalf("predicted %d AKS clusters; want 1", len(clusters))
+			}
+			profile, sent := clusters[0].Properties["azureMonitorProfile"]
+			if !tc.monitoring && sent {
+				t.Fatalf("disabled monitoring sent an Azure Monitor profile that could turn off existing metrics: %v", profile)
+			}
+			if tc.monitoring && !reflect.DeepEqual(profile, map[string]any{"metrics": map[string]any{"enabled": true}}) {
+				t.Fatalf("enabled monitoring did not turn on managed Prometheus: %v", profile)
+			}
+		})
 	}
 }

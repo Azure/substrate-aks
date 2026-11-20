@@ -66,7 +66,12 @@ these resources or Kubernetes agents.
 The shared subscription/resource-group entrypoints accept `monitoringEnabled`
 (default `false`) and `monitoringLocation` (default AKS region). Set them before
 creation to provision managed Prometheus and Grafana independently of the
-installer. Registry-only deployment excludes them.
+installer. Registry-only deployment excludes them. With `monitoringEnabled=true`
+they set the cluster's `azureMonitorProfile.metrics.enabled` to `true`; with
+`false` they omit `azureMonitorProfile` and never send `enabled: false`. Whether
+Azure keeps a metrics profile enabled outside these templates when the property
+is omitted has not been verified, so check it after deploying over such a
+cluster.
 
 `infra/monitoring.bicep` is also a resource-group module for an existing AKS
 cluster whose `azureMonitorProfile.metrics.enabled` is already `true`. Its

@@ -14,7 +14,7 @@ test-unit:
 	go test -race ./...
 
 CONTRACT_TESTS := TestPinned(Upstream|UpstreamMonitoring|UpstreamFlags|TransferPlaceholder|ReleaseInventory|MicroVMAssets|ManagedPostgres|ImagePublisher|ImageCheck|PodmanPublisher)Contract
-CONTRACT_TESTS := $(CONTRACT_TESTS)|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract|DatabaseSKU)|TestInfrastructureDeploymentHistorySelection
+CONTRACT_TESTS := $(CONTRACT_TESTS)|TestPinnedDatabaseBootstrapScript|TestManagedBicep(NetworkGrantScope|VaultContract|DatabaseSKU|MonitoringContract)|TestInfrastructureDeploymentHistorySelection
 
 test-contract:
 	go test -race -tags=integration ./internal/installer -run '^($(CONTRACT_TESTS))$$' -count=1
