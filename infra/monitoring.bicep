@@ -5,6 +5,9 @@ param installationId string
 param clusterName string
 @description('Entra object ID of the operator reconciling Grafana data sources and dashboards.')
 param grafanaAdminObjectId string
+@description('Principal type of grafanaAdminObjectId; empty lets Azure resolve it.')
+@allowed(['', 'User', 'ServicePrincipal', 'Group'])
+param grafanaAdminPrincipalType string = ''
 
 var suffix = uniqueString(resourceGroup().id, installationId)
 var tags = {
@@ -97,6 +100,7 @@ resource grafanaAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: grafana
   properties: {
     principalId: grafanaAdminObjectId
+    ...(grafanaAdminPrincipalType != '' ? { principalType: grafanaAdminPrincipalType } : {})
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '22926164-76b3-42b3-bc55-97df8dab3e41')
   }
 }

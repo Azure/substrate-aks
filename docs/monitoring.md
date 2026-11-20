@@ -75,14 +75,16 @@ cluster.
 
 `infra/monitoring.bicep` is also a resource-group module for an existing AKS
 cluster whose `azureMonitorProfile.metrics.enabled` is already `true`. Its
-parameters are `location`, `installationId`, `clusterName` and
-`grafanaAdminObjectId`. It creates the workspace, DCE/DCR/association, Grafana
-and scoped access roles without modifying other cluster settings. Its
-`monitoring` output returns workspace/query and Grafana resource/endpoints.
-The root passes `assetPublisherObjectId` as Grafana admin; standalone callers
-can choose that identity on the leaf. The module does not install the
-in-cluster collector, configure application exporters, or reconcile dashboard
-content; those are separate Kubernetes/Grafana steps.
+parameters are `location`, `installationId`, `clusterName`,
+`grafanaAdminObjectId` and the optional `grafanaAdminPrincipalType` (`User`,
+`ServicePrincipal` or `Group`; empty by default, which lets Azure resolve the
+type). It creates the workspace, DCE/DCR/association, Grafana and scoped access
+roles without modifying other cluster settings. Its `monitoring` output returns
+workspace/query and Grafana resource/endpoints. The root passes
+`assetPublisherObjectId` and `assetPublisherPrincipalType` as the Grafana admin;
+standalone callers can choose that identity on the leaf. The module does not
+install the in-cluster collector, configure application exporters, or reconcile
+dashboard content; those are separate Kubernetes/Grafana steps.
 
 The configured `azure.assetPublisherObjectId` receives **Grafana Admin on this
 Grafana instance**. Run installation as that identity; the independently selected

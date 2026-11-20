@@ -192,30 +192,64 @@ func TestManagedBicepMonitoringContract(t *testing.T) {
 		}
 		return params
 	}
+	// Direct callers of the leaf module may omit the principal type.
+	leaf := map[string]string{
+		"location": "'eastus2'", "installationId": "'11111111-1111-4111-8111-111111111111'",
+		"clusterName": "'substrate-test'", "grafanaAdminObjectId": "'33333333-3333-4333-8333-333333333333'",
+	}
+	const grafanaAdminRole = "22926164-76b3-42b3-bc55-97df8dab3e41"
 	for _, tc := range []struct {
-		name       string
-		params     map[string]string
-		monitoring bool
+		name          string
+		template      string
+		params        map[string]string
+		monitoring    bool
+		principalType string
 	}{
-		{"monitoring=false", root("monitoringEnabled", "false"), false},
-		{"monitoring=true", root("monitoringEnabled", "true"), true},
+		{"monitoring=false", "resources.bicep", root("monitoringEnabled", "false"), false, ""},
+		{"monitoring=true", "resources.bicep", root("monitoringEnabled", "true"), true, ""},
+		{"type=User", "resources.bicep", root("monitoringEnabled", "true", "assetPublisherPrincipalType", "'User'"), true, "User"},
+		{"type=ServicePrincipal", "resources.bicep",
+			root("monitoringEnabled", "true", "assetPublisherPrincipalType", "'ServicePrincipal'"), true, "ServicePrincipal"},
+		{"type=Group", "resources.bicep", root("monitoringEnabled", "true", "assetPublisherPrincipalType", "'Group'"), true, "Group"},
+		{"leaf", "monitoring.bicep", leaf, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var clusters []predictedResource
-			for _, resource := range snapshotResources(t, "resources.bicep", tc.params) {
-				if resource.Type == "Microsoft.ContainerService/managedClusters" {
+			var clusters, admins []predictedResource
+			for _, resource := range snapshotResources(t, tc.template, tc.params) {
+				role, _ := resource.Properties["roleDefinitionId"].(string)
+				switch {
+				case resource.Type == "Microsoft.ContainerService/managedClusters":
 					clusters = append(clusters, resource)
+				case resource.Type == "Microsoft.Authorization/roleAssignments" && strings.HasSuffix(role, "/"+grafanaAdminRole):
+					admins = append(admins, resource)
 				}
 			}
-			if len(clusters) != 1 {
-				t.Fatalf("predicted %d AKS clusters; want 1", len(clusters))
+			if tc.template == "resources.bicep" {
+				if len(clusters) != 1 {
+					t.Fatalf("predicted %d AKS clusters; want 1", len(clusters))
+				}
+				profile, sent := clusters[0].Properties["azureMonitorProfile"]
+				if !tc.monitoring && sent {
+					t.Fatalf("disabled monitoring sent an Azure Monitor profile that could turn off existing metrics: %v", profile)
+				}
+				if tc.monitoring && !reflect.DeepEqual(profile, map[string]any{"metrics": map[string]any{"enabled": true}}) {
+					t.Fatalf("enabled monitoring did not turn on managed Prometheus: %v", profile)
+				}
 			}
-			profile, sent := clusters[0].Properties["azureMonitorProfile"]
-			if !tc.monitoring && sent {
-				t.Fatalf("disabled monitoring sent an Azure Monitor profile that could turn off existing metrics: %v", profile)
+			if !tc.monitoring {
+				if len(admins) != 0 {
+					t.Fatalf("disabled monitoring predicted Grafana Admin assignments: %v", admins)
+				}
+				return
 			}
-			if tc.monitoring && !reflect.DeepEqual(profile, map[string]any{"metrics": map[string]any{"enabled": true}}) {
-				t.Fatalf("enabled monitoring did not turn on managed Prometheus: %v", profile)
+			if len(admins) != 1 {
+				t.Fatalf("predicted %d Grafana Admin assignments; want 1", len(admins))
+			}
+			properties := admins[0].Properties
+			got, sent := properties["principalType"]
+			if properties["principalId"] != "33333333-3333-4333-8333-333333333333" ||
+				(tc.principalType == "" && sent) || (tc.principalType != "" && got != tc.principalType) {
+				t.Fatalf("Grafana Admin does not follow the asset publisher identity and type %q: %v", tc.principalType, properties)
 			}
 		})
 	}

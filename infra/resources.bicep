@@ -340,6 +340,7 @@ module monitoring 'monitoring.bicep' = if (monitoringEnabled) {
     installationId: installationId
     clusterName: cluster.name
     grafanaAdminObjectId: assetPublisherObjectId
+    grafanaAdminPrincipalType: assetPublisherPrincipalType
   }
 }
 
