@@ -194,10 +194,16 @@ Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools; request more quota before provisioning
 a large pool. For more than one worker, preflight refuses sizes outside the x86
 D, E or F `_v6`/`_v7` stable baseline unless
-`aks.workerPool.allowMixedCpuGenerations` is `true`. The opt-in warns rather
+`aks.workerPool.allowMixedCpuGenerations` is `true`. Azure's size-series pages
+list the processor for each series; for example,
+[Dsv6](https://learn.microsoft.com/azure/virtual-machines/sizes/general-purpose/dsv6-series)
+runs on Intel Xeon Platinum 8573C (Emerald Rapids). The opt-in warns rather
 than preventing TSC-related snapshot restore failures. One node can also be
 affected if replacement brings a different CPU generation; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
+This guard is for Substrate's own microVM runtime; AKS's managed Kata VM
+isolation v2 runtime for pod sandboxing, which substrate-aks doesn't use,
+[supports a narrower list of `_v6` families](https://learn.microsoft.com/azure/aks/agent-sandbox-cluster-extension?pivots=sandbox-kata).
 
 ## Azure identity and permissions
 
