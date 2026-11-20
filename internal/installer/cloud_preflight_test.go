@@ -95,7 +95,7 @@ func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
 				if err == nil {
 					t.Fatal("risky pool was accepted")
 				}
-				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size} {
+				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size, "existing pool", "destroy and recreate"} {
 					if !strings.Contains(err.Error(), term) {
 						t.Errorf("error %q lacks %q", err, term)
 					}
@@ -162,7 +162,8 @@ func TestProvisionMicroVMRestoreRisk(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(warned) > 0 != tc.warns || tc.warns && (len(warned) != 1 || !strings.Contains(warned[0], "snapshot restore") || !strings.Contains(warned[0], tc.size)) {
+			if len(warned) > 0 != tc.warns || tc.warns && (len(warned) != 1 || !strings.Contains(warned[0], "snapshot restore") || !strings.Contains(warned[0], tc.size) ||
+				strings.HasPrefix(warned[0], "provision will refuse") != (tc.whatIf && !tc.optIn)) {
 				t.Fatalf("unexpected warnings: %q", warned)
 			}
 			if text := strings.Join(progress, "\n"); strings.Contains(text, "TSC") {

@@ -30,7 +30,7 @@ func (w WorkerPoolConfig) CPUGenerationRisk() (risk string, refused bool) {
 	}
 	message := fmt.Sprintf("microVM pool size %s may span CPU generations with different TSC rates, causing memory snapshot restore failures; choose a stable-baseline _v6 size such as Standard_D4s_v6", w.VMSize)
 	if !w.AllowMixedCPUGenerations {
-		return message + ", or explicitly set aks.workerPool.allowMixedCpuGenerations to true to accept the risk", true
+		return message + ", or explicitly set aks.workerPool.allowMixedCpuGenerations to true to accept the risk; AKS cannot change an existing pool's VM size, so for an existing pool set the opt-in or destroy and recreate the installation", true
 	}
 	return message + "; aks.workerPool.allowMixedCpuGenerations is enabled", false
 }

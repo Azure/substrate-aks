@@ -136,7 +136,7 @@ esac
 	if err := run(t.Context(), []string{"plan", recordName(path)}, &result, &progress); err != nil {
 		t.Fatalf("plan refused instead of warning: %v", err)
 	}
-	if text := strings.Join(strings.Fields(progress.String()), " "); !strings.Contains(text, "microVM pool size Standard_D4s_v5") ||
+	if text := strings.Join(strings.Fields(progress.String()), " "); !strings.Contains(text, "provision will refuse this pool: microVM pool size Standard_D4s_v5") ||
 		!strings.Contains(text, "snapshot restore") {
 		t.Fatalf("plan did not warn about the restore risk: %s", &progress)
 	}

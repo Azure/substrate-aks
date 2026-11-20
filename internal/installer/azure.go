@@ -186,6 +186,9 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		if refused && !whatIf {
 			return errors.New(risk)
 		}
+		if refused {
+			risk = "provision will refuse this pool: " + risk
+		}
 		if risk != "" {
 			a.warn(risk)
 		}
