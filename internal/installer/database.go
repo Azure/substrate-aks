@@ -146,12 +146,13 @@ func (a App) waitDatabaseVaultAccess(ctx context.Context, interval, timeout time
 		if err == nil {
 			return nil
 		}
-		if waitCtx.Err() != nil {
-			return fmt.Errorf("waiting for database Key Vault access: %w", errors.Join(waitCtx.Err(), err))
-		}
 		message := strings.ToLower(err.Error())
-		transient := strings.Contains(message, "forbiddenbyrbac") ||
-			strings.Contains(message, "caller is not authorized to perform action") ||
+		forbidden := strings.Contains(message, "forbiddenbyrbac") ||
+			strings.Contains(message, "caller is not authorized to perform action")
+		if waitCtx.Err() != nil {
+			return a.vaultAccessError(waitCtx.Err(), err, forbidden)
+		}
+		transient := forbidden ||
 			strings.Contains(message, "name or service not known") ||
 			strings.Contains(message, "temporary failure in name resolution") ||
 			strings.Contains(message, "nodename nor servname provided, or not known") ||
@@ -165,10 +166,22 @@ func (a App) waitDatabaseVaultAccess(ctx context.Context, interval, timeout time
 		}
 		select {
 		case <-waitCtx.Done():
-			return fmt.Errorf("waiting for database Key Vault access: %w", errors.Join(waitCtx.Err(), err))
+			return a.vaultAccessError(waitCtx.Err(), err, forbidden)
 		case <-time.After(interval):
 		}
 	}
+}
+
+// vaultAccessError names the missing grant when access was still denied at the
+// deadline: only aks.operator is granted the vault.
+func (a App) vaultAccessError(deadline, last error, forbidden bool) error {
+	err := fmt.Errorf("waiting for database Key Vault access: %w", errors.Join(deadline, last))
+	if !forbidden {
+		return err
+	}
+	operator := a.Config.AKS.Operator
+	return fmt.Errorf("the signed-in Azure identity needs Key Vault Secrets Officer on vault %s, which this installation grants only to aks.operator %s (%s); "+
+		"sign in as that identity, or as a member if it is a group: %w", a.Config.databaseVaultName(), operator.ObjectID, operator.PrincipalType, err)
 }
 
 func newDatabaseSecrets(c Config) (databaseSecrets, error) {
@@ -296,6 +309,30 @@ func (a App) databaseEnvironment(ctx context.Context) ([]string, error) {
 	}, nil
 }
 
+// databaseRedactions lists the connection strings in env and the passwords they
+// contain, in raw and URL-encoded forms.
+func databaseRedactions(env []string) []string {
+	var values []string
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		if !strings.HasSuffix(key, "_CONNECTION_STRING") {
+			continue
+		}
+		values = append(values, value)
+		if u, err := url.Parse(value); err == nil && u.User != nil {
+			if password, ok := u.User.Password(); ok {
+				values = append(values, passwordRedactions(password)...)
+			}
+		}
+	}
+	return values
+}
+
+func passwordRedactions(password string) []string {
+	return []string{password, url.QueryEscape(password), url.PathEscape(password),
+		strings.TrimPrefix(url.UserPassword("", password).String(), ":")}
+}
+
 func (a App) bootstrapDatabase(ctx context.Context, root string, db *DatabaseInfrastructure) (resultErr error) {
 	if db == nil {
 		return nil
@@ -335,9 +372,15 @@ func (a App) bootstrapDatabase(ctx context.Context, root string, db *DatabaseInf
 	if err != nil {
 		return err
 	}
+	// create, unlike apply, keeps no plaintext copy in a last-applied annotation;
+	// cleanup has already removed any leftovers.
+	var redact []string
+	for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
+		redact = append(redact, passwordRedactions(password)...)
+	}
 	if _, err := a.Runner.Run(ctx, Command{
-		Args:  []string{"kubectl", "--kubeconfig", a.kubeconfig(), "--context", a.Config.AKS.ClusterName, "apply", "-f", "-"},
-		Input: input, SensitiveOutput: true,
+		Args:  []string{"kubectl", "--kubeconfig", a.kubeconfig(), "--context", a.Config.AKS.ClusterName, "create", "-f", "-"},
+		Input: input, Redact: redact,
 	}); err != nil {
 		return err
 	}

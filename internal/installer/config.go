@@ -39,7 +39,8 @@ type Config struct {
 	Azure        AzureConfig        `json:"azure"`
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
-	Database     DatabaseConfig     `json:"database"`
+	// Only managed PostgreSQL records include database.
+	Database DatabaseConfig `json:"database,omitzero"`
 }
 
 type DatabaseBackend string
@@ -73,12 +74,21 @@ func (d DatabaseConfig) ComputeSKU() DatabaseSKU {
 	return d.SKU
 }
 
-// WithDefaults fills the SKU of a managed database that doesn't choose one.
+// WithDefaults fills the SKU of a managed database that doesn't choose one,
+// and returns bundled PostgreSQL in its single, zero form.
 func (d DatabaseConfig) WithDefaults() DatabaseConfig {
+	if d.IsZero() {
+		return DatabaseConfig{}
+	}
 	if d.Backend != "" && d.Backend != DatabaseBundled {
 		d.SKU = d.ComputeSKU()
 	}
 	return d
+}
+
+// IsZero reports bundled PostgreSQL, which needs no database section.
+func (d DatabaseConfig) IsZero() bool {
+	return (d.Backend == "" || d.Backend == DatabaseBundled) && d.Location == "" && d.SKU == (DatabaseSKU{})
 }
 
 func (c Config) ManagedDatabase() bool {
@@ -254,7 +264,6 @@ type RuntimeConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Installation: InstallationConfig{Ownership: Ownership{ResourceGroup: OwnershipCreated, Cluster: OwnershipCreated}},
-		Database:     DatabaseConfig{Backend: DatabaseBundled},
 		AKS: AKSConfig{
 			KubernetesVersion: "1.37",
 			WorkerPool: WorkerPoolConfig{VMSize: DefaultWorkerVMSize, Count: 1,

@@ -102,7 +102,8 @@ module resources 'resources.bicep' = if (!registryOnly) {
     databaseLocation: databaseLocation
     databaseSkuName: databaseSkuName
     databaseSkuTier: databaseSkuTier
-    databaseAdminPassword: databaseBackend == 'bundled' ? '' : json(databaseCredentials).admin
+    // Registry-only deployments have no credentials; never parse an empty value.
+    databaseAdminPassword: registryOnly || databaseBackend == 'bundled' ? '' : json(databaseCredentials).admin
   }
 }
 

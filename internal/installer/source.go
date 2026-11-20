@@ -223,7 +223,7 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 	}
 	a.progress("Deploying %s and waiting for workloads to become ready (up to 10 minutes per rollout)", strings.Join(args[1:], " "))
 	_, err = a.Runner.Run(ctx, Command{
-		Dir: root, Args: command, Env: env, SensitiveOutput: c.ManagedDatabase(),
+		Dir: root, Args: command, Env: env, Redact: databaseRedactions(databaseEnv),
 	})
 	return err
 }

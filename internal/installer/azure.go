@@ -328,11 +328,13 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		}
 	}
 	if c.ManagedDatabase() && !registryOnly {
+		// No password reaches this command: the parameters carry a Key Vault
+		// reference (or a preview placeholder), and ARM never returns secure values.
+		// Its output stays logged so deployment failures keep their cause.
 		data, err = a.Runner.Run(ctx, Command{
-			Args:            append([]string{"az"}, append(args, "--subscription", c.Azure.SubscriptionID, "--only-show-errors", "--output", "json")...),
-			Input:           input,
-			Env:             databaseCommandEnvironment,
-			SensitiveOutput: !whatIf,
+			Args:  append([]string{"az"}, append(args, "--subscription", c.Azure.SubscriptionID, "--only-show-errors", "--output", "json")...),
+			Input: input,
+			Env:   databaseCommandEnvironment,
 		})
 	} else {
 		data, err = a.az(ctx, args...)

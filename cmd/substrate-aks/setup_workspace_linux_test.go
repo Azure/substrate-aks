@@ -590,7 +590,7 @@ func testWorkspacePTYConfigurationInputAndRegionFilter(t *testing.T, width, heig
 	p.until(t, "Continue with this billable")
 	c, err := installer.LoadInstallation(recordHome(path), "guided-local-pty-test-edited")
 	if err != nil || c.Azure.ResourceGroup != "guided-local-pty-test-edited" || c.Azure.Location != "southcentralus" ||
-		c.Azure.SnapshotReaderObjectID != "" || c.Database.Backend != installer.DatabaseBundled {
+		c.Azure.SnapshotReaderObjectID != "" || c.ManagedDatabase() {
 		t.Fatalf("visible input did not match saved answers: %s %s %v", c.Azure.ResourceGroup, c.Azure.Location, err)
 	}
 	p.send(t, "\x03\x03")

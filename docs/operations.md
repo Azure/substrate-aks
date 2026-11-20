@@ -461,7 +461,8 @@ Long-duration credential refresh remains a validation gap.
 | `--verbose` | Underlying commands and build output, in standalone commands and accessible setup |
 
 Each command writes its full log to disk, including commands, output, and step
-markers; output marked sensitive is never logged. In the workspace, `l` shows a
+markers; output marked sensitive is never logged. Managed PostgreSQL passwords
+and connection strings are replaced with `[redacted]` in logs and error messages. In the workspace, `l` shows a
 sanitized tail of the current log so subprocess output never overwrites a form
 or approval. For an append-only transcript, use `setup --accessible --verbose`.
 

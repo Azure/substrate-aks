@@ -202,8 +202,15 @@ func TestManagedBicepVaultContract(t *testing.T) {
 	if err := json.Unmarshal(main, &root); err != nil {
 		t.Fatal(err)
 	}
-	forwarded := false
+	forwarded, guarded := false, false
 	for _, module := range root.Resources {
+		if strings.Contains(module.Name, "substrate-aks-") {
+			// Registry-only deployments pass no credentials, so the bundle must not be parsed.
+			var password string
+			guarded = json.Unmarshal(module.Properties.Parameters["databaseAdminPassword"], &password) == nil &&
+				password == "[if(or(parameters('registryOnly'), equals(parameters('databaseBackend'), 'bundled')), "+
+					"createObject('value', ''), createObject('value', json(parameters('databaseCredentials')).admin))]"
+		}
 		if !strings.Contains(module.Name, "substrate-vault-") {
 			continue
 		}
@@ -220,6 +227,9 @@ func TestManagedBicepVaultContract(t *testing.T) {
 	}
 	if !forwarded {
 		t.Fatal("main template no longer deploys the database vault module")
+	}
+	if !guarded {
+		t.Fatal("the database credential bundle is parsed even when no credentials are supplied")
 	}
 }
 

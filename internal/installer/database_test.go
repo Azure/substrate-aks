@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,35 @@ func TestDatabaseSelectionValidationAndLegacyDefault(t *testing.T) {
 	c.Database = DatabaseConfig{Backend: DatabaseFlexible, Location: "invalid region"}
 	if c.Validate() == nil {
 		t.Fatal("managed database accepted an invalid region")
+	}
+}
+
+func TestBundledRecordsOmitTheDatabaseSection(t *testing.T) {
+	managed, _ := managedTestConfig(t, DatabaseFlexible)
+	for _, tc := range []struct {
+		name string
+		c    Config
+		want bool
+	}{
+		{"default", testConfig(t), false},
+		{"explicit bundled", func() Config { c := testConfig(t); c.Database.Backend = DatabaseBundled; return c }(), false},
+		{"managed", managed, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Builds before managed PostgreSQL reject a record with an unknown database field.
+			data, err := json.Marshal(tc.c)
+			if err != nil || bytes.Contains(data, []byte(`"database"`)) != tc.want {
+				t.Fatalf("database section present=%v, want %v: %v", !tc.want, tc.want, err)
+			}
+			path := filepath.Join(t.TempDir(), "installation.json")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadConfig(path)
+			if err != nil || databaseBackend(loaded) != databaseBackend(tc.c) {
+				t.Fatalf("record did not round-trip its backend: %+v, %v", loaded.Database, err)
+			}
+		})
 	}
 }
 
@@ -345,6 +375,18 @@ func TestDatabaseVaultAccessWaitIsBounded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pending) {
 		t.Fatalf("wait did not preserve the deadline and underlying access error: %v", err)
 	}
+	// Denied access names the missing grant and who holds it.
+	for _, want := range []string{"Key Vault Secrets Officer", c.databaseVaultName(), c.AKS.Operator.ObjectID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("access error does not mention %q: %v", want, err)
+		}
+	}
+	unreachable := errors.New("temporary failure in name resolution")
+	r = script(t, reply{contains: "keyvault secret list", err: unreachable})
+	err = (App{Config: c, Runner: r}).waitDatabaseVaultAccess(t.Context(), time.Hour, time.Millisecond)
+	if !errors.Is(err, unreachable) || strings.Contains(err.Error(), "Secrets Officer") {
+		t.Fatalf("a DNS wait was reported as a missing grant: %v", err)
+	}
 }
 
 func TestManagedProvisionWaitsForVaultAccessBeforeCredentials(t *testing.T) {
@@ -417,8 +459,9 @@ func TestManagedProvisionSecretTransportAndRegistryExclusion(t *testing.T) {
 					t.Fatal(err)
 				}
 				last := r.calls[len(r.calls)-1]
-				if last.SensitiveOutput == registry {
-					t.Fatal("incorrect protection for secret-bearing provisioning command")
+				// The deployment never carries a password, so its errors stay visible.
+				if last.SensitiveOutput {
+					t.Fatal("provisioning hides Azure's deployment errors")
 				}
 				for _, call := range r.calls {
 					if !strings.Contains(strings.Join(call.Args, " "), c.deploymentName()+"-vault") {
@@ -596,9 +639,20 @@ func TestManagedUpstreamUsesExplicitSecretEnvironment(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := r.calls[len(r.calls)-1]
-			if !cmd.SensitiveOutput || !strings.Contains(strings.Join(cmd.Env, "\n"), "ATE_API_POSTGRES_OWNER_CONNECTION_STRING=") ||
+			if cmd.SensitiveOutput || !strings.Contains(strings.Join(cmd.Env, "\n"), "ATE_API_POSTGRES_OWNER_CONNECTION_STRING=") ||
 				!strings.Contains(strings.Join(cmd.Env, "\n"), "sslmode=verify-full") {
-				t.Fatal("upstream lost external database settings or output protection")
+				t.Fatal("upstream lost external database settings, or hides rollout failures")
+			}
+			// Rollout output is logged, so both DSNs and their passwords must be redacted.
+			for _, entry := range cmd.Env {
+				if key, value, _ := strings.Cut(entry, "="); strings.HasSuffix(key, "_CONNECTION_STRING") && !slices.Contains(cmd.Redact, value) {
+					t.Fatalf("upstream does not redact %s", key)
+				}
+			}
+			for _, password := range []string{s.Owner, s.ReadWrite} {
+				if !slices.Contains(cmd.Redact, password) || !slices.Contains(cmd.Redact, url.QueryEscape(password)) {
+					t.Fatal("upstream does not redact a database password")
+				}
 			}
 			for _, secret := range []string{s.Admin, s.Owner, s.ReadWrite} {
 				if strings.Contains(strings.Join(cmd.Args, " "), secret) {
@@ -642,7 +696,7 @@ func TestDatabaseBootstrapFailureCleansSecretsAndDoesNotSucceed(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := databaseTestRunner(t, c, true, reply{contains: "apply -f -"}, reply{contains: "delete job/"},
-		reply{contains: "apply -f -"}, reply{contains: "apply -f -"},
+		reply{contains: "create -f -"}, reply{contains: "apply -f -"},
 		reply{contains: "get job substrate-aks-postgres-bootstrap",
 			output: `{"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}`},
 		reply{contains: "describe job"},
@@ -652,8 +706,18 @@ func TestDatabaseBootstrapFailureCleansSecretsAndDoesNotSucceed(t *testing.T) {
 		t.Fatalf("bootstrap failure was hidden: %v", err)
 	}
 	secretCall := r.calls[4]
-	if !secretCall.SensitiveOutput || !bytes.Contains(secretCall.Input, []byte("PGPASSWORD")) {
-		t.Fatal("bootstrap secret transport is not protected")
+	// create leaves no last-applied annotation holding a second plaintext copy.
+	if !slices.Contains(secretCall.Args, "create") || !bytes.Contains(secretCall.Input, []byte("PGPASSWORD")) {
+		t.Fatalf("bootstrap secret is not created from stdin: %v", secretCall.Args)
+	}
+	s, err := a.databaseCredentials(t.Context(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, password := range []string{s.Admin, s.Owner, s.ReadWrite} {
+		if !slices.Contains(secretCall.Redact, password) {
+			t.Fatal("bootstrap secret command does not redact a password")
+		}
 	}
 	for _, cmd := range r.calls {
 		if strings.Contains(strings.Join(cmd.Args, " "), "logs") {
