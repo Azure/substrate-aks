@@ -236,7 +236,8 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		"$filter":     {"location eq '" + strings.ReplaceAll(a.Config.Azure.Location, "'", "''") + "'"},
 	}
 	next := endpoint + "?" + params.Encode()
-	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='%s' || name=='%s')],nextLink:nextLink}", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.WorkerPool.VMSize)
+	// JMESPath compares strings case-sensitively; cloudSKU matches names with EqualFold.
+	query := "{value:value[?resourceType=='virtualMachines'],nextLink:nextLink}"
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {

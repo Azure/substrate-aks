@@ -11,6 +11,7 @@ import (
 
 const allCloudPermissions = `{"value":[{"actions":["*"],"notActions":[]}]}`
 const availableAKS = `{"values":[{"version":"1.37","patchVersions":{"1.37.2":{}}}]}`
+const skuCatalogQuery = "{value:value[?resourceType=='virtualMachines'],nextLink:nextLink}"
 
 func skuReply(size string) reply {
 	return reply{contains: "/providers/Microsoft.Compute/skus?", output: fmt.Sprintf(
@@ -139,8 +140,8 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 	replies[5].output = strings.TrimSuffix(system.output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
 	replies[5].effect = func(command Command) {
 		args := strings.Join(command.Args, " ")
-		if !strings.Contains(args, "name=='Standard_F4s_v6'") || !strings.Contains(args, "name=='Standard_D8s_v6'") {
-			t.Fatalf("regional catalog query omitted one of the pool SKUs: %s", args)
+		if !slices.Contains(command.Args, skuCatalogQuery) {
+			t.Fatalf("regional catalog query does not return every VM SKU for local name matching: %s", args)
 		}
 		index := slices.Index(command.Args, "--url")
 		if index < 0 || index+1 >= len(command.Args) {
@@ -176,6 +177,27 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 				t.Fatalf("both pool SKU checks: %v (want %q)", err, tc.want)
 			}
 		})
+	}
+}
+
+// Validation accepts any VM size casing, but JMESPath string comparison is
+// case-sensitive, so the catalog query must leave name matching to Go.
+func TestCloudPreflightMatchesSKUNamesCaseInsensitively(t *testing.T) {
+	c := testConfig(t)
+	c.AKS.SystemPool.VMSize = "Standard_d4S_V6"
+	c.AKS.WorkerPool.VMSize = "Standard_d8s_v6"
+	replies := cloudReplies(c)
+	worker := skuReply("Standard_D8s_v6")
+	worker.output = strings.Replace(worker.output, `"value":"4"`, `"value":"8"`, 1)
+	replies[5].output = strings.TrimSuffix(replies[5].output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
+	replies[5].effect = func(command Command) {
+		if !slices.Contains(command.Args, skuCatalogQuery) {
+			t.Fatalf("regional catalog query filters VM sizes case-sensitively: %s", strings.Join(command.Args, " "))
+		}
+	}
+	replies[6].output = `[{"name":{"value":"cores"},"currentValue":0,"limit":12},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":12}]`
+	if err := (App{Config: c, Runner: script(t, replies...)}).CloudPreflight(t.Context()); err != nil {
+		t.Fatalf("differently cased VM sizes: %v", err)
 	}
 }
 
