@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/x/term"
@@ -29,6 +30,8 @@ type setupOptions struct {
 	contextFile                                                 string
 	skipContextHandoff                                          bool
 	client                                                      *installer.ClientSetup
+	// now reads the clock for setup timings; nil means time.Now.
+	now func() time.Time
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -67,7 +70,10 @@ func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Wri
 	return setupFlow(ctx, o, in, out, stderr, execute)
 }
 
-func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
+func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) (resultErr error) {
+	timing := newSetupTimingRun(o.now)
+	ctx = installer.WithTimings(ctx, timing.timings)
+	defer func() { resultErr = timing.finish(resultErr) }()
 	if file, ok := in.(*os.File); !o.yes && ok && !term.IsTerminal(file.Fd()) {
 		return errors.New("setup needs an interactive terminal; use --yes with a complete configuration for automation")
 	}
@@ -408,9 +414,11 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			teardownCommand(o.name, c.Azure.ResourceGroup))
 	}
 	activePhase := ""
+	timing.config = &c
 	stage := func(label, command string, flags ...string) error {
+		phase := setupPhase(command, flags)
+		timing.timings.Phase(phase, setupPhaseTitle(phase))
 		if ui.session != nil {
-			phase := setupPhase(command, flags)
 			if phase != activePhase {
 				activePhase = phase
 				ui.session.send(setupPhaseMsg(phase))
@@ -440,7 +448,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			if ui.session != nil {
 				stageOut, stageErr = io.Discard, io.Discard
 			}
-			work := func() error { return execute(ctx, args, stageOut, stageErr) }
+			work := func() error {
+				stop := timing.timings.Stage(setupStageID(command, flags), label)
+				err := execute(ctx, args, stageOut, stageErr)
+				stop(err)
+				return err
+			}
 			var err error
 			if ui.session != nil {
 				items := setupStageChecks(label, command, flags)
@@ -497,6 +510,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		return stopped("Kubernetes context handoff", handoff, err)
 	}
 	steps := newSetupReceiptUI(ctx, out)
+	timing.receipt = steps
 	ui.complete(c.AKS.ClusterName, o.withDemo)
 	if ui.session != nil {
 		steps.complete(c.AKS.ClusterName, o.withDemo)

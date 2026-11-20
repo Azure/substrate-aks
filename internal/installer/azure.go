@@ -261,7 +261,9 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	} else {
 		a.progress("Creating or reconciling AKS, registry, storage and identities; this can take several minutes")
 	}
+	stop := a.step(ctx, deploymentStep(whatIf, registryOnly))
 	data, err = a.az(ctx, args...)
+	stop(err)
 	if err != nil {
 		return err
 	}
@@ -269,6 +271,17 @@ func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 		return a.showPlan(data)
 	}
 	return nil
+}
+
+func deploymentStep(whatIf, registryOnly bool) string {
+	id := "infrastructure."
+	if registryOnly {
+		id += "registry_"
+	}
+	if whatIf {
+		return id + "what_if"
+	}
+	return id + "deployment"
 }
 
 func (a App) showPlan(data []byte) error {

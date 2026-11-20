@@ -77,7 +77,10 @@ func (a App) Check(ctx context.Context) error {
 		return err
 	}
 	if a.Config.AKS.Operator != nil {
-		if err := a.waitOperatorAccess(ctx); err != nil {
+		stop := a.step(ctx, "cluster.operator_access_wait")
+		err := a.waitOperatorAccess(ctx)
+		stop(err)
+		if err != nil {
 			return err
 		}
 	}
@@ -154,7 +157,10 @@ func (a App) checkCluster(ctx context.Context) error {
 		}
 	}
 	a.progress("Waiting for cluster nodes to be ready (up to 5 minutes)")
-	if _, err := a.kubectl(ctx, nil, "wait", "node", "--all", "--for=condition=Ready", "--timeout=300s"); err != nil {
+	stop := a.step(ctx, "cluster.nodes_ready")
+	_, err = a.kubectl(ctx, nil, "wait", "node", "--all", "--for=condition=Ready", "--timeout=300s")
+	stop(err)
+	if err != nil {
 		return err
 	}
 	a.progress("Checking node architecture, version and microVM pool size")
@@ -284,7 +290,9 @@ func (a App) checkKVM(ctx context.Context) (err error) {
 	if _, err := a.kubectl(ctx, []byte(kvmProbe), "apply", "-f", "-"); err != nil {
 		return err
 	}
+	stop := a.step(ctx, "cluster.kvm_probe_rollout")
 	_, err = a.kubectl(ctx, nil, "rollout", "status", "daemonset/substrate-aks-kvm-probe", "--namespace=kube-system", "--timeout=180s")
+	stop(err)
 	if err != nil {
 		_, diagnosticErr := a.kubectl(ctx, nil, "describe", "pods", "--namespace=kube-system", "--selector=app=substrate-aks-kvm-probe")
 		_, logsErr := a.kubectl(ctx, nil, "logs", "--namespace=kube-system", "--selector=app=substrate-aks-kvm-probe", "--all-containers=true", "--tail=40")
@@ -397,7 +405,10 @@ func (a App) Install(ctx context.Context, component string) error {
 	if err := a.checkKVM(ctx); err != nil {
 		return err
 	}
-	if err := a.uploadAssets(ctx, i, blobs); err != nil {
+	stop := a.step(ctx, "install.assets_upload")
+	err = a.uploadAssets(ctx, i, blobs)
+	stop(err)
+	if err != nil {
 		return err
 	}
 	a.progress("Recording the installation checkpoint")
