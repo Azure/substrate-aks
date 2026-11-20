@@ -36,6 +36,10 @@ type App struct {
 	Progress           func(string, ...any)
 	Preview            func([]ResourceChange) error
 	ImageCheckProgress func(name string, done bool, err error)
+
+	// importWorkers overrides how many release images import at once; tests
+	// set it, and zero means the default.
+	importWorkers int
 }
 
 type ResourceChange struct {

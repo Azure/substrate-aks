@@ -302,7 +302,7 @@ func TestTimingReportOmitsPrivateIdentifiers(t *testing.T) {
 	replies = append(replies, extraImageReplies(c, c.Substrate.Source.Tag)...)
 	r := script(t, replies...)
 	assetsDir := filepath.Join(c.workspace(), "assets")
-	if _, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}, ContainerEngine: "docker"}).BuildImages(ctx); err != nil {
+	if _, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}, ContainerEngine: "docker", importWorkers: 1}).BuildImages(ctx); err != nil {
 		t.Fatal(err)
 	}
 	stop(nil)

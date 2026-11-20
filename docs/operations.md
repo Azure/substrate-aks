@@ -199,8 +199,9 @@ region. `plan` runs a Bicep what-if and deploys nothing.
 
 **Release images.** By default, `images` checks that every image upstream
 published for the pinned release is labelled as built from the pinned commit,
-then imports each one into ACR by digest with `az acr import`. It builds the
-counter demo image, which releases do not publish, and the Azure Blob plugin
+then imports each one into ACR by digest with `az acr import`, up to four at a
+time, and verifies each imported digest. It attempts every image and reports
+all failures together. It builds the counter demo image, which releases do not publish, and the Azure Blob plugin
 image with ko. Neither needs Docker or Podman. Importing uses the upload
 identity's `Container Registry Data Importer and Data Reader` grant. It writes
 images only through import, as `AcrPush` already allows, and cannot change the
@@ -417,6 +418,9 @@ Each command writes its full log to disk, including commands, output, and step
 markers; output marked sensitive is never logged. In the workspace, `l` shows a
 sanitized tail of the current log so subprocess output never overwrites a form
 or approval. For an append-only transcript, use `setup --accessible --verbose`.
+Release image imports run concurrently, so their log and verbose output arrives
+in blocks: one `[image NAME]` block per image, in inventory order, after that
+image finishes.
 
 The timing report is written once setup's stages begin. It gives each phase,
 stage attempt, and step a UTC start and end, a wall time, and an active time
