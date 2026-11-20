@@ -60,6 +60,14 @@ type setupTargetMsg struct {
 // setupSubscriptionMsg names a subscription once Azure discovery has read it.
 type setupSubscriptionMsg struct{ id, name string }
 type setupPhaseMsg string
+
+// setupBackgroundMsg reports a stage of phase running alongside later phases:
+// started, or done with its result.
+type setupBackgroundMsg struct {
+	phase string
+	done  bool
+	err   error
+}
 type setupStepMsg string
 type setupChecklistMsg struct {
 	title string
@@ -133,7 +141,7 @@ func setupStageChecks(label, command string, flags []string) []string {
 func setupPhases(c installer.Config, withDemo bool) []string {
 	phases := []string{"prepare"}
 	for _, stage := range setupStages(c, withDemo) {
-		phase := setupPhase(stage.command, stage.flags)
+		phase := stage.phaseID()
 		if !slices.Contains(phases, phase) {
 			phases = append(phases, phase)
 		}

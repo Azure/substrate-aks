@@ -419,7 +419,7 @@ func (a App) importImages(ctx context.Context, r Registry, prefix, tag string, i
 	}
 	workers = max(1, min(workers, maxImportWorkers, len(inventory)))
 	a.progress("Importing %d release images into %s, up to %d at a time", len(inventory), r.LoginServer, workers)
-	stop := TimingsFrom(ctx).StepWorkers("images.imports", workers)
+	stop := timingStep(ctx, "images.imports", workers)
 	err := a.runImports(ctx, r, prefix, tag, inventory, workers)
 	stop(err)
 	return err

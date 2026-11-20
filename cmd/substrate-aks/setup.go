@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ type setupOptions struct {
 	client                                                      *installer.ClientSetup
 	// now reads the clock for setup timings; nil means time.Now.
 	now func() time.Time
+	// backgroundStarted, if set, is called when a stage starts in the
+	// background, with a channel closed once its result is known. Tests
+	// synchronize with it.
+	backgroundStarted func(done <-chan struct{})
 }
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -39,28 +44,81 @@ type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
 type setupStage struct {
 	label, command string
 	flags          []string
+	// phase overrides the phase derived from command and flags.
+	phase string
+	// background runs the stage alongside the stages after it, which start
+	// without waiting for it. The next stage with join waits for it.
+	background, join bool
+}
+
+// phaseID returns the setup phase the stage belongs to.
+func (s setupStage) phaseID() string {
+	if s.phase != "" {
+		return s.phase
+	}
+	return setupPhase(s.command, s.flags)
+}
+
+// setupSerialEnv names the diagnostic setting that runs every setup stage in
+// order, as before image publishing overlapped AKS provisioning.
+const setupSerialEnv = "SUBSTRATE_AKS_SERIAL_SETUP"
+
+// setupSerial reports whether setupSerialEnv asks for serial order. An unset
+// or unparsable value means overlap; note then describes a value that did not
+// parse, or confirms serial order, so the diagnostic never fails silently.
+func setupSerial() (serial bool, note string) {
+	value, ok := os.LookupEnv(setupSerialEnv)
+	if !ok || value == "" {
+		return false, ""
+	}
+	serial, err := strconv.ParseBool(value)
+	switch {
+	case err != nil:
+		return false, fmt.Sprintf("%s=%q is not a Boolean such as true, false, 1 or 0, so it is ignored: images publish while AKS is provisioned.", setupSerialEnv, value)
+	case serial:
+		return true, fmt.Sprintf("%s is set: images publish and are verified before AKS is previewed, one stage at a time (diagnostic).", setupSerialEnv)
+	}
+	return false, ""
 }
 
 func setupStages(c installer.Config, withDemo bool) []setupStage {
 	var stages []setupStage
-	if c.Substrate.Images == (installer.ImagesConfig{}) {
+	fresh := c.Substrate.Images == (installer.ImagesConfig{})
+	serial, _ := setupSerial()
+	if fresh {
 		stages = append(stages,
-			setupStage{"Preview registry bootstrap", "plan", []string{"--registry-only"}},
-			setupStage{"Provision the private registry", "provision", []string{"--registry-only"}},
-			setupStage{"Publish images and prepare runtime assets", "images", nil})
+			setupStage{label: "Preview registry bootstrap", command: "plan", flags: []string{"--registry-only"}},
+			setupStage{label: "Provision the private registry", command: "provision", flags: []string{"--registry-only"}})
+	}
+	publish := setupStage{label: "Publish images and prepare runtime assets", command: "images"}
+	verify := setupStage{label: "Verify configured images before provisioning AKS", command: "images", flags: []string{"--check"}}
+	cluster := []setupStage{
+		{label: "Preview full infrastructure", command: "plan"},
+		{label: "Provision AKS, storage, and identities", command: "provision"},
+		{label: "Check cluster compatibility", command: "check"},
+	}
+	switch {
+	case fresh && !serial:
+		// Images need only the registry, so they publish while AKS is
+		// previewed, approved and provisioned, and are verified just before
+		// Substrate needs them.
+		publish.background = true
+		verify = setupStage{label: "Verify published images before installing Substrate", command: "images",
+			flags: []string{"--check"}, phase: "substrate", join: true}
+		stages = append(append(append(stages, publish), cluster...), verify)
+	case fresh:
+		stages = append(append(stages, publish, verify), cluster...)
+	default:
+		stages = append(append(stages, verify), cluster...)
 	}
 	stages = append(stages,
-		setupStage{"Verify configured images before provisioning AKS", "images", []string{"--check"}},
-		setupStage{"Preview full infrastructure", "plan", nil},
-		setupStage{"Provision AKS, storage, and identities", "provision", nil},
-		setupStage{"Check cluster compatibility", "check", nil},
-		setupStage{"Prepare Azure deployment manifests", "prepare", nil},
-		setupStage{"Install Substrate and runtime assets", "install", nil},
-		setupStage{"Inspect workload status", "status", nil})
+		setupStage{label: "Prepare Azure deployment manifests", command: "prepare"},
+		setupStage{label: "Install Substrate and runtime assets", command: "install"},
+		setupStage{label: "Inspect workload status", command: "status"})
 	if withDemo {
-		stages = append(stages, setupStage{"Deploy and warm the counter microVM demo", "demo", nil})
+		stages = append(stages, setupStage{label: "Deploy and warm the counter microVM demo", command: "demo"})
 	}
-	return append(stages, setupStage{"Set up kubectl and the matching kubectl-ate", "client", nil})
+	return append(stages, setupStage{label: "Set up kubectl and the matching kubectl-ate", command: "client"})
 }
 
 func setup(ctx context.Context, o setupOptions, in io.Reader, out, stderr io.Writer, execute commandRunner) error {
@@ -393,6 +451,9 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	// Each stage writes its own installation log from here on.
 	ui.log = nil
 	stages := setupStages(c, o.withDemo)
+	if _, note := setupSerial(); note != "" && c.Substrate.Images == (installer.ImagesConfig{}) {
+		ui.note(note)
+	}
 	stopped := func(label string, args []string, err error) error {
 		reconcile := []string{"setup", o.name}
 		if o.containerEngine != "" {
@@ -414,25 +475,29 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 			teardownCommand(o.name, c.Azure.ResourceGroup))
 	}
 	activePhase := ""
-	timing.config = &c
-	stage := func(label, command string, flags ...string) error {
-		phase := setupPhase(command, flags)
-		timing.timings.Phase(phase, setupPhaseTitle(phase))
-		if ui.session != nil {
-			if phase != activePhase {
-				activePhase = phase
-				ui.session.send(setupPhaseMsg(phase))
-				var items []string
-				for _, planned := range stages {
-					if setupPhase(planned.command, planned.flags) == phase {
-						items = append(items, setupStageChecks(planned.label, planned.command, planned.flags)...)
-					}
-				}
-				ui.checklist(setupPhaseTitle(phase), items...)
+	// phaseDone lists the checks of the active phase that have finished, to
+	// restore its checklist after a background stage is retried.
+	var phaseDone []string
+	phaseChecks := func(phase string) []string {
+		var items []string
+		for _, planned := range stages {
+			if planned.phaseID() == phase {
+				items = append(items, setupStageChecks(planned.label, planned.command, planned.flags)...)
 			}
-		} else {
-			ui.section(label)
 		}
+		return items
+	}
+	timing.config = &c
+	// bg is the background stage that has not been joined yet. While it
+	// runs, setup holds the installation lock for every stage command.
+	var bg *setupBackground
+	stageCtx := func() context.Context {
+		if bg != nil {
+			return installer.WithHeldLock(ctx, c)
+		}
+		return ctx
+	}
+	stageArgs := func(command string, flags []string) []string {
 		args := append([]string{command, o.name}, flags...)
 		if o.containerEngine != "" && c.Substrate.Images == (installer.ImagesConfig{}) && (command == "doctor" || command == "images") {
 			args = append(args, "--container-engine", o.containerEngine)
@@ -440,7 +505,24 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 		if o.verbose {
 			args = append(args, "--verbose")
 		}
+		return args
+	}
+	// attempt runs a stage until it succeeds, offering a retry after each
+	// failure. A non-nil failed starts at the retry offer.
+	attempt := func(label, command string, flags, args []string, failed error) error {
 		for {
+			if failed != nil {
+				if o.yes || ctx.Err() != nil || installer.Interrupted(failed) {
+					return stopped(label, args, failed)
+				}
+				if ui.session == nil {
+					ui.warning(failed.Error())
+				}
+				retry, promptErr := prompt.confirm(ctx, "Retry this stage with the same settings?", false)
+				if promptErr != nil || !retry {
+					return stopped(label, args, errors.Join(failed, promptErr))
+				}
+			}
 			if err := ctx.Err(); err != nil {
 				return stopped(label, args, err)
 			}
@@ -449,8 +531,8 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				stageOut, stageErr = io.Discard, io.Discard
 			}
 			work := func() error {
-				stop := timing.timings.Stage(setupStageID(command, flags), label)
-				err := execute(ctx, args, stageOut, stageErr)
+				runCtx, stop := timing.timings.StageContext(stageCtx(), setupStageID(command, flags), label)
+				err := execute(runCtx, args, stageOut, stageErr)
 				stop(err)
 				return err
 			}
@@ -466,32 +548,164 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				err = work()
 			}
 			if err == nil {
-				break
+				return nil
 			}
-			if o.yes || ctx.Err() != nil || errors.Is(err, context.Canceled) {
-				return stopped(label, args, err)
-			}
+			failed = err
+		}
+	}
+	// join waits for the background stage, or with wait false only collects
+	// it if it has finished. It shows the stage's output, releases the lock
+	// and, after a failure, stops setup or retries the stage in the
+	// foreground.
+	join := func(wait bool) error {
+		if bg == nil || !wait && !bg.finished() {
+			return nil
+		}
+		b := bg
+		if !b.finished() {
 			if ui.session == nil {
-				ui.warning(err.Error())
-			}
-			retry, promptErr := prompt.confirm(ctx, "Retry this stage with the same settings?", false)
-			if promptErr != nil || !retry {
-				return stopped(label, args, errors.Join(err, promptErr))
+				ui.note("Waiting for image publishing to finish...")
+			} else {
+				ui.step("Waiting for image publishing to finish")
 			}
 		}
-		if command == "plan" && !o.yes {
+		err := b.wait()
+		bg = nil
+		b.close(ui, out, stderr)
+		if err == nil {
+			return nil
+		}
+		if o.yes || ctx.Err() != nil || installer.Interrupted(err) {
+			return stopped(b.stage.label, b.args, err)
+		}
+		if ui.session != nil {
+			// The checklist resets the body, so the warning that explains
+			// the retry offer follows it.
+			ui.checklist(b.stage.label, b.stage.label)
+			ui.warning(fmt.Sprintf("%s failed: %v", b.stage.label, err))
+		}
+		err = attempt(b.stage.label, b.stage.command, b.stage.flags, b.args, err)
+		if ui.session != nil {
+			if err == nil {
+				ui.session.send(setupBackgroundMsg{phase: b.stage.phaseID(), done: true})
+			}
+			ui.checklist(setupPhaseTitle(activePhase), phaseChecks(activePhase)...)
+			for _, name := range phaseDone {
+				ui.session.send(setupCheckMsg{name: name, done: true})
+			}
+		}
+		return err
+	}
+	// A stage that stops setup leaves no background work running: the
+	// background stage is cancelled and awaited, and any failure other than
+	// that cancellation is reported after the foreground one.
+	defer func() {
+		if bg == nil {
+			return
+		}
+		b := bg
+		bg = nil
+		b.cancel()
+		err := b.wait()
+		b.close(ui, out, stderr)
+		if err != nil && !cancellationOnly(err) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("%s also failed: %w\nRetry: %s", b.stage.label, err, cliCommand(b.args...)))
+		}
+	}()
+	enter := func(s setupStage) {
+		phase := s.phaseID()
+		timing.timings.Phase(phase, setupPhaseTitle(phase))
+		if ui.session != nil {
+			if phase != activePhase {
+				activePhase, phaseDone = phase, nil
+				ui.session.send(setupPhaseMsg(phase))
+				ui.checklist(setupPhaseTitle(phase), phaseChecks(phase)...)
+			}
+		} else {
+			ui.section(s.label)
+		}
+	}
+	var stage func(s setupStage) error
+	stage = func(s setupStage) error {
+		if !s.join {
+			enter(s)
+		}
+		args := stageArgs(s.command, s.flags)
+		if err := attempt(s.label, s.command, s.flags, args, nil); err != nil {
+			return err
+		}
+		phaseDone = append(phaseDone, setupStageChecks(s.label, s.command, s.flags)...)
+		if s.command == "plan" && !o.yes {
+			// A background failure is raised before the approval is used,
+			// so a declined retry submits nothing. Its output and retry
+			// follow the preview, so the preview runs again to sit next to
+			// its question; it deploys nothing. The result is checked again
+			// after an approval because images can fail while the prompt is
+			// open. Successful output waits.
+			imagesFailed := func() bool { return bg != nil && bg.finished() && bg.err != nil }
+			repreview := func() error {
+				if err := join(true); err != nil {
+					return err
+				}
+				if ui.session == nil {
+					ui.note("Previewing the infrastructure again, so the approval follows its preview.")
+				}
+				return stage(s)
+			}
+			if imagesFailed() {
+				return repreview()
+			}
 			accepted, err := prompt.confirm(ctx, "Apply these planned changes?", false)
 			if err != nil {
-				return stopped(label, args, err)
+				return stopped(s.label, args, err)
 			}
 			if !accepted {
-				return stopped(label, args, errors.New("no deployment was submitted for this stage"))
+				return stopped(s.label, args, errors.New("no deployment was submitted for this stage"))
+			}
+			if imagesFailed() {
+				return repreview()
 			}
 		}
 		return nil
 	}
 	for _, s := range stages {
-		if err := stage(s.label, s.command, s.flags...); err != nil {
+		if s.join {
+			// The wait for the background stage belongs to the joining
+			// stage's phase, not to the phase that ran alongside it.
+			enter(s)
+		}
+		if err := join(s.join); err != nil {
+			return err
+		}
+		if s.background {
+			enter(s)
+			b, err := startSetupBackground(ctx, c, timing.timings, s, stageArgs(s.command, s.flags), ui.session == nil, execute)
+			if err == nil {
+				bg = b
+				if o.backgroundStarted != nil {
+					o.backgroundStarted(b.done)
+				}
+				if ui.session != nil {
+					ui.session.send(setupCheckMsg{name: s.label})
+					ui.session.send(setupBackgroundMsg{phase: s.phaseID()})
+				} else {
+					ui.note("This stage continues in the background while setup provisions AKS; its output appears when it finishes.")
+				}
+				continue
+			}
+			// Another command holds the installation: run the stage in the
+			// foreground, which reports that and offers a retry.
+			if ui.session == nil {
+				ui.note(fmt.Sprintf("Running this stage in the foreground: %v", err))
+			}
+			args := stageArgs(s.command, s.flags)
+			if err := attempt(s.label, s.command, s.flags, args, nil); err != nil {
+				return err
+			}
+			phaseDone = append(phaseDone, s.label)
+			continue
+		}
+		if err := stage(s); err != nil {
 			return err
 		}
 		if s.command == "images" && len(s.flags) > 0 && s.flags[0] == "--check" {

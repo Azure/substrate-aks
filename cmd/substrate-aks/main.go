@@ -91,7 +91,7 @@ func main() {
 
 func reportCommandError(out io.Writer, err error) {
 	console := newConsole(out)
-	if errors.Is(err, context.Canceled) {
+	if installer.Interrupted(err) {
 		console.logger.Print("Stopped by user.")
 		if err.Error() != context.Canceled.Error() {
 			console.logger.Print(err)
@@ -328,7 +328,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	if err != nil {
 		return err
 	}
-	lock, err := installer.Lock(c)
+	// Guided setup may hold the lock for commands it runs concurrently.
+	lock, err := installer.LockFor(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -378,7 +379,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		if resultErr != nil {
 			fmt.Fprintf(log, "\n[error] %v\n", resultErr)
 			state := "failed"
-			if errors.Is(resultErr, context.Canceled) {
+			if installer.Interrupted(resultErr) {
 				state = "interrupted"
 			}
 			resultErr = fmt.Errorf("%s %s.\nLast step: %s\n%w\n\nDiagnostic log: %s", title, state, p.stage, resultErr, log.Name())

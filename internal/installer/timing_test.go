@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -367,5 +368,87 @@ func TestTimingReportOmitsPrivateIdentifiers(t *testing.T) {
 	}
 	if outcome := decoded.Phases[1].Stages[0].Steps[0].Outcome; outcome != TimingFailed || decoded.Outcome != TimingFailed {
 		t.Fatalf("the failed what-if was recorded as %s", outcome)
+	}
+}
+
+func TestTimingsBackgroundStageOverlapsLaterPhases(t *testing.T) {
+	clock := newFakeClock()
+	timings := NewTimings(clock.Now)
+	ctx := WithTimings(t.Context(), timings)
+	timings.Phase("prepare", "Preparation")
+	clock.Advance(time.Minute)
+	timings.Phase("images", "Images and assets")
+	timings.Stage("provision.registry_only", "Provision the registry")(nil)
+	bgCtx, stopBackground := timings.BackgroundStage(ctx, "images", "Publish images")
+	stopImports := timingStep(bgCtx, "images.imports", 4)
+	clock.Advance(time.Minute)
+	// The cluster phase starts while images publish; the images phase stays
+	// open and foreground steps stay in the foreground stage.
+	timings.Phase("cluster", "AKS cluster")
+	fgCtx, stopPlan := timings.StageContext(ctx, "plan", "Preview")
+	App{}.step(fgCtx, "infrastructure.what_if")(nil)
+	timings.Step("infrastructure.current")(nil)
+	stopPlan(nil)
+	endWait := timings.Wait()
+	clock.Advance(2 * time.Minute) // an approval prompt
+	endWait()
+	stopProvision := timings.Stage("provision", "Provision AKS")
+	clock.Advance(time.Minute)
+	stopImports(nil)
+	stopBackground(nil)
+	clock.Advance(time.Minute)
+	stopProvision(nil)
+	timings.Phase("substrate", "Substrate")
+	clock.Advance(time.Minute)
+	r := timings.Report(TimingSucceeded)
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Version != 2 || !strings.Contains(string(data), `"concurrent_with":["cluster"]`) || !strings.Contains(string(data), `"background":true`) {
+		t.Fatalf("report lacks the version 2 fields: %s", data)
+	}
+	if len(r.Phases) != 4 {
+		t.Fatalf("phases: %+v", r.Phases)
+	}
+	images, cluster := r.Phases[1], r.Phases[2]
+	// Images ran 4 minutes, 3 of them alongside the cluster phase, including
+	// the 2 minute prompt its work continued through.
+	if images.Wall() != 4*time.Minute || images.Active() != 4*time.Minute || images.Overlap() != 3*time.Minute ||
+		!slices.Equal(images.ConcurrentWith, []string{"cluster"}) {
+		t.Fatalf("images phase: %+v", images)
+	}
+	bg := images.Stages[1]
+	if !bg.Background || images.Stages[0].Background || bg.Wall() != 4*time.Minute || bg.Active() != 4*time.Minute ||
+		len(bg.Steps) != 1 || bg.Steps[0].ID != "images.imports" || bg.Steps[0].Active() != 4*time.Minute {
+		t.Fatalf("background stage: %+v", bg)
+	}
+	if cluster.Wall() != 4*time.Minute || cluster.Active() != 2*time.Minute || cluster.OverlapMS != 0 || len(cluster.ConcurrentWith) != 0 {
+		t.Fatalf("cluster phase: %+v", cluster)
+	}
+	if plan := cluster.Stages[0]; plan.ID != "plan" || len(plan.Steps) != 2 {
+		t.Fatalf("foreground steps were misattributed: %+v", cluster.Stages)
+	}
+	var wall time.Duration
+	for _, p := range r.Phases {
+		wall += p.Wall() - p.Overlap()
+	}
+	if wall != r.Wall() || r.Wall() != 7*time.Minute || r.Active() != 5*time.Minute {
+		t.Fatalf("phases without overlap sum to %v; report %v / %v", wall, r.Wall(), r.Active())
+	}
+}
+
+func TestTimingsUnfinishedBackgroundStageKeepsItsPhaseOpen(t *testing.T) {
+	clock := newFakeClock()
+	timings := NewTimings(clock.Now)
+	timings.Phase("images", "Images and assets")
+	timings.BackgroundStage(t.Context(), "images", "Publish images")
+	clock.Advance(time.Minute)
+	timings.Phase("cluster", "AKS cluster")
+	clock.Advance(time.Minute)
+	r := timings.Report(TimingInterrupted)
+	images := r.Phases[0]
+	if images.Ended != r.Ended || images.Overlap() != time.Minute || images.Stages[0].Outcome != TimingUnfinished {
+		t.Fatalf("running background work was not reported up to the report time: %+v", images)
 	}
 }

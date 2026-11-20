@@ -45,11 +45,18 @@ type phaseTiming struct {
 	timingSpan
 	stages []*stageTiming
 	steps  []*stepTiming
+	// running counts background stages still running; superseded marks a
+	// phase that a later phase replaced while they ran. Such a phase ends
+	// when its last background stage stops.
+	running    int
+	superseded bool
 }
 
 type stageTiming struct {
 	id, label, outcome string
 	attempt            int
+	// background marks a stage that ran alongside the foreground stages.
+	background bool
 	timingSpan
 	steps []*stepTiming
 }
@@ -100,9 +107,22 @@ func TimingsFrom(ctx context.Context) *Timings {
 	return t
 }
 
+type timingStageKey struct{}
+
 // step times one installer operation when ctx carries a recorder.
 func (a App) step(ctx context.Context, id string) func(error) {
-	return TimingsFrom(ctx).Step(id)
+	return timingStep(ctx, id, 0)
+}
+
+// timingStep starts a step in the stage ctx is bound to, or else in the
+// current stage.
+func timingStep(ctx context.Context, id string, workers int) func(error) {
+	t := TimingsFrom(ctx)
+	if t == nil {
+		return func(error) {}
+	}
+	s, _ := ctx.Value(timingStageKey{}).(*stageTiming)
+	return t.startStep(s, id, workers)
 }
 
 // TimingOutcome classifies the result of timed work. Work is interrupted only
@@ -171,7 +191,11 @@ func (t *Timings) phase(id, title string) *phaseTiming {
 	}
 	now := t.now()
 	if n := len(t.phases); n > 0 {
-		t.phases[n-1].end, t.phases[n-1].done = now, true
+		if prev := t.phases[n-1]; prev.running > 0 {
+			prev.superseded = true
+		} else {
+			prev.end, prev.done = now, true
+		}
 	}
 	p := &phaseTiming{id: id, title: title, timingSpan: timingSpan{start: now}}
 	t.phases = append(t.phases, p)
@@ -188,26 +212,58 @@ func (t *Timings) currentPhase() *phaseTiming {
 // Stage starts one attempt of a setup stage in the current phase. Steps
 // started before the returned func is called belong to this attempt.
 func (t *Timings) Stage(id, label string) func(error) {
+	_, stop := t.StageContext(context.Background(), id, label)
+	return stop
+}
+
+// StageContext is Stage, also returning ctx bound to the attempt: installer
+// steps timed under the returned context belong to it even while a stage in
+// another goroutine is current.
+func (t *Timings) StageContext(ctx context.Context, id, label string) (context.Context, func(error)) {
+	return t.startStage(ctx, id, label, false)
+}
+
+// BackgroundStage starts one attempt of a stage that runs alongside the
+// foreground stages. It belongs to the current phase but never becomes the
+// current stage, so only steps timed under the returned context attach to
+// it. The phase stays open until its last background stage stops, even
+// after a later phase starts. Its active time ignores waits for the user,
+// since its work continues while a prompt waits.
+func (t *Timings) BackgroundStage(ctx context.Context, id, label string) (context.Context, func(error)) {
+	return t.startStage(ctx, id, label, true)
+}
+
+func (t *Timings) startStage(ctx context.Context, id, label string, background bool) (context.Context, func(error)) {
 	if t == nil {
-		return func(error) {}
+		return ctx, func(error) {}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	id = timingID(id)
 	t.stages[id]++
-	s := &stageTiming{id: id, label: label, attempt: t.stages[id], timingSpan: timingSpan{start: t.now()}}
+	s := &stageTiming{id: id, label: label, attempt: t.stages[id], background: background, timingSpan: timingSpan{start: t.now()}}
 	p := t.currentPhase()
 	p.stages = append(p.stages, s)
-	t.stage = s
-	return func(err error) {
+	if background {
+		p.running++
+	} else {
+		t.stage = s
+	}
+	return context.WithValue(ctx, timingStageKey{}, s), func(err error) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if s.done {
 			return
 		}
-		s.end, s.done, s.outcome = t.now(), true, TimingOutcome(err)
+		now := t.now()
+		s.end, s.done, s.outcome = now, true, TimingOutcome(err)
 		if t.stage == s {
 			t.stage = nil
+		}
+		if background {
+			if p.running--; p.running == 0 && p.superseded {
+				p.end, p.done = now, true
+			}
 		}
 	}
 }
@@ -219,14 +275,23 @@ func (t *Timings) Step(id string) func(error) {
 
 // StepWorkers starts a timed step that runs up to workers operations at once.
 func (t *Timings) StepWorkers(id string, workers int) func(error) {
+	return t.startStep(nil, id, workers)
+}
+
+// startStep starts a step in stage, or in the current stage when stage is
+// nil, or in the current phase outside any stage.
+func (t *Timings) startStep(stage *stageTiming, id string, workers int) func(error) {
 	if t == nil {
 		return func(error) {}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := &stepTiming{id: timingID(id), workers: workers, timingSpan: timingSpan{start: t.now()}}
-	if t.stage != nil {
-		t.stage.steps = append(t.stage.steps, s)
+	if stage == nil {
+		stage = t.stage
+	}
+	if stage != nil {
+		stage.steps = append(stage.steps, s)
 	} else {
 		p := t.currentPhase()
 		p.steps = append(p.steps, s)
@@ -260,11 +325,15 @@ func (t *Timings) Wait() func() {
 }
 
 // TimingReportVersion is the schema version of a written TimingReport.
-const TimingReportVersion = 1
+// Version 2 adds concurrent_with and overlap_ms to phases and background to
+// stages: a phase's wall time may overlap later phases, which version 1
+// reports never did. Every version 1 field keeps its meaning.
+const TimingReportVersion = 2
 
 // TimingReport is the setup timing report. Times are RFC 3339 UTC with
 // millisecond precision; wall_ms is elapsed time and active_ms excludes
-// time spent waiting for the user.
+// time spent waiting for the user, except in background stages and the
+// overlapped part of a phase, whose work continued during the wait.
 type TimingReport struct {
 	Version int    `json:"version"`
 	Outcome string `json:"outcome"`
@@ -290,7 +359,13 @@ type PhaseTimingReport struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	TimingInterval
-	Stages []StageTimingReport `json:"stages"`
+	// ConcurrentWith lists the later phases that ran while this phase's
+	// background stages were still running.
+	ConcurrentWith []string `json:"concurrent_with,omitempty"`
+	// OverlapMS is the part of wall_ms that overlaps later phases. Summing
+	// wall_ms - overlap_ms over all phases counts no time twice.
+	OverlapMS int64               `json:"overlap_ms,omitempty"`
+	Stages    []StageTimingReport `json:"stages"`
 	// Steps lists steps that ran outside any stage.
 	Steps []StepTimingReport `json:"steps,omitempty"`
 }
@@ -300,8 +375,16 @@ type StageTimingReport struct {
 	Label   string `json:"label"`
 	Attempt int    `json:"attempt"`
 	Outcome string `json:"outcome"`
+	// Background marks a stage that ran alongside the foreground stages.
+	Background bool `json:"background,omitempty"`
 	TimingInterval
 	Steps []StepTimingReport `json:"steps"`
+}
+
+// Overlap returns the part of the phase's wall time that overlaps later
+// phases.
+func (p PhaseTimingReport) Overlap() time.Duration {
+	return time.Duration(p.OverlapMS) * time.Millisecond
 }
 
 type StepTimingReport struct {
@@ -322,22 +405,33 @@ func (t *Timings) Report(outcome string) TimingReport {
 	defer t.mu.Unlock()
 	end := t.now()
 	waits := mergedWaits(t.waits, end)
-	interval := func(s timingSpan) TimingInterval {
-		stop := end
+	stopOf := func(s timingSpan) time.Time {
 		if s.done {
-			stop = s.end
+			return s.end
 		}
+		return end
+	}
+	// measure subtracts only the waits before waitsUntil from active time.
+	measure := func(s timingSpan, waitsUntil time.Time) TimingInterval {
+		stop := stopOf(s)
 		wall := max(stop.Sub(s.start), 0)
+		waitsUntil = minTime(stop, waitsUntil)
 		var waited time.Duration
 		for _, w := range waits {
-			waited += max(minTime(stop, w.end).Sub(maxTime(s.start, w.start)), 0)
+			waited += max(minTime(waitsUntil, w.end).Sub(maxTime(s.start, w.start)), 0)
 		}
 		return TimingInterval{
 			Started: timingStamp(s.start), Ended: timingStamp(stop),
 			WallMS: wall.Milliseconds(), ActiveMS: max(wall-waited, 0).Milliseconds(),
 		}
 	}
-	steps := func(records []*stepTiming) []StepTimingReport {
+	interval := func(s timingSpan, background bool) TimingInterval {
+		if background {
+			return measure(s, s.start)
+		}
+		return measure(s, stopOf(s))
+	}
+	steps := func(records []*stepTiming, background bool) []StepTimingReport {
 		sorted := append([]*stepTiming(nil), records...)
 		sort.SliceStable(sorted, func(i, j int) bool {
 			if !sorted[i].start.Equal(sorted[j].start) {
@@ -351,20 +445,34 @@ func (t *Timings) Report(outcome string) TimingReport {
 			if !s.done {
 				outcome = TimingUnfinished
 			}
-			out = append(out, StepTimingReport{ID: s.id, Outcome: outcome, Workers: s.workers, TimingInterval: interval(s.timingSpan)})
+			out = append(out, StepTimingReport{ID: s.id, Outcome: outcome, Workers: s.workers, TimingInterval: interval(s.timingSpan, background)})
 		}
 		return out
 	}
 	r := TimingReport{
 		Version: TimingReportVersion, Outcome: outcome,
-		TimingInterval: interval(timingSpan{start: t.started, end: end, done: true}),
+		TimingInterval: interval(timingSpan{start: t.started, end: end, done: true}, false),
 		Phases:         make([]PhaseTimingReport, 0, len(t.phases)), ended: end,
 	}
-	for _, p := range t.phases {
-		phase := PhaseTimingReport{ID: p.id, Title: p.title, TimingInterval: interval(p.timingSpan),
+	for i, p := range t.phases {
+		// Phases start when the previous one hands over, so a phase that
+		// outlives the next one's start overlaps every later phase from
+		// then on; waits count against it only until then.
+		stop, handover := stopOf(p.timingSpan), stopOf(p.timingSpan)
+		var concurrent []string
+		if i+1 < len(t.phases) {
+			handover = minTime(stop, t.phases[i+1].start)
+			for _, later := range t.phases[i+1:] {
+				if later.start.Before(stop) {
+					concurrent = append(concurrent, later.id)
+				}
+			}
+		}
+		phase := PhaseTimingReport{ID: p.id, Title: p.title, TimingInterval: measure(p.timingSpan, handover),
+			ConcurrentWith: concurrent, OverlapMS: stop.Sub(handover).Milliseconds(),
 			Stages: make([]StageTimingReport, 0, len(p.stages))}
 		if len(p.steps) > 0 {
-			phase.Steps = steps(p.steps)
+			phase.Steps = steps(p.steps, false)
 		}
 		for _, s := range p.stages {
 			outcome := s.outcome
@@ -372,7 +480,8 @@ func (t *Timings) Report(outcome string) TimingReport {
 				outcome = TimingUnfinished
 			}
 			phase.Stages = append(phase.Stages, StageTimingReport{ID: s.id, Label: s.label, Attempt: s.attempt,
-				Outcome: outcome, TimingInterval: interval(s.timingSpan), Steps: steps(s.steps)})
+				Outcome: outcome, Background: s.background, TimingInterval: interval(s.timingSpan, s.background),
+				Steps: steps(s.steps, s.background)})
 		}
 		r.Phases = append(r.Phases, phase)
 	}

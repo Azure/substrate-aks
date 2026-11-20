@@ -85,7 +85,7 @@ works through six stages. Nothing is billed until you confirm, and the registry
 and the cluster each wait for you to approve an Azure preview:
 
 <p align="center">
-  <img src="docs/images/setup.gif" alt="The guided setup workspace: choosing a name and region, reviewing the installation, approving the registry and infrastructure previews, progressing through images, AKS, Substrate, the counter demo, and kube-context handoff, then printing connection commands" width="900">
+  <img src="docs/images/setup.gif" alt="The guided setup workspace: choosing a name and region, reviewing the installation, approving the registry and infrastructure previews, publishing images while the AKS cluster is prepared, progressing through Substrate, the counter demo, and kube-context handoff, then printing connection commands and setup timings" width="900">
   <br>
   <sub>A simulated run with Azure operations stubbed and shortened. Press <code>?</code> in the workspace for keys.</sub>
 </p>
