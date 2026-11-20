@@ -170,9 +170,12 @@ The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
 256 nodes total, leaving one upgrade surge node for each pool. Upgrades,
 including the automatic node-image upgrades, add one surge node per pool, so
 they replace one node at a time and take longer on large pools; this keeps
-upgrades within the pod address range that the count limits assume. If surge
-settings are changed outside the installer, reserve enough additional addresses
-for them. AKS itself allows up to 1,000 nodes per pool.
+upgrades within the pod address range that the count limits assume. The
+template sets `maxSurge: '1'` on both pools for new installations, re-provisioned
+installations and direct `main.bicep` deployments. Re-provisioning reapplies it,
+replacing surge settings changed outside the installer; until then, reserve
+enough additional addresses for such changes. AKS itself allows up to 1,000
+nodes per pool.
 
 ### Snapshot disk performance
 
@@ -218,8 +221,14 @@ The system pool keeps the AKS default.
 Preflight checks that the size is offered in the region and that regional and
 VM-family vCPU quota covers both pools. Upgrades need quota for one extra node
 of each pool's size, so preflight also counts one surge node per pool; request
-more quota before provisioning a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
-so memory snapshots can restore on any node; see
+more quota before provisioning a large pool.
+
+Both pools need x64 sizes. Preflight refuses a size whose regional SKU catalog
+entry lists another CPU architecture, and refuses it when the entry lists no
+architecture. Arm64 nodes are not supported. Regional availability and an x64
+architecture alone do not establish compatibility. Use a v6 or v7 x86 D, E or F
+size when running more than one node, so memory snapshots can restore on any
+node; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
 ## Azure identity and permissions
