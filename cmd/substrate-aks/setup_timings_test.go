@@ -86,6 +86,9 @@ func TestSetupStageIDsAreValidTimingIDs(t *testing.T) {
 }
 
 func TestSetupRecordsStageTimings(t *testing.T) {
+	// Serial stages take one clock minute each; TestSetupOverlapsImagesWithCluster
+	// covers the default order.
+	t.Setenv(setupSerialEnv, "1")
 	path := testCLIConfig(t)
 	clock := newSetupClock()
 	var output bytes.Buffer

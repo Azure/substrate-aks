@@ -87,12 +87,16 @@ type setupWorkspace struct {
 	phase                string
 	phases               []string
 	completed            map[string]bool
-	steps, activity      []string
-	activityAt           []time.Time
-	workStarted          time.Time
-	finishedAt           time.Time
-	phaseStarted         map[string]time.Time
-	phaseEnded           map[string]time.Time
+	// background marks phases whose background stage is still running, and
+	// backgroundErr holds the error of one that failed.
+	background      map[string]bool
+	backgroundErr   map[string]error
+	steps, activity []string
+	activityAt      []time.Time
+	workStarted     time.Time
+	finishedAt      time.Time
+	phaseStarted    map[string]time.Time
+	phaseEnded      map[string]time.Time
 	// Timers read clock(), which stands still while a question waits on the user.
 	paused             time.Duration
 	pauseStart         time.Time
@@ -128,6 +132,7 @@ func newSetupWorkspace(s *setupSession, cancel context.CancelFunc, work func() e
 		session: s, cancel: cancel, work: work, renderer: renderer, st: newSetupStyles(renderer),
 		width: 80, height: 24, started: time.Now(), title: "Choose your installation",
 		completed: map[string]bool{}, welcome: true,
+		background: map[string]bool{}, backgroundErr: map[string]error{},
 		phaseStarted: map[string]time.Time{}, phaseEnded: map[string]time.Time{},
 		phase: "prepare", phases: setupPhases(installer.Config{}, false),
 	}
@@ -472,7 +477,8 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next = m.waitEvent()
 	case setupPhaseMsg:
 		phase := string(event)
-		if m.phase != "" && phase != m.phase {
+		// A phase with a background stage running stays open.
+		if m.phase != "" && phase != m.phase && !m.background[m.phase] {
 			m.completed[m.phase] = true
 			m.phaseEnded[m.phase] = m.clock()
 		}
@@ -480,6 +486,23 @@ func (m *setupWorkspace) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phaseStarted[phase] = m.clock()
 		}
 		m.phase = phase
+		next = m.waitEvent()
+	case setupBackgroundMsg:
+		if !event.done {
+			m.background[event.phase] = true
+			delete(m.backgroundErr, event.phase)
+		} else {
+			delete(m.background, event.phase)
+			if event.phase != m.phase {
+				m.phaseEnded[event.phase] = m.clock()
+				if event.err == nil {
+					m.completed[event.phase] = true
+					delete(m.backgroundErr, event.phase)
+				} else {
+					m.backgroundErr[event.phase] = event.err
+				}
+			}
+		}
 		next = m.waitEvent()
 	case setupLogMsg:
 		m.logPath = safeSetupText(string(event))

@@ -119,6 +119,8 @@ func testRuntimeAssets(t *testing.T) string {
 }
 
 func TestSetupSequencesStagesAndStopsOnFailure(t *testing.T) {
+	// The serial order; TestSetupOverlapsImagesWithCluster covers the default.
+	t.Setenv(setupSerialEnv, "1")
 	for _, fail := range []string{"", "images", "demo", "client"} {
 		t.Run("failure="+fail, func(t *testing.T) {
 			path := testCLIConfig(t)
@@ -450,6 +452,8 @@ func TestSetupKeepsExistingConfigurationAuthoritative(t *testing.T) {
 }
 
 func TestSetupDeclinesPlannedChanges(t *testing.T) {
+	// The serial order; TestSetupDeclinedApprovalCancelsImages covers the default.
+	t.Setenv(setupSerialEnv, "1")
 	for _, tc := range []struct {
 		name, answers, commands string
 	}{

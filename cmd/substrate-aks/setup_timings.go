@@ -61,14 +61,25 @@ func (r *setupTimingRun) finish(err error) error {
 	return nil
 }
 
-// printSetupTimings summarizes the report: each phase, the total and the
-// slowest steps.
+// printSetupTimings summarizes the report: each phase, marked with the phases
+// it overlapped, the total and the slowest steps.
 func printSetupTimings(u *setupUI, report installer.TimingReport, path string, writeErr error) {
 	u.section("# Setup timings (wall / active):")
 	var table strings.Builder
 	w := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
 	for _, phase := range report.Phases {
-		fmt.Fprintf(w, "%s\t%s / %s\n", phase.Title, setupDuration(phase.Wall()), setupDuration(phase.Active()))
+		// A phase that ran alongside later phases names them and the time
+		// it shared with them; without that time, the phases sum to the
+		// total.
+		var alongside string
+		if len(phase.ConcurrentWith) > 0 {
+			titles := make([]string, len(phase.ConcurrentWith))
+			for i, id := range phase.ConcurrentWith {
+				titles[i] = setupPhaseTitle(id)
+			}
+			alongside = fmt.Sprintf(" (%s alongside %s)", setupDuration(phase.Overlap()), strings.Join(titles, ", "))
+		}
+		fmt.Fprintf(w, "%s\t%s / %s%s\n", phase.Title, setupDuration(phase.Wall()), setupDuration(phase.Active()), alongside)
 	}
 	fmt.Fprintf(w, "Total\t%s / %s\n", setupDuration(report.Wall()), setupDuration(report.Active()))
 	steps := report.Steps()

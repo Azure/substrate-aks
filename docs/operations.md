@@ -53,15 +53,54 @@ Italics mark where a stage waits for your confirmation or approval.
 | Stage | What happens |
 | --- | --- |
 | Preparation | Checks local tools, discovers your Azure identity, detects your public IP, and loads regions. A new installation then asks for a name, region, AKS API access when your public IP was detected, and optional snapshot access. Read-only Azure checks confirm AKS version and VM availability, CPU quota, and discoverable permissions. You review the installation before anything is billed. Docker or Podman is checked only when an existing installation uses `imageSource: source` and its images aren't built yet; new installations import release images and skip the check. |
-| Images and assets | Previews the private registry and creates it after your approval, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and prepares runtime assets. Skipped when the config already has published images; they are only verified. |
+| Images and assets | Previews the private registry and creates it after your approval, then imports the release images (or builds them with `imageSource: source`), builds the counter demo and plugin images, and prepares runtime assets. For a new installation, this work continues in the background through the AKS cluster stage. Skipped when the config already has published images; they are only verified. |
 | AKS cluster | Previews AKS, storage, and identities, provisions them after your approval, then checks the cluster. |
-| Substrate | Renders the Azure settings, uploads the runtime assets to Blob storage, and installs Substrate. |
+| Substrate | Waits for image publishing and verifies the published images, then renders the Azure settings, uploads the runtime assets to Blob storage, and installs Substrate. |
 | Counter demo | Optional; deploys the counter microVM demo. |
 | Connect | Installs the matching `kubectl ate` and offers to select the new kube-context. |
 
 Setup previews the registry and the full infrastructure separately and waits
 for your approval before each deployment. Image imports and asset uploads
 follow those approvals without a preview of their own.
+
+#### Images alongside the cluster
+
+Images need only the registry, so a new installation publishes them while the
+AKS cluster stage previews, waits for your approval, and provisions. Image work
+starts only after the registry exists, and every billable deployment still
+waits for its own approval.
+
+- **A failed or bad image is found after the cluster exists.** Setup stops
+  before installing Substrate with the same per-image errors and an `images`
+  retry command; the AKS cluster and other resources are retained. If images
+  fail before you approve the cluster preview, setup offers the retry first,
+  and declining it submits no cluster deployment. After a successful retry,
+  setup previews the infrastructure again, so the approval follows its
+  preview; a preview deploys nothing.
+- The published images are verified at the start of the Substrate stage, not
+  before AKS is provisioned.
+- In plain and accessible setup, image output is held while the cluster stage
+  runs and printed at the next stage boundary, never inside a prompt. The
+  workspace keeps Images and assets marked as running. The `images` command
+  log has the full output as it happens.
+- The installation stays locked while image work runs in the background, so
+  other commands for it, such as `status`, report that it is in use until
+  setup collects the image result at the next stage boundary.
+- If you decline an approval, a stage fails, or you press Ctrl-C, setup stops
+  the image work and waits for it to exit. An image failure that happened
+  first is reported after the stage error.
+
+To diagnose a suspected interaction, run the stages in order as earlier
+versions did:
+
+```sh
+SUBSTRATE_AKS_SERIAL_SETUP=1 bin/substrate-aks setup substrate-dev
+```
+
+Setup prints a note when the setting selects this order, and when its value
+is not true or false (for example `1` or `0`), in which case it is ignored.
+This diagnostic setting may be removed. Installations whose images are already
+saved always run in order.
 
 <p align="center">
   <img src="images/setup-preview.png" alt="The setup workspace paused at stage 3 of 6, showing an infrastructure preview grouped by resource type with counts of resources to create, and an Apply these planned changes prompt" width="820">
@@ -428,6 +467,20 @@ that excludes waiting for prompts. Step IDs name operations, such as
 `images.import.ateapi` or `infrastructure.deployment`. The report contains no
 command arguments, error text, credentials, or subscription, resource, or
 installation names.
+
+Report `version` 2 marks overlapping work. A stage that ran in the background
+has `"background": true`, and its active time includes prompt waits, because
+its work continued. A phase that outlived the start of later phases lists them
+in `concurrent_with` and gives the overlapping part of its wall time as
+`overlap_ms`; summing `wall_ms - overlap_ms` over the phases counts no time
+twice. The report's own `wall_ms` is the elapsed time of the whole run. Time
+setup spends waiting for background images to finish belongs to the Substrate
+phase, which waits, so the AKS cluster phase covers only its own stages. A
+background stage retried in the foreground after a failure is timed as a new
+attempt in the phase that is current then. The console summary marks an
+overlapping phase with the overlapping time, for example
+`Images and assets  10:00 / 10:00 (10:00 alongside AKS cluster, Substrate)`;
+without that time, the phase lines sum to the total.
 
 Failures show a short error and the log path. If the optional kube-context
 handoff fails, setup still completes, warns, and prints exports for the private
