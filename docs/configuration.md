@@ -216,8 +216,9 @@ The system pool keeps the AKS default.
 ### Quota and CPU compatibility
 
 Preflight checks that the size is offered in the region and that regional and
-VM-family vCPU quota covers both pools; request more quota before provisioning
-a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
+VM-family vCPU quota covers both pools. Upgrades need quota for one extra node
+of each pool's size, so preflight also counts one surge node per pool; request
+more quota before provisioning a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
 so memory snapshots can restore on any node; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
@@ -306,8 +307,8 @@ access uses separate identities and does not depend on this optional grant.
 Region names are checked against the subscription's region list. Before
 provisioning the registry, setup also checks the AKS version, VM size
 availability, regional and VM-family CPU quota, and the deployment and
-role-assignment permissions it can discover. On retries, only the additional CPU
-is counted against quota. Run `doctor NAME --azure` for the same
+role-assignment permissions it can discover. On retries, only the additional CPU,
+plus one surge node for each pool that grows, is counted against quota. Run `doctor NAME --azure` for the same
 read-only checks.
 
 These checks are a snapshot, not a reservation or a complete authorization proof.

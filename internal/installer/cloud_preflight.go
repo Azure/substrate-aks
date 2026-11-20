@@ -172,7 +172,8 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		additional := int64(count) * cpus
+		// Upgrades add one node of this size (maxSurge 1 in infra/resources.bicep).
+		additional := int64(count+1) * cpus
 		needed[strings.ToLower(family)] += additional
 		total += additional
 	}
@@ -216,7 +217,7 @@ func (a App) CloudPreflight(ctx context.Context) error {
 					return fmt.Errorf("CPU quota %s has invalid usage or limit; capacity is unverified", family)
 				}
 				if required > limit-used {
-					return fmt.Errorf("insufficient %s CPU quota in %s: %d used, %d limit, %d additional required; request quota or select another region/SKU before provisioning", family, a.Config.Azure.Location, used, limit, required)
+					return fmt.Errorf("insufficient %s CPU quota in %s: %d used, %d limit, %d additional required, including one upgrade surge node per pool; request quota or select another region/SKU before provisioning", family, a.Config.Azure.Location, used, limit, required)
 				}
 			}
 			if !found {
