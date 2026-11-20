@@ -164,9 +164,9 @@ func TestCloudPreflightLoadsBothPoolSKUsOnce(t *testing.T) {
 		{"available", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":36},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":24},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":12}]`, ""},
 		{"system unavailable", worker.output, "", "Standard_F4s_v6 is not available"},
 		{"system restricted", `{"value":[{"name":"Standard_F4s_v6","restrictions":[{"type":"Location","values":["eastus2"]}]}]}`, "", "Standard_F4s_v6 is restricted"},
-		{"system Arm64", join(arm(system.output), worker.output), "", "Standard_F4s_v6 uses the Arm64 CPU architecture"},
-		{"worker Arm64", join(system.output, arm(worker.output)), "", "Standard_D8s_v6 uses the Arm64 CPU architecture"},
-		{"worker architecture missing", join(system.output, strings.Replace(worker.output, `,{"name":"CpuArchitectureType","value":"x64"}`, "", 1)), "", "Standard_D8s_v6 has no CPU architecture information"},
+		{"system Arm64", join(arm(system.output), worker.output), "", "Standard_F4s_v6 uses the Arm64 CPU architecture, but Substrate needs x64 (amd64) nodes; set aks.systemPool.vmSize to another"},
+		{"worker Arm64", join(system.output, arm(worker.output)), "", "Standard_D8s_v6 uses the Arm64 CPU architecture, but Substrate needs x64 (amd64) nodes; set aks.workerPool.vmSize to another"},
+		{"worker architecture missing", join(system.output, strings.Replace(worker.output, `,{"name":"CpuArchitectureType","value":"x64"}`, "", 1)), "", "Standard_D8s_v6 has no CPU architecture information, so x64 compatibility is unverified; set aks.workerPool.vmSize to another"},
 		{"system family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":36},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":24},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":11}]`, "12 additional required"},
 		{"worker family insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":36},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":23},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":12}]`, "24 additional required"},
 		{"regional insufficient", "", `[{"name":{"value":"cores"},"currentValue":0,"limit":35},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":24},{"name":{"value":"StandardFsv6Family"},"currentValue":0,"limit":12}]`, "36 additional required"},
@@ -291,7 +291,7 @@ func TestRegionalSKUCatalogFollowsPagesAndPropagatesFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, size := range []string{"Standard_D4s_v6", "Standard_D8s_v6"} {
-				if _, _, err := (App{Config: c}).cloudSKU(data, size); err != nil {
+				if _, _, err := (App{Config: c}).cloudSKU(data, size, "aks.workerPool.vmSize"); err != nil {
 					t.Fatalf("lost SKU from a catalog page: %v", err)
 				}
 			}

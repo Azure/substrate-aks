@@ -146,9 +146,10 @@ func (a App) CloudPreflight(ctx context.Context) error {
 	total := int64(0)
 	var skuCatalog []byte
 	for _, pool := range []struct {
-		name, size string
-		count      int
-	}{{"system", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.SystemPool.Count}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
+		name, field, size string
+		count             int
+	}{{"system", "aks.systemPool.vmSize", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.SystemPool.Count},
+		{"microvm", "aks.workerPool.vmSize", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
 		count := pool.count
 		if cluster != nil {
 			for _, existing := range cluster.AgentPoolProfiles {
@@ -168,7 +169,7 @@ func (a App) CloudPreflight(ctx context.Context) error {
 				return err
 			}
 		}
-		family, cpus, err := a.cloudSKU(skuCatalog, pool.size)
+		family, cpus, err := a.cloudSKU(skuCatalog, pool.size, pool.field)
 		if err != nil {
 			return err
 		}
@@ -276,7 +277,7 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 	return json.Marshal(skus)
 }
 
-func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+func (a App) cloudSKU(data []byte, size, field string) (string, int64, error) {
 	var skus []struct {
 		Name, Family string
 		Capabilities []struct{ Name, Value string }
@@ -311,10 +312,10 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 			}
 		}
 		if architecture == "" {
-			return "", 0, fmt.Errorf("VM SKU %s has no CPU architecture information; x64 compatibility is unverified", size)
+			return "", 0, fmt.Errorf("VM SKU %s has no CPU architecture information, so x64 compatibility is unverified; set %s to another size", size, field)
 		}
 		if !strings.EqualFold(architecture, "x64") {
-			return "", 0, fmt.Errorf("VM size %s uses the %s CPU architecture, but Substrate needs x64 (amd64) nodes; choose an x64 size such as %s before provisioning", size, architecture, DefaultSystemVMSize)
+			return "", 0, fmt.Errorf("VM size %s uses the %s CPU architecture, but Substrate needs x64 (amd64) nodes; set %s to another, x64 size such as %s", size, architecture, field, DefaultSystemVMSize)
 		}
 		for _, capability := range sku.Capabilities {
 			if capability.Name == "vCPUs" && sku.Family != "" {
