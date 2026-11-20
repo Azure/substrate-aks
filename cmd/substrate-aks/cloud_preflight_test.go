@@ -94,17 +94,30 @@ func TestSetupCloudRestoreRiskWarning(t *testing.T) {
 			if workspace {
 				found := false
 				for len(m.session.events) > 0 {
-					if event, ok := (<-m.session.events).(setupNoteMsg); ok && event.warning &&
-						strings.Contains(event.text, "snapshot restore") && strings.Contains(event.text, "Standard_D4s_v6") {
-						found = true
+					switch event := (<-m.session.events).(type) {
+					case setupReviewMsg:
+						for _, entry := range event {
+							if entry.kind == "callout" && entry.label == "Before you continue" &&
+								strings.Contains(entry.text, "snapshot restore") && strings.Contains(entry.text, "Standard_D4s_v6") {
+								found = true
+							}
+						}
+					case setupNoteMsg:
+						if strings.Contains(event.text, "snapshot restore") {
+							t.Fatalf("restore-risk warning left the summary: %q", event.text)
+						}
 					}
 				}
 				if !found {
-					t.Fatal("workspace did not receive a restore-risk warning")
+					t.Fatal("workspace summary did not show a restore-risk warning")
 				}
-			} else if !strings.Contains(strings.Join(strings.Fields(output.String()), " "), "WARNING: microVM pool size Standard_D4s_v5") ||
-				!strings.Contains(output.String(), "snapshot restore") {
-				t.Fatalf("setup did not display the restore-risk warning: %s", &output)
+			} else {
+				text := strings.Join(strings.Fields(output.String()), " ")
+				before := strings.Index(text, "Before you continue")
+				if before < 0 || strings.Count(text, "WARNING: microVM pool size Standard_D4s_v5") != 1 ||
+					!strings.Contains(text[before:], "WARNING: microVM pool size Standard_D4s_v5") {
+					t.Fatalf("setup summary did not display the restore-risk warning once: %s", &output)
+				}
 			}
 		})
 	}

@@ -269,13 +269,21 @@ func TestLoadMainEraRecordPlanAndDestroy(t *testing.T) {
 			}
 			plan := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "false"},
 				reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`})
-			if err := (App{Config: c, Runner: plan}).Provision(t.Context(), true); err != nil {
+			var warned []string
+			warn := func(message string) { warned = append(warned, message) }
+			if err := (App{Config: c, Runner: plan, Warn: warn}).Provision(t.Context(), true); err != nil {
 				t.Fatalf("old record plan: %v", err)
+			}
+			if (len(warned) == 1) != (tc.name == "non-baseline") {
+				t.Fatalf("old record plan warnings: %q", warned)
 			}
 			destroy := script(t, accountReply(c), targetReply(), reply{contains: "group exists", output: "true"},
 				ownerReply(c), reply{contains: "group delete"})
-			if err := (App{Config: c, Runner: destroy}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
+			if err := (App{Config: c, Runner: destroy, Warn: warn}).Destroy(t.Context(), c.Azure.ResourceGroup); err != nil {
 				t.Fatalf("old record destroy: %v", err)
+			}
+			if (len(warned) == 1) != (tc.name == "non-baseline") {
+				t.Fatalf("destroy checked the CPU generation: %q", warned)
 			}
 		})
 	}

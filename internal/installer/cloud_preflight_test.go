@@ -86,11 +86,11 @@ func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
 					replies[5].output = strings.TrimSuffix(replies[5].output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
 				}
 			}
-			var progress []string
+			var progress, warned []string
 			r := script(t, replies...)
 			err := (App{Config: c, Runner: r, Progress: func(format string, args ...any) {
 				progress = append(progress, fmt.Sprintf(format, args...))
-			}}).CloudPreflight(t.Context())
+			}, Warn: func(message string) { warned = append(warned, message) }}).CloudPreflight(t.Context())
 			if tc.refused {
 				if err == nil {
 					t.Fatal("risky pool was accepted")
@@ -108,8 +108,11 @@ func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			warnings := strings.Join(progress, "\n")
-			if strings.Contains(warnings, "WARNING:") != tc.warn {
+			if text := strings.Join(progress, "\n"); strings.Contains(text, "WARNING") || strings.Contains(text, "TSC") {
+				t.Fatalf("restore risk was sent as progress text: %s", text)
+			}
+			warnings := strings.Join(warned, "\n")
+			if len(warned) > 0 != tc.warn {
 				t.Fatalf("unexpected warnings: %s", warnings)
 			}
 			if tc.warn {
@@ -118,6 +121,52 @@ func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
 						t.Errorf("warning %q lacks %q", warnings, term)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestProvisionMicroVMRestoreRisk(t *testing.T) {
+	for _, tc := range []struct {
+		name, size     string
+		whatIf, optIn  bool
+		refused, warns bool
+	}{
+		{"provision refused", "Standard_D4s_v5", false, false, true, false},
+		{"plan warns", "Standard_D4s_v5", true, false, false, true},
+		{"opted-in provision warns", "Standard_D4s_v5", false, true, false, true},
+		{"stable provision", "Standard_D4s_v6", false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.WorkerPool.VMSize, c.AKS.WorkerPool.Count = tc.size, 2
+			c.AKS.WorkerPool.AllowMixedCPUGenerations = tc.optIn
+			var replies []reply
+			if !tc.refused {
+				deploy := reply{contains: "deployment sub create"}
+				if tc.whatIf {
+					deploy = reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}
+				}
+				replies = []reply{accountReply(c), targetReply(), {contains: "group exists", output: "false"}, deploy}
+			}
+			var progress, warned []string
+			err := (App{Config: c, Runner: script(t, replies...), Progress: func(format string, args ...any) {
+				progress = append(progress, fmt.Sprintf(format, args...))
+			}, Warn: func(message string) { warned = append(warned, message) }}).Provision(t.Context(), tc.whatIf)
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), "allowMixedCpuGenerations") || !strings.Contains(err.Error(), tc.size) {
+					t.Fatalf("risky provision was not refused before Azure calls: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(warned) > 0 != tc.warns || tc.warns && (len(warned) != 1 || !strings.Contains(warned[0], "snapshot restore") || !strings.Contains(warned[0], tc.size)) {
+				t.Fatalf("unexpected warnings: %q", warned)
+			}
+			if text := strings.Join(progress, "\n"); strings.Contains(text, "TSC") {
+				t.Fatalf("restore risk was sent as progress text: %s", text)
 			}
 		})
 	}

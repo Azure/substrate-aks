@@ -34,6 +34,7 @@ type App struct {
 	Runner             Runner
 	ContainerEngine    string
 	Progress           func(string, ...any)
+	Warn               func(string)
 	Preview            func([]ResourceChange) error
 	ImageCheckProgress func(name string, done bool, err error)
 }
@@ -46,6 +47,12 @@ type ResourceChange struct {
 func (a App) progress(format string, args ...any) {
 	if a.Progress != nil {
 		a.Progress(format, args...)
+	}
+}
+
+func (a App) warn(message string) {
+	if a.Warn != nil {
+		a.Warn(message)
 	}
 }
 
@@ -173,6 +180,15 @@ func (a App) guardTarget(ctx context.Context) error {
 func (a App) provision(ctx context.Context, whatIf, registryOnly bool) error {
 	if err := a.Config.Validate(); err != nil {
 		return err
+	}
+	if !registryOnly {
+		risk, refused := a.Config.AKS.WorkerPool.CPUGenerationRisk()
+		if refused && !whatIf {
+			return errors.New(risk)
+		}
+		if risk != "" {
+			a.warn(risk)
+		}
 	}
 	if err := a.account(ctx); err != nil {
 		return err
