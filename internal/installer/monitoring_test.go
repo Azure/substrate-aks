@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,6 +66,35 @@ func TestMonitoringConfigurationAndOutputs(t *testing.T) {
 	c.Monitoring = MonitoringConfig{}
 	if err := validateMonitoringInfrastructure(c, m); err == nil {
 		t.Fatal("disabled configuration accepted enabled deployment")
+	}
+}
+
+func TestDisabledRecordsOmitTheMonitoringSection(t *testing.T) {
+	enabled := testConfig(t)
+	enabled.Monitoring = MonitoringConfig{Enabled: true, Location: "westus3"}
+	for _, tc := range []struct {
+		name string
+		c    Config
+		want bool
+	}{
+		{"default", testConfig(t), false},
+		{"enabled", enabled, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Builds before managed monitoring reject a record with an unknown monitoring field.
+			data, err := json.Marshal(tc.c)
+			if err != nil || bytes.Contains(data, []byte(`"monitoring"`)) != tc.want {
+				t.Fatalf("monitoring section present=%v, want %v: %v", !tc.want, tc.want, err)
+			}
+			path := filepath.Join(t.TempDir(), "installation.json")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadConfig(path)
+			if err != nil || loaded.Monitoring != tc.c.Monitoring {
+				t.Fatalf("record did not round-trip monitoring: %+v, %v", loaded.Monitoring, err)
+			}
+		})
 	}
 }
 

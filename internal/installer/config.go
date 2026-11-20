@@ -40,8 +40,9 @@ type Config struct {
 	AKS          AKSConfig          `json:"aks"`
 	Substrate    SubstrateConfig    `json:"substrate"`
 	// Only managed PostgreSQL records include database.
-	Database   DatabaseConfig   `json:"database,omitzero"`
-	Monitoring MonitoringConfig `json:"monitoring,omitempty"`
+	Database DatabaseConfig `json:"database,omitzero"`
+	// Records omit monitoring when it is off.
+	Monitoring MonitoringConfig `json:"monitoring,omitzero"`
 }
 
 type MonitoringConfig struct {
