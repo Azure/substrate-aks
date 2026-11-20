@@ -25,8 +25,9 @@ kustomization, and Helm chart.
 `monitoring.yaml` defines the metrics-only OTLP collector and Azure managed
 PodMonitors for its application/self metrics and upstream Envoy. `Monitoring()`
 renders ordinary YAML with a configuration checksum to restart the collector on
-change. Apply only after Azure's managed Prometheus CRD is established. OTLP logs
-and traces stay disabled.
+change. Apply only after Azure's managed Prometheus CRD is established. The
+telemetry settings set only the OTLP metrics endpoint, so OTLP logs and traces,
+including Envoy's, stay disabled.
 
 Managed PostgreSQL uses a separate non-root, bounded psql Job in
 `database-bootstrap.yaml`. The installer supplies a temporary Secret and the

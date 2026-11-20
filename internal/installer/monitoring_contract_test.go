@@ -4,8 +4,10 @@ package installer
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -37,6 +39,39 @@ func TestPinnedUpstreamMonitoringContract(t *testing.T) {
 	if settings["OTEL_METRICS_EXPORTER"] != "otlp" || settings["ATE_WORKER_OTEL_METRICS_EXPORTER"] != "otlp" ||
 		settings["OTEL_SDK_DISABLED"] != "false" || strings.Contains(string(rendered), "gke-managed-otel") {
 		t.Fatalf("upstream did not receive Azure metrics settings: %v", settings)
+	}
+	for _, key := range []string{"OTEL_TRACES_EXPORTER", "OTEL_LOGS_EXPORTER", "ATE_WORKER_OTEL_TRACES_EXPORTER", "ATE_WORKER_OTEL_LOGS_EXPORTER"} {
+		if settings[key] != "none" {
+			t.Fatalf("monitoring enabled SDK %s: %v", key, settings)
+		}
+	}
+	assertMetricsOnlyOTLPEndpoint(t, settings)
+	upstreamRouter, err := os.ReadFile(filepath.Join(root, "manifests/ate-install/atenet-router.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routerContainer := func(data []byte) object {
+		t.Helper()
+		pod, err := nested(manifestObject(t, data, "Deployment", "atenet-router"), "spec", "template", "spec")
+		if err != nil {
+			t.Fatal(err)
+		}
+		container, err := named(pod["containers"], "atenet-router")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return container
+	}
+	// Without a generic endpoint the router leaves Envoy's trace collector unset.
+	atenetRouter := routerContainer(rendered)
+	if got, want := atenetRouter["args"], routerContainer(upstreamRouter)["args"]; want == nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("router args = %v; want the upstream args %v", got, want)
+	}
+	if env, err := named(atenetRouter["env"], "OTEL_EXPORTER_OTLP_ENDPOINT"); err == nil {
+		t.Fatalf("router sets its own generic OTLP endpoint: %v", env)
+	}
+	if encoded, err := json.Marshal(atenetRouter["envFrom"]); err != nil || !strings.Contains(string(encoded), `"name":"ate-otel-config"`) {
+		t.Fatalf("router no longer reads the shared telemetry configuration: %s, %v", encoded, err)
 	}
 	for _, workload := range []struct{ kind, name string }{
 		{"Deployment", "ate-api-server"}, {"Deployment", "ate-controller"},

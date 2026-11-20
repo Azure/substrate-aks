@@ -200,6 +200,23 @@ data:
 		settings["ATE_WORKER_OTEL_LOGS_EXPORTER"] != "none" || strings.Contains(string(data), "gke-managed") {
 		t.Fatalf("monitoring enabled unsupported signals or retained GKE: %s", data)
 	}
+	assertMetricsOnlyOTLPEndpoint(t, settings)
+}
+
+// assertMetricsOnlyOTLPEndpoint checks that only metrics reach the collector.
+// The router uses the generic endpoint as Envoy's trace collector, and the
+// collector has no trace or log pipeline.
+func assertMetricsOnlyOTLPEndpoint(t *testing.T, settings map[string]any) {
+	t.Helper()
+	for _, key := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"} {
+		if value, set := settings[key]; set {
+			t.Fatalf("monitoring sets %s=%v; only metrics have a collector pipeline", key, value)
+		}
+	}
+	if settings["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] != "http://substrate-aks-otel.ate-system.svc.cluster.local:4317" ||
+		settings["OTEL_EXPORTER_OTLP_PROTOCOL"] != "grpc" || settings["OTEL_METRIC_EXPORT_INTERVAL"] != "30000" {
+		t.Fatalf("monitoring does not export metrics to the collector over gRPC: %v", settings)
+	}
 }
 
 func monitoringObserved(t *testing.T, services ...string) string {

@@ -91,8 +91,10 @@ private networking is not configured in this milestone.
 
 The installer deploys a bounded, non-root collector in `ate-system` and Azure
 `azmonitoring.coreos.com/v1` PodMonitors. It restores OTLP metrics on control-plane
-components and workers while keeping OTLP logs and traces disabled. Upstream's
-GKE-only PodMonitoring resource remains removed. Component endpoints are not
+components and workers while keeping OTLP logs and traces disabled. It sets only
+the metrics endpoint, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, because the router
+uses the generic endpoint as Envoy's trace collector; workers export through
+atelet's relay. Upstream's GKE-only PodMonitoring resource remains removed. Component endpoints are not
 also scraped for the same application metrics, avoiding duplicate ingestion.
 
 Upstream defaults to denying ingress in `ate-system`. A collector NetworkPolicy

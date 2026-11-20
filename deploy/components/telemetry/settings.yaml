@@ -7,7 +7,7 @@ data:
   $patch: replace
 {{ if .MonitoringEnabled }}
   OTEL_SDK_DISABLED: "false"
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://substrate-aks-otel.ate-system.svc.cluster.local:4317
+  OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://substrate-aks-otel.ate-system.svc.cluster.local:4317
   OTEL_EXPORTER_OTLP_PROTOCOL: grpc
   OTEL_METRIC_EXPORT_INTERVAL: "30000"
   OTEL_METRICS_EXPORTER: otlp

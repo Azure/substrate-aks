@@ -52,7 +52,13 @@ func (a App) prepare(ctx context.Context, i Infrastructure) (string, error) {
 	}
 	fp := fingerprint(a.Config, i)
 	// Demo-only adaptations invalidate the cache without changing the installed fingerprint.
-	dest := filepath.Join(a.Config.workspace(), "source-"+fp+"-v2")
+	generation := "-v2"
+	if a.Config.Monitoring.Enabled {
+		// Earlier monitored checkouts send every OTLP signal to the metrics-only
+		// collector. Earlier builds also used -v3, so it is skipped.
+		generation = "-v4"
+	}
+	dest := filepath.Join(a.Config.workspace(), "source-"+fp+generation)
 	markerPath := filepath.Join(dest, ".substrate-aks-prepared.json")
 	if data, err := os.ReadFile(markerPath); err == nil {
 		a.progress("Verifying the cached managed source checkout")
