@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,9 @@ type Command struct {
 	// BinaryOutput keeps non-text stdout out of the logs; stderr is still
 	// logged for diagnostics.
 	BinaryOutput bool
+	// Redact lists secret values replaced in logged and displayed output,
+	// the command echo and failure excerpts. Captured stdout is returned as is.
+	Redact []string
 }
 
 type Runner interface {
@@ -58,9 +62,10 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 		verbose = io.Discard
 	}
 	header := io.MultiWriter(log, verbose)
+	redact := newRedactor(c.Redact)
 	fmt.Fprintf(header, "$")
 	for _, arg := range c.Args {
-		fmt.Fprintf(header, " %q", arg)
+		fmt.Fprintf(header, " %q", redact.replace(arg))
 	}
 	fmt.Fprintln(header)
 	cmd := exec.CommandContext(ctx, c.Args[0], c.Args[1:]...)
@@ -91,9 +96,22 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 			stderrWriters = append(stderrWriters, r.Stderr)
 		}
 	}
+	var flush []*redactingWriter
+	if redact != nil {
+		// Only the captured stdout keeps the original text.
+		redactedStdout := &redactingWriter{redactor: redact, dst: io.MultiWriter(stdoutWriters[1:]...)}
+		redactedStderr := &redactingWriter{redactor: redact, dst: io.MultiWriter(stderrWriters...)}
+		stdoutWriters = []io.Writer{&stdout, redactedStdout}
+		stderrWriters = []io.Writer{redactedStderr}
+		flush = append(flush, redactedStdout, redactedStderr)
+	}
 	cmd.Stdout = io.MultiWriter(stdoutWriters...)
 	cmd.Stderr = io.MultiWriter(stderrWriters...)
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	for _, w := range flush {
+		w.Flush()
+	}
+	if err != nil {
 		fmt.Fprintf(header, "\n[failed] %v\n", err)
 		if ctx.Err() != nil {
 			return stdout.Bytes(), fmt.Errorf("%s interrupted: %w", c.Args[0], ctx.Err())
@@ -110,6 +128,81 @@ func (r ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	}
 	fmt.Fprintln(log)
 	return stdout.Bytes(), nil
+}
+
+type redactor struct {
+	values  []string
+	longest int
+}
+
+// newRedactor returns nil when there is nothing to redact.
+func newRedactor(values []string) *redactor {
+	r := &redactor{}
+	for _, value := range values {
+		if value != "" && !slices.Contains(r.values, value) {
+			r.values = append(r.values, value)
+			r.longest = max(r.longest, len(value))
+		}
+	}
+	if len(r.values) == 0 {
+		return nil
+	}
+	// Replace longer values first, so a DSN is redacted before its password.
+	slices.SortFunc(r.values, func(a, b string) int { return len(b) - len(a) })
+	return r
+}
+
+func (r *redactor) replace(text string) string {
+	if r == nil {
+		return text
+	}
+	for _, value := range r.values {
+		text = strings.ReplaceAll(text, value, "[redacted]")
+	}
+	return text
+}
+
+// redactingWriter redacts whole lines, so a value split across writes is still
+// replaced. Overlong lines are flushed early, holding back enough bytes to
+// complete any value that continues in the next write.
+type redactingWriter struct {
+	redactor *redactor
+	dst      io.Writer
+	pending  []byte
+}
+
+const redactLineLimit = 64 << 10
+
+func (w *redactingWriter) Write(p []byte) (int, error) {
+	w.pending = append(w.pending, p...)
+	if i := bytes.LastIndexByte(w.pending, '\n'); i >= 0 {
+		if err := w.emit(w.pending[:i+1]); err != nil {
+			return 0, err
+		}
+		w.pending = w.pending[i+1:]
+	}
+	if len(w.pending) > redactLineLimit {
+		text := []byte(w.redactor.replace(string(w.pending)))
+		keep := min(len(text), w.redactor.longest-1)
+		if _, err := w.dst.Write(text[:len(text)-keep]); err != nil {
+			return 0, err
+		}
+		w.pending = append([]byte(nil), text[len(text)-keep:]...)
+	}
+	return len(p), nil
+}
+
+func (w *redactingWriter) emit(p []byte) error {
+	_, err := io.WriteString(w.dst, w.redactor.replace(string(p)))
+	return err
+}
+
+// Flush writes any final partial line.
+func (w *redactingWriter) Flush() {
+	if len(w.pending) != 0 {
+		_ = w.emit(w.pending)
+		w.pending = nil
+	}
 }
 
 type tailBuffer struct {

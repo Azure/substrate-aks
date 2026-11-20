@@ -41,7 +41,7 @@ func clientFixture(t *testing.T, c Config) (string, []reply) {
 	}
 	return root, []reply{
 		{contains: "group exists", output: "true"}, ownerReply(c),
-		{contains: "deployment sub show", output: string(outputs)},
+		{contains: "deployment sub list", output: string(outputs)},
 		{contains: "aks get-credentials"},
 		{contains: "get namespace", output: "{}"},
 		{contains: "get configmap", output: `{"data":{"installationId":"` + c.Installation.ID + `","fingerprint":"` + fp + `","phase":"deployed"}}`},

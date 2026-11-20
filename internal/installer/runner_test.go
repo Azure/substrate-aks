@@ -126,3 +126,55 @@ func TestRunnerBinaryOutputIsCapturedButNotLogged(t *testing.T) {
 		t.Fatalf("binary stdout must stay out of the log while stderr is kept:\n%q", log.String())
 	}
 }
+
+func TestRunnerRedactsSecretsButKeepsDiagnostics(t *testing.T) {
+	const dsn = "postgresql://user:private-password@db.example:5432/substrate"
+	for _, exit := range []string{"0", "7"} {
+		var log, verbose, stdout, stderr bytes.Buffer
+		r := ExecRunner{Log: &log, Verbose: &verbose, Stdout: &stdout, Stderr: &stderr}
+		// The password is written in two parts to cross a write boundary.
+		data, err := r.Run(t.Context(), Command{
+			Args: []string{"sh", "-c", `printf 'connecting to %s\n' "$DSN"; printf 'QuotaExceeded: vCores for %s' "$FIRST" >&2; sleep 0.1; ` +
+				`printf '%s in westus3\n' "$SECOND" >&2; exit ` + exit, "private-password"},
+			Env:    []string{"DSN=" + dsn, "FIRST=private-pa", "SECOND=ssword"},
+			Redact: []string{"private-password", dsn}, ShowOutput: true,
+		})
+		if !strings.Contains(string(data), dsn) || (err == nil) != (exit == "0") {
+			t.Fatalf("captured stdout or failure changed: %q, %v", data, err)
+		}
+		shown := []string{log.String(), verbose.String(), stdout.String(), stderr.String()}
+		if err != nil {
+			shown = append(shown, err.Error())
+		}
+		for _, text := range shown {
+			if strings.Contains(text, "private-password") || strings.Contains(text, "private-pa") {
+				t.Fatalf("redacted value leaked:\n%s", text)
+			}
+		}
+		_, body, _ := strings.Cut(log.String(), "\n")
+		if !strings.Contains(body, "connecting to [redacted]") || !strings.Contains(body, "QuotaExceeded: vCores for [redacted] in westus3") ||
+			!strings.Contains(log.String(), `"[redacted]"`) {
+			t.Fatalf("redaction lost the surrounding diagnostics:\n%s", log.String())
+		}
+		if exit == "7" && !strings.Contains(err.Error(), "QuotaExceeded: vCores for [redacted] in westus3") {
+			t.Fatalf("failure excerpt lost the cause: %v", err)
+		}
+	}
+}
+
+func TestRedactingWriterHandlesLongLines(t *testing.T) {
+	var out bytes.Buffer
+	secret := "long-line-secret"
+	w := &redactingWriter{redactor: newRedactor([]string{secret}), dst: &out}
+	line := strings.Repeat("x", redactLineLimit) + secret[:4]
+	if _, err := w.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(secret[4:] + " tail")); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	if strings.Contains(out.String(), "long") || !strings.HasSuffix(out.String(), "x[redacted] tail") {
+		t.Fatalf("an overlong line leaked part of a split secret: %q", out.String()[len(out.String())-40:])
+	}
+}

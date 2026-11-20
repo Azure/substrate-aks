@@ -343,6 +343,22 @@ func (u *setupUI) summary(c installer.Config, defaults azureDefaults, path strin
 	u.row("Storage plugin", "Azure Blob, "+c.Substrate.PluginSource.Describe(installer.DefaultPluginRepository))
 	u.row("Image builder", engine)
 
+	u.group("Database")
+	switch c.Database.Backend {
+	case installer.DatabaseFlexible:
+		sku := c.Database.ComputeSKU()
+		u.rowDetail("PostgreSQL", "Azure Database for PostgreSQL Flexible Server",
+			fmt.Sprintf("PostgreSQL 17, %s %s, 32 GiB, seven-day local backups, no HA.", sku.Tier, sku.Name))
+	default:
+		u.rowDetail("PostgreSQL", "Bundled in the cluster", "32 GiB Azure Disk; no backups or HA.")
+	}
+	if c.ManagedDatabase() {
+		u.row("Database region", c.DatabaseLocation())
+		u.rowDetail("Credentials", "Key Vault in the resource group",
+			"Generated passwords are not stored on this machine. The cluster admin receives vault-scoped Secrets Officer access. Teardown deletes the database and its backups; vault secrets stay soft-deleted for seven days.")
+		warnings = append(warnings, "Managed PostgreSQL adds database compute, storage, and backup charges, a Key Vault, and a static egress IP. Its public endpoint accepts only AKS egress, over verified TLS.")
+	}
+
 	access := operator != nil && !same(operator.ObjectID) || !same(reader)
 	if access {
 		u.group("Access")

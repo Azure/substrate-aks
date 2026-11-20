@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Azure/substrate-aks/internal/installer"
@@ -17,6 +18,7 @@ import (
 
 type setupOptions struct {
 	home, subscription, publisher, reader, cidr, name, location string
+	database, databaseLocation                                  string
 	yes, withDemo, verbose, configFlags, accessible             bool
 	discovery                                                   installer.Runner
 	unrestrictedAPI                                             bool
@@ -263,11 +265,68 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				o.reader = o.publisher
 			}
 		}
+		if o.database == "" {
+			o.database = string(installer.DatabaseBundled)
+		}
+		if !o.yes {
+			o.database, err = prompt.database(ctx, o.database)
+			if err != nil {
+				return err
+			}
+		}
+		db := installer.DatabaseConfig{Backend: installer.DatabaseBackend(o.database), Location: o.databaseLocation}
+		chooseDatabaseRegion := !o.yes && db.Backend != installer.DatabaseBundled
+		if chooseDatabaseRegion && db.Location == "" {
+			db.Location = o.location
+		}
+		const regionCheck = "Database region availability"
+		if chooseDatabaseRegion {
+			var databaseRegions []string
+			// Azure answers each region's capability query separately, so
+			// this can take tens of seconds; the check shows elapsed time.
+			ui.checklist("Managed PostgreSQL region", regionCheck)
+			err := ui.check(regionCheck, func() error {
+				ui.step("Checking each service region for this subscription's required PostgreSQL profile; this can take up to a minute")
+				var err error
+				databaseRegions, err = installer.AvailableDatabaseRegions(ctx, runner, o.subscription, db.Backend, regions)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			ui.section("Managed PostgreSQL region")
+			ui.note("Only regions advertising the required database profile for your subscription are offered. The AKS region will not change.")
+			if !slices.Contains(databaseRegions, db.Location) {
+				ui.note(fmt.Sprintf("%s is not available for this database profile; choose a supported database region below.", db.Location))
+				db.Location = databaseRegions[0]
+			}
+			if prompt.accessible {
+				ui.note("Available database regions: " + strings.Join(databaseRegions, ", "))
+			}
+			// The picker offers only regions discovery just verified; the
+			// validation checklist rechecks the saved region before billing.
+			db.Location, err = prompt.region(ctx, db.Location, databaseRegions)
+			if err != nil {
+				return err
+			}
+		} else {
+			if db.Location != "" {
+				db.Location, err = validateAzureRegion(db.Location, regions)
+				if err != nil {
+					return fmt.Errorf("database region: %w", err)
+				}
+			}
+			// Without the picker nothing has checked the profile yet; reject
+			// an unsupported region before saving the installation.
+			if err := installer.ValidateDatabaseRegion(ctx, runner, o.subscription, o.location, db); err != nil {
+				return err
+			}
+		}
 		operator := installer.OperatorConfig{ObjectID: o.operatorID, PrincipalType: o.operatorType}
 		if o.publisherType == "" && strings.EqualFold(o.publisher, defaults.signedInObjectID) {
 			o.publisherType = defaults.signedInType
 		}
-		if err := initialize(o.home, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, io.Discard); err != nil {
+		if err := initialize(o.home, o.subscription, o.publisher, o.reader, o.cidr, o.name, o.location, o.unrestrictedAPI, &operator, o.publisherType, o.readerType, db, io.Discard); err != nil {
 			return err
 		}
 		created = true
@@ -294,8 +353,12 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if defaults.subscriptionName == "" {
 		validation = append(validation, "Azure subscription")
 	}
+	if c.ManagedDatabase() {
+		validation = append(validation, "Managed PostgreSQL availability")
+	}
 	validation = append(validation, "Runtime tools", "Azure deployment readiness", "Operator identity review")
 	ui.checklist("Validate your deployment", validation...)
+	record := installer.RecordPath(o.home, o.name)
 	if !created {
 		if err := ui.check("Saved Azure region", func() error {
 			regions, err := readAzureRegions(ctx, c.Azure.SubscriptionID, runner)
@@ -303,7 +366,23 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 				return err
 			}
 			if _, err := validateAzureRegion(c.Azure.Location, regions); err != nil {
-				return fmt.Errorf("%w; edit azure.location in %s before retrying", err, installer.RecordPath(o.home, o.name))
+				return fmt.Errorf("%w; edit azure.location in %s before retrying", err, record)
+			}
+			if c.ManagedDatabase() {
+				if _, err := validateAzureRegion(c.DatabaseLocation(), regions); err != nil {
+					return fmt.Errorf("database region: %w; edit database.location in %s before retrying", err, record)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if c.ManagedDatabase() {
+		if err := ui.check("Managed PostgreSQL availability", func() error {
+			app := installer.App{Config: c, Runner: runner, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
+			if err := app.CheckDatabaseRegion(ctx); err != nil {
+				return fmt.Errorf("%w; verify the original database settings in %s and Azure access before retrying", err, record)
 			}
 			return nil
 		}); err != nil {

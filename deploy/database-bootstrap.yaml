@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: substrate-aks-postgres-bootstrap
+  namespace: ate-system
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: psql
+        image: postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+        envFrom:
+        - secretRef:
+            name: substrate-aks-postgres-bootstrap
+        env:
+        - name: PGUSER
+          value: substrateadmin
+        - name: PGSSLMODE
+          value: verify-full
+        - name: PGSSLROOTCERT
+          value: /etc/ssl/certs/ca-certificates.crt
+        - name: PGCONNECT_TIMEOUT
+          value: "20"
+        command: ["/bin/sh", "-ec"]
+        args:
+        - |
+          set -o pipefail
+          psql --no-psqlrc --set=ON_ERROR_STOP=1 --set=VERBOSITY=terse --dbname=postgres <<'SQL'
+          SELECT 'CREATE DATABASE substrate' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'substrate')
+          \gexec
+          SQL
+          {
+            printf "\\set substrate_owner_password '%s'\n" "$OWNER_PASSWORD"
+            printf "\\set substrate_readwrite_password '%s'\n" "$READWRITE_PASSWORD"
+            cat /bootstrap/setup.sql
+          } | psql --no-psqlrc --single-transaction --set=ON_ERROR_STOP=1 --set=VERBOSITY=terse \
+            --dbname=substrate \
+            --set=substrate_schema=substrate \
+            --set=substrate_owner_role=substrate_owner \
+            --set=substrate_owner_user=substrate_owner_user \
+            --set=substrate_readwrite_role=substrate_readwrite \
+            --set=substrate_readwrite_user=substrate_readwrite_user
+        volumeMounts:
+        - name: bootstrap
+          mountPath: /bootstrap
+          readOnly: true
+      volumes:
+      - name: bootstrap
+        configMap:
+          name: substrate-aks-postgres-bootstrap
