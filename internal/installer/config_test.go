@@ -401,6 +401,10 @@ func TestConfigBicepPoolParameterBounds(t *testing.T) {
 	}
 	sysMin, sysMax := bounds("systemCount")
 	workerMin, workerMax := bounds("workerCount")
+	description := regexp.MustCompile(`@description\('([^']*)'\)\s*(?:@\w+\([^)]*\)\s*)*param\s+systemCount\b`).FindStringSubmatch(string(data))
+	if len(description) != 2 || !strings.Contains(description[1], "one surge node per pool (maxSurge 1)") {
+		t.Fatalf("systemCount description does not state the template's surge setting: %q", description)
+	}
 	if sysMin != 1 || sysMax != MaxSystemCount || workerMin != 1 || workerMax != MaxWorkerCount ||
 		sysMax+workerMax+2 != MaxOverlayNodes {
 		t.Fatalf("installer and Bicep pool limits disagree: system %d-%d, worker %d-%d", sysMin, sysMax, workerMin, workerMax)

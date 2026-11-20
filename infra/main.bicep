@@ -6,7 +6,7 @@ param installationId string
 param clusterName string
 param kubernetesVersion string = '1.37'
 param systemVmSize string = 'Standard_D4s_v6'
-@description('Maximum reserves overlay addresses for 100 worker nodes and one default surge node per pool.')
+@description('Maximum reserves overlay addresses for 100 worker nodes and one surge node per pool (maxSurge 1).')
 @minValue(1)
 @maxValue(154)
 param systemCount int = 1
