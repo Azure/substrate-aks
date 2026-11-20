@@ -411,11 +411,19 @@ Long-duration credential refresh remains a validation gap.
 | Results, previews, and setup's final commands | stdout |
 | Detailed command logs | Private files in the installation's `logs/` directory. Before a new installation is saved, Preparation logs to `logs/` in the installer's home directory. |
 | `--verbose` | Underlying commands and build output, in standalone commands and accessible setup |
+| Setup timings | `logs/<time>-setup-timings.json` in the installation directory; summarized after setup's final commands, or named in the error when setup stops |
 
 Each command writes its full log to disk, including commands, output, and step
 markers; output marked sensitive is never logged. In the workspace, `l` shows a
 sanitized tail of the current log so subprocess output never overwrites a form
 or approval. For an append-only transcript, use `setup --accessible --verbose`.
+
+The timing report is written once setup's stages begin. It gives each phase,
+stage attempt, and step a UTC start and end, a wall time, and an active time
+that excludes waiting for prompts. Step IDs name operations, such as
+`images.import.ateapi` or `infrastructure.deployment`. The report contains no
+command arguments, error text, credentials, or subscription, resource, or
+installation names.
 
 Failures show a short error and the log path. If the optional kube-context
 handoff fails, setup still completes, warns, and prints exports for the private

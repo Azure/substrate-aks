@@ -202,7 +202,9 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if source == ImageSourceRelease && c.Substrate.Source.Tag == "" {
 		return BuildResult{}, errors.New(`release images need substrate.source.tag naming the release of substrate.source.commit; set it, or set substrate.imageSource to "source" to build the commit`)
 	}
+	stop := a.step(ctx, "images.registry")
 	r, err := a.registry(ctx)
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -214,7 +216,9 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 			return BuildResult{}, err
 		}
 	}
+	stop = a.step(ctx, "images.login")
 	dockerDir, err := a.loginRegistry(ctx, r)
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -223,7 +227,10 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		return BuildResult{}, err
 	}
 	defer os.RemoveAll(root)
-	if err := a.fetchPinnedSource(ctx, root); err != nil {
+	stop = a.step(ctx, "images.source_fetch")
+	err = a.fetchPinnedSource(ctx, root)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	if err := prepareHelper(root); err != nil {
@@ -244,11 +251,14 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		}
 		tag = sourceImageTag(c.Substrate.Source, time.Now())
 		a.progress("Building and pushing Substrate release images from source; this can take several minutes")
-		if _, err := a.Runner.Run(ctx, Command{
+		stop = a.step(ctx, "images.source_build")
+		_, err := a.Runner.Run(ctx, Command{
 			Dir: root, Env: append(append([]string{}, env...), "VERSION="+tag),
 			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-images",
 				"--no-dev-env", "--ko-docker-repo", repo, "--ko-default-platforms", "linux/amd64"},
-		}); err != nil {
+		})
+		stop(err)
+		if err != nil {
 			return BuildResult{}, err
 		}
 	}
@@ -258,10 +268,13 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	}
 	koEnv := []string{"DOCKER_CONFIG=" + dockerDir, "KO_DEFAULTPLATFORMS=linux/amd64"}
 	a.progress("Building and pushing the counter demo image, which releases do not publish")
-	if _, err := a.Runner.Run(ctx, Command{
+	stop = a.step(ctx, "images.demo_build")
+	_, err = a.Runner.Run(ctx, Command{
 		Dir: root, Env: append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+repo),
 		Args: []string{ko, "build", "--base-import-paths", "--tags", tag, "./" + demoImagePackage},
-	}); err != nil {
+	})
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	pluginRoot, err := os.MkdirTemp(c.workspace(), "plugin-")
@@ -269,16 +282,21 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		return BuildResult{}, err
 	}
 	defer os.RemoveAll(pluginRoot)
-	if err := a.fetchPluginSource(ctx, pluginRoot); err != nil {
+	stop = a.step(ctx, "images.plugin_fetch")
+	err = a.fetchPluginSource(ctx, pluginRoot)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	a.progress("Building and pushing the Azure Blob plugin image")
 	pluginRepo := repo + "/plugins/objectstore/azure-blob"
+	stop = a.step(ctx, "images.plugin_build")
 	plugin, err := a.Runner.Run(ctx, Command{
 		Dir:  pluginRoot,
 		Env:  append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+pluginRepo),
 		Args: []string{ko, "build", "--bare", "--tags", tag, "./cmd/azure-blob-objectstore-plugin"},
 	})
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -290,16 +308,22 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if assetsDir == "" {
 		a.progress("Downloading and assembling the pinned amd64 microVM runtime assets")
 		assetsDir = filepath.Join(c.workspace(), "assets")
-		if _, err := a.Runner.Run(ctx, Command{
+		stop = a.step(ctx, "images.assets_download")
+		_, err := a.Runner.Run(ctx, Command{
 			Dir: root, Env: []string{"NO_DEV_ENV=1"},
 			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "microvm-assets",
 				filepath.Join(root, sandboxTemplate), assetsDir, "amd64", "--no-dev-env", "--no-report-defaults"},
-		}); err != nil {
+		})
+		stop(err)
+		if err != nil {
 			return BuildResult{}, err
 		}
 	}
 	a.progress("Verifying runtime asset checksums")
-	if _, err := verifyRuntimeAssets(root, assetsDir); err != nil {
+	stop = a.step(ctx, "images.assets_verify")
+	_, err = verifyRuntimeAssets(root, assetsDir)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	return BuildResult{
@@ -336,11 +360,13 @@ var imageNamePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
 // that each one was built from the configured commit.
 func (a App) importReleaseImages(ctx context.Context, root string, r Registry, repo, tag string) error {
 	a.progress("Verifying that the %s release images were built from the configured commit", tag)
+	stop := a.step(ctx, "images.release_inventory")
 	data, err := a.Runner.Run(ctx, Command{
 		Dir: root, Env: []string{"NO_DEV_ENV=1"},
 		Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-inventory",
 			DefaultReleaseImages, tag, a.Config.Substrate.Source.Commit, "--no-dev-env", "--no-report-defaults"},
 	})
+	stop(err)
 	if err != nil {
 		return fmt.Errorf("verifying release images (nothing was imported): %w", err)
 	}
@@ -351,6 +377,13 @@ func (a App) importReleaseImages(ctx context.Context, root string, r Registry, r
 		return errors.New("the pinned release inventory returned no usable image list")
 	}
 	prefix := strings.TrimPrefix(repo, r.LoginServer+"/")
+	stop = a.step(ctx, "images.imports")
+	err = a.importImages(ctx, r, prefix, tag, inventory)
+	stop(err)
+	return err
+}
+
+func (a App) importImages(ctx context.Context, r Registry, prefix, tag string, inventory []releaseImage) error {
 	for _, image := range inventory {
 		if !imageNamePattern.MatchString(image.Name) || !digestPattern.MatchString("image@"+image.Digest) {
 			return errors.New("the pinned release inventory returned an invalid image reference")
@@ -359,21 +392,29 @@ func (a App) importReleaseImages(ctx context.Context, root string, r Registry, r
 		a.progress("Importing %s into %s", image.Name, r.LoginServer)
 		// Imports are server-side and keep the digest; --force only retags the
 		// verified digest on a retry.
-		if _, err := a.az(ctx, "acr", "import", "--name", r.Name,
+		stop := a.step(ctx, "images.import."+image.Name)
+		_, err := a.az(ctx, "acr", "import", "--name", r.Name,
 			"--source", DefaultReleaseImages+"/"+image.Name+"@"+image.Digest,
-			"--image", target, "--force"); err != nil {
+			"--image", target, "--force")
+		stop(err)
+		if err != nil {
 			return fmt.Errorf("importing %s (the upload identity needs Container Registry Data Importer and Data Reader on the owned registry; provision grants it, and new grants can take a few minutes to propagate): %w", image.Name, err)
 		}
+		stop = a.step(ctx, "images.verify."+image.Name)
 		shown, err := a.az(ctx, "acr", "repository", "show", "--name", r.Name, "--image", target)
 		if err != nil {
+			stop(err)
 			return err
 		}
 		var manifest struct {
 			Digest string `json:"digest"`
 		}
 		if err := json.Unmarshal(shown, &manifest); err != nil || manifest.Digest != image.Digest {
-			return fmt.Errorf("imported %s does not have the verified release digest", target)
+			err = fmt.Errorf("imported %s does not have the verified release digest", target)
+			stop(err)
+			return err
 		}
+		stop(nil)
 	}
 	return nil
 }

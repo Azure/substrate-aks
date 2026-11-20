@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func imageCheckReplies(c Config, result string) []reply {
@@ -72,11 +73,13 @@ func TestSavedImagesInRecreatedRegistry(t *testing.T) {
 				err  error
 			}
 			var events []stepResult
+			timings := NewTimings(time.Now)
+			timings.Phase("substrate", "Substrate")
 			err = (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()},
 				ImageCheckProgress: func(name string, done bool, err error) {
 					events = append(events, stepResult{name, done, err})
 				},
-			}).CheckImages(t.Context())
+			}).CheckImages(WithTimings(t.Context(), timings))
 			if tc.status == "available" {
 				if err != nil {
 					t.Fatal(err)
@@ -100,6 +103,16 @@ func TestSavedImagesInRecreatedRegistry(t *testing.T) {
 				if !errors.Is(end.err, want) {
 					t.Fatalf("image step %q reported %v instead of %v", name, end.err, want)
 				}
+			}
+			var timed []string
+			for _, step := range timings.Report(TimingFailed).Steps() {
+				if id, ok := strings.CutPrefix(step.ID, "images.check."); ok {
+					timed = append(timed, id+"="+step.Outcome)
+				}
+			}
+			outcome := TimingOutcome(err)
+			if want := []string{"credentials=" + TimingSucceeded, "source_fetch=" + TimingSucceeded, "tools=" + TimingSucceeded, "inventory=" + outcome}; !reflect.DeepEqual(timed, want) {
+				t.Fatalf("image check steps timed as %v, want %v", timed, want)
 			}
 			if !reflect.DeepEqual(c, before) {
 				t.Fatal("image verification changed configuration")

@@ -169,6 +169,8 @@ func (p *setupPrompt) runForm(ctx context.Context, resize func(height int), fiel
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Time spent answering is not setup work.
+	defer installer.TimingsFrom(ctx).Wait()()
 	form := huh.NewForm(huh.NewGroup(fields...))
 	if p.ui.session != nil {
 		return p.ui.session.prompt(ctx, form, resize)
