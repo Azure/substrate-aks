@@ -30,8 +30,9 @@ const (
 	// Dsv6 runs on one CPU generation; memory snapshots cannot restore across TSC rates.
 	DefaultWorkerVMSize = "Standard_D4s_v6"
 	DefaultSystemVMSize = "Standard_D4s_v6"
-	// The overlay gives each node a /24 from a /16; AKS defaults to one surge node per pool:
-	// https://github.com/MicrosoftDocs/azure-aks-docs/blob/06cb62048bec26a37e731947fcb45f3e4f50741c/articles/aks/upgrade-aks-node-pools-rolling.md
+	// The overlay gives each node a /24 from a /16, and infra/resources.bicep sets
+	// maxSurge to 1 per pool, so upgrades need two spare /24s:
+	// https://learn.microsoft.com/azure/aks/concepts-network-azure-cni-overlay
 	MaxWorkerCount  = 100
 	MaxOverlayNodes = 256
 	MaxSystemCount  = MaxOverlayNodes - 2 - MaxWorkerCount

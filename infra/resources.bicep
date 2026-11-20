@@ -104,6 +104,9 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         osDiskType: 'Managed'
         osDiskSizeGB: 128
         type: 'VirtualMachineScaleSets'
+        upgradeSettings: {
+          maxSurge: '1'
+        }
       }
       union({
         name: 'microvm'
@@ -115,6 +118,9 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         osDiskType: workerOsDiskType
         osDiskSizeGB: workerOsDiskSizeGB
         type: 'VirtualMachineScaleSets'
+        upgradeSettings: {
+          maxSurge: '1'
+        }
         nodeTaints: ['ate.dev/sandboxClass=microvm:NoSchedule']
         nodeLabels: {
           'substrate-aks/runtime': 'microvm'
