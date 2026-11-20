@@ -138,21 +138,31 @@ func TestMonitoringManagedResourceGroupTarget(t *testing.T) {
 	c := testConfig(t)
 	c.Monitoring.Enabled = true
 	workspaceID := testMonitoring(c).WorkspaceID
+	const (
+		teardown = "incomplete teardown"
+		mode     = "monitoring mode differs"
+		cluster  = "does not match configured AKS cluster"
+	)
+	foreignSubscription := strings.Replace(workspaceID, c.Azure.SubscriptionID, "33333333-3333-4333-8333-333333333333", 1)
 	for _, tc := range []struct {
 		name, manager string
 		enabled, main bool
-		ok            bool
+		// want is a substring of the refusal, or empty when the target is allowed.
+		want string
 	}{
-		{"owned workspace", workspaceID, true, true, true},
-		{"case-insensitive workspace ID", strings.ToUpper(workspaceID), true, true, true},
-		{"monitoring disabled", workspaceID, false, true, false},
-		{"orphaned workspace group", workspaceID, true, false, false},
-		{"foreign subscription", strings.Replace(workspaceID, c.Azure.SubscriptionID, "33333333-3333-4333-8333-333333333333", 1), true, true, false},
-		{"foreign resource group", strings.Replace(workspaceID, "/resourceGroups/"+c.Azure.ResourceGroup+"/", "/resourceGroups/another-group/", 1), true, true, false},
-		{"different resource provider", strings.Replace(workspaceID, "Microsoft.Monitor/accounts", "Microsoft.Example/accounts", 1), true, true, false},
-		{"workspace child resource", workspaceID + "/child", true, true, false},
-		{"workspace name missing", workspaceID[:strings.LastIndex(workspaceID, "/")+1], true, true, false},
-		{"unmanaged MA group", "", true, true, false},
+		{"owned workspace", workspaceID, true, true, ""},
+		{"case-insensitive workspace ID", strings.ToUpper(workspaceID), true, true, ""},
+		{"monitoring disabled", workspaceID, false, true, mode},
+		{"monitoring disabled without installation group", workspaceID, false, false, mode},
+		{"monitoring disabled with foreign workspace", foreignSubscription, false, true, cluster},
+		{"monitoring disabled with workspace child resource", workspaceID + "/child", false, true, cluster},
+		{"orphaned workspace group", workspaceID, true, false, teardown},
+		{"foreign subscription", foreignSubscription, true, true, cluster},
+		{"foreign resource group", strings.Replace(workspaceID, "/resourceGroups/"+c.Azure.ResourceGroup+"/", "/resourceGroups/another-group/", 1), true, true, cluster},
+		{"different resource provider", strings.Replace(workspaceID, "Microsoft.Monitor/accounts", "Microsoft.Example/accounts", 1), true, true, cluster},
+		{"workspace child resource", workspaceID + "/child", true, true, cluster},
+		{"workspace name missing", workspaceID[:strings.LastIndex(workspaceID, "/")+1], true, true, cluster},
+		{"unmanaged MA group", "", true, true, "already owns resource group"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := c
@@ -164,11 +174,11 @@ func TestMonitoringManagedResourceGroupTarget(t *testing.T) {
 			groups += "]"
 			r := script(t, reply{contains: "group list --tag", output: groups})
 			err := (App{Config: config, Runner: r}).guardTarget(t.Context())
-			if (err == nil) != tc.ok {
-				t.Fatalf("managed workspace target result = %v; want allowed=%v", err, tc.ok)
+			if tc.want == "" && err != nil {
+				t.Fatalf("rejected the installation's own workspace group: %v", err)
 			}
-			if !tc.main && (err == nil || !strings.Contains(err.Error(), "incomplete teardown")) {
-				t.Fatalf("orphaned workspace lost teardown guidance: %v", err)
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("managed workspace target result = %v; want a refusal containing %q", err, tc.want)
 			}
 		})
 	}

@@ -196,6 +196,9 @@ func (a App) guardTarget(ctx context.Context) error {
 				}
 				return fmt.Errorf("Azure Monitor-managed resource group %q remains for workspace %q, but the tagged installation resource group %q was not found; refusing target reuse or image-reference reset. Wait for any in-progress teardown to finish, then retry. If it persists, inspect Azure for incomplete teardown or changed ownership tags before reusing this configuration", group.Name, group.ManagedBy, a.Config.Azure.ResourceGroup)
 			}
+			if !a.Config.Monitoring.Enabled && validMonitoringResourceID(a.Config, group.ManagedBy, "Microsoft.Monitor/accounts") {
+				return fmt.Errorf("resource group %q is managed by this installation's Azure Monitor workspace %q, but monitoring.enabled is false; monitoring mode differs from the provisioned installation. Restore monitoring.enabled and monitoring.location to this installation's original values; use a new configuration for a separate installation", group.Name, group.ManagedBy)
+			}
 			if group.ManagedBy != "" {
 				return fmt.Errorf("resource group %q is managed by %q, which does not match configured AKS cluster %q; refusing to reuse this installation ID. Restore aks.clusterName and azure.resourceGroup to this installation's original values for management or teardown; use a new configuration for a separate installation", group.Name, group.ManagedBy, clusterID)
 			}
