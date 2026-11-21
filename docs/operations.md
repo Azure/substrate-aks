@@ -528,10 +528,11 @@ with the earlier Dsv3 default.
 - Credential renewal over days or weeks
 - Several operators sharing one installation
 - Native macOS installation hosts
-- Arm64 nodes
 - Recovery from interrupted installs beyond rerunning `setup NAME`
 - Changing the snapshot reader on an existing installation
 - Regions and VM sizes other than those in the runs above
+
+Arm64 nodes are not supported; preflight refuses Arm64 VM sizes.
 
 Not part of this quickstart: installing into an existing cluster, managed
 PostgreSQL ([#2](https://github.com/Azure/substrate-aks/pull/2)), upgrades, autoscaling, dashboards ([#14](https://github.com/Azure/substrate-aks/pull/14)), and shared

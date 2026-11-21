@@ -2,6 +2,8 @@ param location string
 param installationId string
 param clusterName string
 param kubernetesVersion string
+param systemVmSize string
+param systemCount int
 param workerVmSize string
 param workerCount int
 @allowed(['Managed', 'Ephemeral'])
@@ -95,13 +97,16 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
       {
         name: 'system'
         mode: 'System'
-        count: 1
-        vmSize: 'Standard_D4s_v6'
+        count: systemCount
+        vmSize: systemVmSize
         osType: 'Linux'
         osSKU: 'Ubuntu'
         osDiskType: 'Managed'
         osDiskSizeGB: 128
         type: 'VirtualMachineScaleSets'
+        upgradeSettings: {
+          maxSurge: '1'
+        }
       }
       union({
         name: 'microvm'
@@ -113,6 +118,9 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         osDiskType: workerOsDiskType
         osDiskSizeGB: workerOsDiskSizeGB
         type: 'VirtualMachineScaleSets'
+        upgradeSettings: {
+          maxSurge: '1'
+        }
         nodeTaints: ['ate.dev/sandboxClass=microvm:NoSchedule']
         nodeLabels: {
           'substrate-aks/runtime': 'microvm'

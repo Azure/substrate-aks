@@ -76,6 +76,10 @@ placeholders are not valid deployment values.
       "objectId": "YOUR_OPERATOR_ENTRA_OBJECT_UUID",
       "principalType": "User"
     },
+    "systemPool": {
+      "vmSize": "Standard_D4s_v6",
+      "count": 1
+    },
     "workerPool": {
       "vmSize": "Standard_D4s_v6",
       "count": 1,
@@ -126,11 +130,27 @@ the incomplete deletion before retrying.
 If the resource group is deleted outside the installer, reset references to
 deleted images before reusing the installation. See [retry and teardown](operations.md#retry-and-teardown).
 
-## MicroVM worker pool
+## Node pools
 
-Sandboxes run on a dedicated, tainted `microvm` node pool. The system pool is
-always one `Standard_D4s_v6` node; [#23](https://github.com/Azure/substrate-aks/issues/23) tracks making it configurable. Set the worker pool in `installation.json`
-before running `plan` and `provision`:
+Set the system pool in `installation.json` before running `plan` and `provision`.
+It must have enough capacity for the control plane's resource requests, including
+API server and router replicas.
+
+| Field | Default | Limits |
+| --- | --- | --- |
+| `aks.systemPool.vmSize` | `Standard_D4s_v6` | An explicit Linux/amd64 (x86-64) `Standard_*` Azure VM size available in the region; regional availability alone does not establish compatibility |
+| `aks.systemPool.count` | `1` | 1-154 nodes |
+
+`plan` and `provision` refuse to change the system pool's VM size on an existing
+installation; destroy it and create a new one instead. The count can change in
+place. Direct Bicep deployments can set `systemVmSize` and `systemCount`.
+Reducing the count drains removed nodes and can briefly restart single-replica
+control-plane pods, interrupting service.
+
+### MicroVM worker pool
+
+Sandboxes run on a dedicated, tainted `microvm` node pool. Set the worker pool in
+`installation.json` before running `plan` and `provision`:
 
 | Field | Default | Limits |
 | --- | --- | --- |
@@ -144,9 +164,18 @@ AKS fixes `osDiskType`, `osDiskSizeGB` and `maxPods` when it creates the pool.
 `plan` and `provision` refuse to change them on an existing installation;
 destroy it and create a new one instead.
 
-The 100-node limit keeps the cluster within its overlay pod address range
-(`10.244.0.0/16`, one `/24` per node, so 256 nodes in total) with room for
-upgrade surge nodes. AKS itself allows up to 1,000 nodes per pool.
+The installer and direct `main.bicep` deployments limit the system pool to
+154 nodes and the worker pool to 100. Their sum is therefore at most 254.
+The overlay pod address range (`10.244.0.0/16`, one `/24` per node) fits
+256 nodes total, leaving one upgrade surge node for each pool. Upgrades,
+including the automatic node-image upgrades, add one surge node per pool, so
+they replace one node at a time and take longer on large pools; this keeps
+upgrades within the pod address range that the count limits assume. The
+template sets `maxSurge: '1'` on both pools for new installations, re-provisioned
+installations and direct `main.bicep` deployments. Re-provisioning reapplies it,
+replacing surge settings changed outside the installer; until then, reserve
+enough additional addresses for such changes. AKS itself allows up to 1,000
+nodes per pool.
 
 ### Snapshot disk performance
 
@@ -190,9 +219,16 @@ The system pool keeps the AKS default.
 ### Quota and CPU compatibility
 
 Preflight checks that the size is offered in the region and that regional and
-VM-family vCPU quota covers both pools; request more quota before provisioning
-a large pool. Use a v6 or v7 x86 D, E or F size when running more than one node,
-so memory snapshots can restore on any node; see
+VM-family vCPU quota covers both pools. Upgrades need quota for one extra node
+of each pool's size, so preflight also counts one surge node per pool; request
+more quota before provisioning a large pool.
+
+Both pools need x64 sizes. Preflight refuses a size whose regional SKU catalog
+entry lists another CPU architecture, and refuses it when the entry lists no
+architecture. Arm64 nodes are not supported. Regional availability and an x64
+architecture alone do not establish compatibility. Use a v6 or v7 x86 D, E or F
+size when running more than one node, so memory snapshots can restore on any
+node; see
 [memory restore needs matching CPUs](operations.md#memory-restore-needs-matching-cpus).
 
 ## Azure identity and permissions
@@ -280,8 +316,8 @@ access uses separate identities and does not depend on this optional grant.
 Region names are checked against the subscription's region list. Before
 provisioning the registry, setup also checks the AKS version, VM size
 availability, regional and VM-family CPU quota, and the deployment and
-role-assignment permissions it can discover. On retries, only the additional CPU
-is counted against quota. Run `doctor NAME --azure` for the same
+role-assignment permissions it can discover. On retries, only the additional CPU,
+plus one surge node for each pool that grows, is counted against quota. Run `doctor NAME --azure` for the same
 read-only checks.
 
 These checks are a snapshot, not a reservation or a complete authorization proof.

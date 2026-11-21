@@ -80,6 +80,9 @@ func (a App) CloudPreflight(ctx context.Context) error {
 		if err := a.guardWorkerPool(cluster); err != nil {
 			return err
 		}
+		if err := a.guardSystemPool(cluster); err != nil {
+			return err
+		}
 	}
 	a.progress("Checking subscription deployment and role-assignment permissions")
 	scope := "/subscriptions/" + a.Config.Azure.SubscriptionID
@@ -143,9 +146,10 @@ func (a App) CloudPreflight(ctx context.Context) error {
 	total := int64(0)
 	var skuCatalog []byte
 	for _, pool := range []struct {
-		name, size string
-		count      int
-	}{{"system", SystemVMSize, 1}, {"microvm", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
+		name, field, size string
+		count             int
+	}{{"system", "aks.systemPool.vmSize", a.Config.AKS.SystemPool.VMSize, a.Config.AKS.SystemPool.Count},
+		{"microvm", "aks.workerPool.vmSize", a.Config.AKS.WorkerPool.VMSize, a.Config.AKS.WorkerPool.Count}} {
 		count := pool.count
 		if cluster != nil {
 			for _, existing := range cluster.AgentPoolProfiles {
@@ -165,11 +169,12 @@ func (a App) CloudPreflight(ctx context.Context) error {
 				return err
 			}
 		}
-		family, cpus, err := a.cloudSKU(skuCatalog, pool.size)
+		family, cpus, err := a.cloudSKU(skuCatalog, pool.size, pool.field)
 		if err != nil {
 			return err
 		}
-		additional := int64(count) * cpus
+		// Upgrades add one node of this size (maxSurge 1 in infra/resources.bicep).
+		additional := int64(count+1) * cpus
 		needed[strings.ToLower(family)] += additional
 		total += additional
 	}
@@ -213,7 +218,7 @@ func (a App) CloudPreflight(ctx context.Context) error {
 					return fmt.Errorf("CPU quota %s has invalid usage or limit; capacity is unverified", family)
 				}
 				if required > limit-used {
-					return fmt.Errorf("insufficient %s CPU quota in %s: %d used, %d limit, %d additional required; request quota or select another region/SKU before provisioning", family, a.Config.Azure.Location, used, limit, required)
+					return fmt.Errorf("insufficient %s CPU quota in %s: %d used, %d limit, %d additional required, including one upgrade surge node per pool; request quota or select another region/SKU before provisioning", family, a.Config.Azure.Location, used, limit, required)
 				}
 			}
 			if !found {
@@ -233,7 +238,9 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 		"$filter":     {"location eq '" + strings.ReplaceAll(a.Config.Azure.Location, "'", "''") + "'"},
 	}
 	next := endpoint + "?" + params.Encode()
-	query := fmt.Sprintf("{value:value[?resourceType=='virtualMachines' && (name=='%s' || name=='%s')],nextLink:nextLink}", SystemVMSize, a.Config.AKS.WorkerPool.VMSize)
+	// JMESPath compares strings case-sensitively; cloudSKU matches names with EqualFold.
+	// Project only the fields the checks read, since command output is logged.
+	query := "{value:value[?resourceType=='virtualMachines'].{name:name,family:family,capabilities:capabilities,restrictions:restrictions},nextLink:nextLink}"
 	var skus []json.RawMessage
 	seen := map[string]bool{}
 	for next != "" {
@@ -270,7 +277,7 @@ func (a App) regionalSKUCatalog(ctx context.Context) ([]byte, error) {
 	return json.Marshal(skus)
 }
 
-func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
+func (a App) cloudSKU(data []byte, size, field string) (string, int64, error) {
 	var skus []struct {
 		Name, Family string
 		Capabilities []struct{ Name, Value string }
@@ -297,6 +304,18 @@ func (a App) cloudSKU(data []byte, size string) (string, int64, error) {
 					}
 				}
 			}
+		}
+		architecture := ""
+		for _, capability := range sku.Capabilities {
+			if capability.Name == "CpuArchitectureType" {
+				architecture = capability.Value
+			}
+		}
+		if architecture == "" {
+			return "", 0, fmt.Errorf("VM SKU %s has no CPU architecture information, so x64 compatibility is unverified; set %s to another size", size, field)
+		}
+		if !strings.EqualFold(architecture, "x64") {
+			return "", 0, fmt.Errorf("VM size %s uses the %s CPU architecture, but Substrate needs x64 (amd64) nodes; set %s to another, x64 size such as %s", size, architecture, field, DefaultSystemVMSize)
 		}
 		for _, capability := range sku.Capabilities {
 			if capability.Name == "vCPUs" && sku.Family != "" {
