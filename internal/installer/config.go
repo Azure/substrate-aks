@@ -88,8 +88,9 @@ type OperatorConfig struct {
 // WorkerPoolConfig sizes the microVM pool. AKS fixes OSDiskType, OSDiskSizeGB
 // and MaxPods when the pool is created; changing them needs a new installation.
 type WorkerPoolConfig struct {
-	VMSize string `json:"vmSize"`
-	Count  int    `json:"count"`
+	VMSize                   string `json:"vmSize"`
+	Count                    int    `json:"count"`
+	AllowMixedCPUGenerations bool   `json:"allowMixedCpuGenerations"`
 	// OSDiskType is Managed or Ephemeral, which places the OS disk, and with it
 	// /var/lib/ate, on the VM's local storage (NVMe on v6/v7 "d" sizes).
 	OSDiskType   string `json:"osDiskType,omitempty"`

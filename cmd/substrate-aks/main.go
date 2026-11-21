@@ -397,7 +397,7 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 		}
 		p.info("Diagnostic log: %s", log.Name())
 	}
-	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, Preview: func(changes []installer.ResourceChange) error {
+	a := installer.App{Config: c, Runner: runner, ContainerEngine: containerEngine, Progress: p.step, Warn: p.warn, Preview: func(changes []installer.ResourceChange) error {
 		p.pause()
 		if session != nil {
 			return session.preview(c.Azure.SubscriptionID, changes)

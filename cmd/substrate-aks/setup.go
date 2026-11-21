@@ -341,6 +341,7 @@ func setupFlow(ctx context.Context, o setupOptions, in io.Reader, out, stderr io
 	if cloudRunner == nil {
 		cloudRunner = runner
 	}
+	// The summary below shows CPU-generation warnings, so preflight's are not repeated.
 	cloud := installer.App{Config: c, Runner: cloudRunner, Progress: func(format string, args ...any) { ui.step(fmt.Sprintf(format, args...)) }}
 	if err := ui.check("Azure deployment readiness", func() error { return cloud.CloudPreflight(ctx) }); err != nil {
 		return fmt.Errorf("Azure prerequisites failed before provisioning: %w", err)

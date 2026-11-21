@@ -19,6 +19,22 @@ type cloudPermissions struct {
 	NextLink string
 }
 
+var stableBaselineSKU = regexp.MustCompile(`^Standard_[DEF][0-9]+(-[0-9]+)?[a-oq-z]*_v[67]$`)
+
+// CPUGenerationRisk checks, from configuration alone, whether a multi-node
+// microVM pool can span CPU generations. It returns "" when there is no risk;
+// refused is true unless aks.workerPool.allowMixedCpuGenerations accepts it.
+func (w WorkerPoolConfig) CPUGenerationRisk() (risk string, refused bool) {
+	if w.Count <= 1 || stableBaselineSKU.MatchString(w.VMSize) {
+		return "", false
+	}
+	message := fmt.Sprintf("microVM pool size %s may span CPU generations with different TSC rates, causing memory snapshot restore failures; choose a stable-baseline _v6 size such as Standard_D4s_v6", w.VMSize)
+	if !w.AllowMixedCPUGenerations {
+		return message + ", or explicitly set aks.workerPool.allowMixedCpuGenerations to true to accept the risk; AKS cannot change an existing pool's VM size, so for an existing pool set the opt-in or destroy and recreate the installation", true
+	}
+	return message + "; aks.workerPool.allowMixedCpuGenerations is enabled", false
+}
+
 func (permissions cloudPermissions) allows(action string) bool {
 	matches := func(pattern string) bool {
 		pattern = "(?i)^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*") + "$"
@@ -58,6 +74,11 @@ func (a App) cloudPermissions(ctx context.Context, scope string) (cloudPermissio
 func (a App) CloudPreflight(ctx context.Context) error {
 	if err := a.Config.Validate(); err != nil {
 		return err
+	}
+	if risk, refused := a.Config.AKS.WorkerPool.CPUGenerationRisk(); refused {
+		return errors.New(risk)
+	} else if risk != "" {
+		a.warn(risk)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()

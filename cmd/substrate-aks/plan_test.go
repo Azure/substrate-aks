@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -96,6 +98,47 @@ func TestPlanTableWrapsWithoutTruncatingIDsAndHandlesNoChanges(t *testing.T) {
 	text = renderPlan(renderer, "example", []installer.ResourceChange{{ChangeType: "NoChange", ResourceID: "unchanged"}}, 80)
 	if !strings.Contains(text, "\n\nNo resource changes.\n\n") || strings.Contains(text, "unchanged") {
 		t.Fatalf("empty preview was unclear or leaked unchanged rows: %s", text)
+	}
+}
+
+func TestCLIProvisionRefusesAndPlanWarnsOnCPUGenerationRisk(t *testing.T) {
+	path := testCLIConfig(t)
+	c, err := installer.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.AKS.WorkerPool.VMSize, c.AKS.WorkerPool.Count = "Standard_D4s_v5", 2
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fakeTool(t, bin, "az", `
+case "$1 $2" in
+  "account show") printf '{"id":"22222222-2222-4222-8222-222222222222"}';;
+  "group list") printf '[]';;
+  "group exists") printf 'false';;
+  "deployment sub") [ "$3" = what-if ] || exit 19; printf '{"status":"Succeeded","changes":[]}';;
+  *) printf 'unexpected Azure operation\n' >&2; exit 19;;
+esac
+`)
+	t.Setenv("PATH", bin)
+	var result, progress bytes.Buffer
+	err = run(t.Context(), []string{"provision", recordName(path)}, &result, &progress)
+	if err == nil || !strings.Contains(err.Error(), "allowMixedCpuGenerations") || strings.Contains(err.Error(), "unexpected Azure") {
+		t.Fatalf("provision did not refuse the multi-node non-baseline pool before Azure calls: %v", err)
+	}
+	result.Reset()
+	progress.Reset()
+	if err := run(t.Context(), []string{"plan", recordName(path)}, &result, &progress); err != nil {
+		t.Fatalf("plan refused instead of warning: %v", err)
+	}
+	if text := strings.Join(strings.Fields(progress.String()), " "); !strings.Contains(text, "provision will refuse this pool: microVM pool size Standard_D4s_v5") ||
+		!strings.Contains(text, "snapshot restore") {
+		t.Fatalf("plan did not warn about the restore risk: %s", &progress)
 	}
 }
 

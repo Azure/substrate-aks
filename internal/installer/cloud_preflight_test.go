@@ -27,6 +27,152 @@ func cloudReplies(c Config) []reply {
 	}
 }
 
+func TestCloudPreflightStableBaselinePattern(t *testing.T) {
+	for _, tc := range []struct {
+		size string
+		want bool
+	}{
+		{"Standard_D4s_v6", true}, {"Standard_D4s_v7", true},
+		{"Standard_E8ds_v6", true}, {"Standard_E8ds_v7", true},
+		{"Standard_F16s_v6", true}, {"Standard_F16s_v7", true},
+		{"Standard_D64-32s_v6", true}, {"Standard_D4_v7", true},
+		{"Standard_D4s_v5", false}, {"Standard_D4ps_v6", false}, {"Standard_E4pds_v7", false},
+		{"Standard_L8s_v7", false}, {"Standard_D4s_v8", false}, {"standard_D4s_v6", false},
+		{"Standard_D4s_v6_extra", false}, {"Standard_Ds_v6", false},
+	} {
+		t.Run(tc.size, func(t *testing.T) {
+			if got := stableBaselineSKU.MatchString(tc.size); got != tc.want {
+				t.Fatalf("stable baseline match = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCloudPreflightMicroVMRestoreRisk(t *testing.T) {
+	for _, tc := range []struct {
+		name, size     string
+		count          int
+		optIn, refused bool
+		warn           bool
+	}{
+		{"single older", "Standard_D4s_v5", 1, false, false, false},
+		{"single arm", "Standard_D4ps_v6", 1, false, false, false},
+		{"single other", "Standard_L8s_v7", 1, false, false, false},
+		{"D v6", "Standard_D4s_v6", 2, false, false, false},
+		{"D v7", "Standard_D4s_v7", 2, false, false, false},
+		{"E v6", "Standard_E8ds_v6", 2, false, false, false},
+		{"E v7", "Standard_E8ds_v7", 2, false, false, false},
+		{"F v6", "Standard_F16s_v6", 2, false, false, false},
+		{"F v7", "Standard_F16s_v7", 2, false, false, false},
+		{"older refused", "Standard_D4s_v5", 2, false, true, false},
+		{"larger older refused", "Standard_D4s_v5", 100, false, true, false},
+		{"arm refused", "Standard_D4ps_v6", 2, false, true, false},
+		{"other refused", "Standard_L8s_v7", 2, false, true, false},
+		{"older opted in", "Standard_D4s_v5", 2, true, false, true},
+		{"arm opted in", "Standard_D4ps_v6", 2, true, false, true},
+		{"stable opted in", "Standard_D4s_v6", 2, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.WorkerPool.VMSize, c.AKS.WorkerPool.Count = tc.size, tc.count
+			c.AKS.WorkerPool.AllowMixedCPUGenerations = tc.optIn
+			replies := cloudReplies(c)
+			if tc.refused {
+				replies = nil
+			} else {
+				replies[6].output = `[{"name":{"value":"cores"},"currentValue":0,"limit":1000},{"name":{"value":"StandardDsv6Family"},"currentValue":0,"limit":1000}]`
+				if tc.size != SystemVMSize {
+					worker := skuReply(tc.size)
+					replies[5].output = strings.TrimSuffix(replies[5].output, "]}") + "," + strings.TrimPrefix(worker.output, `{"value":[`)
+				}
+			}
+			var progress, warned []string
+			r := script(t, replies...)
+			err := (App{Config: c, Runner: r, Progress: func(format string, args ...any) {
+				progress = append(progress, fmt.Sprintf(format, args...))
+			}, Warn: func(message string) { warned = append(warned, message) }}).CloudPreflight(t.Context())
+			if tc.refused {
+				if err == nil {
+					t.Fatal("risky pool was accepted")
+				}
+				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size, "existing pool", "destroy and recreate"} {
+					if !strings.Contains(err.Error(), term) {
+						t.Errorf("error %q lacks %q", err, term)
+					}
+				}
+				if len(r.calls) != 0 {
+					t.Fatal("refusal happened after cloud calls")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if text := strings.Join(progress, "\n"); strings.Contains(text, "WARNING") || strings.Contains(text, "TSC") {
+				t.Fatalf("restore risk was sent as progress text: %s", text)
+			}
+			warnings := strings.Join(warned, "\n")
+			if len(warned) > 0 != tc.warn {
+				t.Fatalf("unexpected warnings: %s", warnings)
+			}
+			if tc.warn {
+				for _, term := range []string{"TSC", "snapshot restore", "_v6", "allowMixedCpuGenerations", tc.size} {
+					if !strings.Contains(warnings, term) {
+						t.Errorf("warning %q lacks %q", warnings, term)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProvisionMicroVMRestoreRisk(t *testing.T) {
+	for _, tc := range []struct {
+		name, size     string
+		whatIf, optIn  bool
+		refused, warns bool
+	}{
+		{"provision refused", "Standard_D4s_v5", false, false, true, false},
+		{"plan warns", "Standard_D4s_v5", true, false, false, true},
+		{"opted-in provision warns", "Standard_D4s_v5", false, true, false, true},
+		{"stable provision", "Standard_D4s_v6", false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig(t)
+			c.AKS.WorkerPool.VMSize, c.AKS.WorkerPool.Count = tc.size, 2
+			c.AKS.WorkerPool.AllowMixedCPUGenerations = tc.optIn
+			var replies []reply
+			if !tc.refused {
+				deploy := reply{contains: "deployment sub create"}
+				if tc.whatIf {
+					deploy = reply{contains: "deployment sub what-if", output: `{"status":"Succeeded","changes":[]}`}
+				}
+				replies = []reply{accountReply(c), targetReply(), {contains: "group exists", output: "false"}, deploy}
+			}
+			var progress, warned []string
+			err := (App{Config: c, Runner: script(t, replies...), Progress: func(format string, args ...any) {
+				progress = append(progress, fmt.Sprintf(format, args...))
+			}, Warn: func(message string) { warned = append(warned, message) }}).Provision(t.Context(), tc.whatIf)
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), "allowMixedCpuGenerations") || !strings.Contains(err.Error(), tc.size) {
+					t.Fatalf("risky provision was not refused before Azure calls: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(warned) > 0 != tc.warns || tc.warns && (len(warned) != 1 || !strings.Contains(warned[0], "snapshot restore") || !strings.Contains(warned[0], tc.size) ||
+				strings.HasPrefix(warned[0], "provision will refuse") != (tc.whatIf && !tc.optIn)) {
+				t.Fatalf("unexpected warnings: %q", warned)
+			}
+			if text := strings.Join(progress, "\n"); strings.Contains(text, "TSC") {
+				t.Fatalf("restore risk was sent as progress text: %s", text)
+			}
+		})
+	}
+}
+
 func TestCloudPreflightChecksReadOnlyCapacityAndPermissions(t *testing.T) {
 	for _, tc := range []struct {
 		name, output, want string
