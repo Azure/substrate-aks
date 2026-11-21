@@ -328,7 +328,8 @@ func runCommand(ctx context.Context, args []string, out, stderr io.Writer, clien
 	if err != nil {
 		return err
 	}
-	lock, err := installer.Lock(c)
+	// Guided setup may hold the lock for commands it runs concurrently.
+	lock, err := installer.LockFor(ctx, c)
 	if err != nil {
 		return err
 	}

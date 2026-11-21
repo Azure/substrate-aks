@@ -240,7 +240,8 @@ func TestReleaseImagesImportVerifiedDigests(t *testing.T) {
 	replies = append(replies, extraImageReplies(c, c.Substrate.Source.Tag)...)
 	r := script(t, replies...)
 	assetsDir := filepath.Join(c.workspace(), "assets")
-	result, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}, ContainerEngine: "docker"}).BuildImages(t.Context())
+	// One worker keeps the scripted command order.
+	result, err := (App{Config: c, Runner: imageBuildRunner{r, assetsDir}, ContainerEngine: "docker", importWorkers: 1}).BuildImages(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +293,7 @@ func TestReleaseImagesRejectUnverifiedImports(t *testing.T) {
 			return []reply{{contains: "publish release-inventory", output: `[{"name":"../escape","digest":"sha256:` + strings.Repeat("1", 64) + `"},{"name":"b","digest":"x"},{"name":"c","digest":"y"}]`}}
 		}},
 		{"changed digest", func(t *testing.T, c Config) []reply {
-			return releaseImportReplies(t, c, func(releaseImage) string { return "sha256:" + strings.Repeat("f", 64) })[:3]
+			return releaseImportReplies(t, c, func(releaseImage) string { return "sha256:" + strings.Repeat("f", 64) })
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,7 +303,7 @@ func TestReleaseImagesRejectUnverifiedImports(t *testing.T) {
 			replies = append(replies, fetchReplies(c.Substrate.Source)...)
 			replies = append(replies, tc.replies(t, c)...)
 			r := script(t, replies...)
-			result, err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}}).BuildImages(t.Context())
+			result, err := (App{Config: c, Runner: imageBuildRunner{r, t.TempDir()}, importWorkers: 1}).BuildImages(t.Context())
 			if err == nil || result != (BuildResult{}) {
 				t.Fatalf("unverified release images were accepted: %+v, %v", result, err)
 			}

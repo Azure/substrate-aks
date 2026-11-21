@@ -271,6 +271,17 @@ func TestWorkspacePreparationFollowsItsOwnLog(t *testing.T) {
 }
 
 func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		t.Run(fmt.Sprint("serial=", serial), func(t *testing.T) {
+			if serial {
+				t.Setenv(setupSerialEnv, "1")
+			}
+			testWorkspacePhasesDeclareTheirOperations(t, serial)
+		})
+	}
+}
+
+func testWorkspacePhasesDeclareTheirOperations(t *testing.T, serial bool) {
 	m := testWorkspace(t)
 	m.session.events = make(chan any, 1024)
 	ctx := context.WithValue(t.Context(), setupSessionKey{}, m.session)
@@ -285,12 +296,21 @@ func TestWorkspaceInstallationPhasesDeclareTheirOperationsBeforeWork(t *testing.
 		}
 	}
 	expected := map[string]int{"images": 3 + len(installer.ImageCheckSteps()), "cluster": 3, "substrate": 3, "demo": 1, "connect": 1}
+	if !serial {
+		// Image verification moves to just before Substrate is installed.
+		expected["images"], expected["substrate"] = 3, 3+len(installer.ImageCheckSteps())
+	}
 	seen := map[string]string{}
 	err := setupForTest(ctx, setupOptions{
 		home: recordHome(testCLIConfig(t)), name: "substrate-test", yes: true, withDemo: true, skipContextHandoff: true,
 		discovery: subscriptionDisplayRunner(t),
 	}, strings.NewReader(""), io.Discard, io.Discard,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
+			if !serial && args[0] == "images" && !slices.Contains(args, "--check") {
+				// The background stage runs alongside the foreground,
+				// which owns the model.
+				return nil
+			}
 			drain()
 			if len(m.checks) != expected[m.phase] || len(m.checks) == 0 {
 				t.Fatalf("phase %s did not declare its operations before execution: %+v", m.phase, m.checks)

@@ -217,8 +217,11 @@ func (a App) upstream(ctx context.Context, root string, args ...string) error {
 		command = append(command, "--sandbox-classes", "gvisor")
 	}
 	a.progress("Deploying %s and waiting for workloads to become ready (up to 10 minutes per rollout)", strings.Join(args[1:], " "))
+	// The callers pass fixed component names, so they are safe to record.
+	stop := a.step(ctx, "rollout."+strings.Join(args[1:], "."))
 	_, err := a.Runner.Run(ctx, Command{
 		Dir: root, Args: command, Env: env,
 	})
+	stop(err)
 	return err
 }

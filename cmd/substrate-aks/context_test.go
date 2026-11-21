@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,19 +214,26 @@ func TestSetupContextHandoffAcceptsYesOrFinalConsent(t *testing.T) {
 				answers = ""
 			}
 			var output bytes.Buffer
+			// Images publish alongside the cluster stages, so stage
+			// commands can run concurrently.
+			var mu sync.Mutex
 			last := ""
 			err := setupForTest(t.Context(), setupOptions{
 				home: recordHome(path), name: recordName(path), yes: automation, withDemo: true, skipContextHandoff: skip,
 				contextFile: contextFile, discovery: subscriptionDisplayRunner(t),
 			}, strings.NewReader(answers), &output, &output,
 				func(_ context.Context, args []string, _, _ io.Writer) error {
+					mu.Lock()
 					last = args[0]
+					mu.Unlock()
 					current, err := os.ReadFile(destination)
 					if err != nil || !bytes.Equal(current, before) {
-						t.Fatal("setup changed ambient context before client setup finished")
+						return errors.New("setup changed ambient context before client setup finished")
 					}
 					return nil
 				})
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil || last != "client" {
 				t.Fatalf("setup failed before final handoff: last=%s, %v\n%s", last, err, &output)
 			}
