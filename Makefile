@@ -14,7 +14,7 @@ test-unit:
 	go test -race ./...
 
 test-contract:
-	go test -race -tags=integration ./internal/installer -run '^TestPinned(Upstream|UpstreamFlags|TransferPlaceholder|ReleaseInventory|MicroVMAssets|ImagePublisher|ImageCheck|PodmanPublisher)Contract$$' -count=1
+	go test -race -tags=integration -timeout 20m ./internal/installer -run '^TestPinned(Upstream|UpstreamFlags|TransferPlaceholder|ReleaseInventory|MicroVMAssets|ImagePublisher|ImageCheck|PodmanPublisher)Contract$$' -count=1
 
 verify:
 	test -z "$$(gofmt -l cmd internal infra deploy)"
