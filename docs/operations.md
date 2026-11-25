@@ -505,10 +505,12 @@ Recent runs recorded in pull requests:
 | Substrate v1.0.0-rc.3, [#16](https://github.com/Azure/substrate-aks/pull/16) | | 1 microVM, `Standard_D8ds_v7`, `Ephemeral` 400 GB OS disk | Snapshots on local NVMe, suspend and resume |
 | Earlier pin, [#1](https://github.com/Azure/substrate-aks/pull/1) | `southcentralus`, `eastus2` | `Standard_D4s_v3` | Guided workspace, managed Entra, Podman builds, cold restore on a new node |
 
-There is no CI yet: contributors run the unit, pseudo-terminal, and
-pinned-source contract tests and compile the Bicep templates before each change
-(see [development checks](../CONTRIBUTING.md#development-checks)), and live
-installs are run by hand. [#27](https://github.com/Azure/substrate-aks/issues/27) tracks automating both.
+The [CI workflow](../.github/workflows/ci.yml) runs the unit, pseudo-terminal,
+pinned-source contract, and Bicep checks (see
+[development checks](../CONTRIBUTING.md#development-checks)) on every pull
+request and nightly on `main`. Live installs are still run by hand;
+[#27](https://github.com/Azure/substrate-aks/issues/27) tracks a scheduled live
+install on AKS.
 
 ### Memory restore needs matching CPUs
 

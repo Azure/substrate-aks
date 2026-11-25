@@ -29,7 +29,9 @@ make bicep
 Contract tests need Git, Go, `kubectl`, and network access to the Substrate and
 plugin sources, module downloads, `ghcr.io`, and the microVM asset releases on
 GitHub. Missing prerequisites fail the tests rather than skipping them.
-No check above provisions Azure resources.
+No check above provisions Azure resources. The
+[CI workflow](.github/workflows/ci.yml) runs each of them on every pull request
+and nightly on `main`.
 
 To use existing pristine checkouts of the pins:
 
