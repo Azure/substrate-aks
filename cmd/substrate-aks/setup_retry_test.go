@@ -15,12 +15,21 @@ func TestSetupRetriesOnlyFailedStageWithIdenticalFlags(t *testing.T) {
 	path := testCLIConfig(t)
 	var output bytes.Buffer
 	var failedArgs []string
-	publications := 0
+	publications, previews := 0, 0
+	var published <-chan struct{}
+	// Continue, apply the registry, retry the images, then apply the cluster
+	// after its new preview.
 	err := setupForTest(t.Context(), setupOptions{
 		home: recordHome(path), name: recordName(path), containerEngine: "podman", withDemo: true, verbose: true,
-		discovery: subscriptionDisplayRunner(t),
+		discovery: subscriptionDisplayRunner(t), backgroundStarted: func(done <-chan struct{}) { published = done },
 	}, strings.NewReader("yes\nyes\nyes\nyes\n"), &output, &output,
 		func(_ context.Context, args []string, _, _ io.Writer) error {
+			// The first image failure is raised before the cluster approval.
+			if args[0] == "plan" && !slices.Contains(args, "--registry-only") {
+				if previews++; previews == 1 {
+					return waitFor(published, "image publishing")
+				}
+			}
 			if args[0] == "images" && !slices.Contains(args, "--check") {
 				publications++
 				if publications == 1 {
@@ -63,6 +72,26 @@ func TestSetupFailureGuidancePreservesOptionsAndCancellationNeverRetries(t *test
 			}
 
 		})
+	}
+}
+
+// A stage's own deadline, such as the operator-access wait in check, is a
+// failure the operator can retry while setup itself is still running.
+func TestSetupOffersRetryForStageDeadline(t *testing.T) {
+	var output bytes.Buffer
+	calls := 0
+	// The retried stage is cancelled, which ends setup without another offer.
+	err := setupForTest(t.Context(), setupOptions{
+		home: recordHome(testCLIConfig(t)), name: "substrate-test", withDemo: true, discovery: subscriptionDisplayRunner(t),
+	}, strings.NewReader("yes\nyes\n"), &output, &output,
+		func(context.Context, []string, io.Writer, io.Writer) error {
+			if calls++; calls == 1 {
+				return fmt.Errorf("operator access was denied: %w", context.DeadlineExceeded)
+			}
+			return context.Canceled
+		})
+	if !errors.Is(err, context.Canceled) || calls != 2 || strings.Count(output.String(), "Retry this stage") != 1 {
+		t.Fatalf("stage deadline was not offered a retry: calls=%d, error=%v\n%s", calls, err, &output)
 	}
 }
 

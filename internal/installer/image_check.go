@@ -29,11 +29,14 @@ func ImageCheckSteps() []string {
 	return []string{imageCheckCredentials, imageCheckFetch, imageCheckTools, imageCheckInventory}
 }
 
-func (a App) imageCheckStep(name string, work func() error) error {
+// imageCheckStep reports and times one image check step as images.check.<id>.
+func (a App) imageCheckStep(ctx context.Context, id, name string, work func() error) error {
 	if a.ImageCheckProgress != nil {
 		a.ImageCheckProgress(name, false, nil)
 	}
+	stop := a.step(ctx, "images.check."+id)
 	err := work()
+	stop(err)
 	if a.ImageCheckProgress != nil {
 		a.ImageCheckProgress(name, true, err)
 	}
@@ -65,7 +68,7 @@ func prepareHelper(root string) error {
 func (a App) CheckImages(ctx context.Context) error {
 	s := a.Config.Substrate
 	var ownedHost, dockerDir string
-	if err := a.imageCheckStep(imageCheckCredentials, func() error {
+	if err := a.imageCheckStep(ctx, "credentials", imageCheckCredentials, func() error {
 		if err := a.Config.ValidateInstall(); err != nil {
 			return err
 		}
@@ -99,7 +102,7 @@ func (a App) CheckImages(ctx context.Context) error {
 			os.RemoveAll(root)
 		}
 	}()
-	if err := a.imageCheckStep(imageCheckFetch, func() error {
+	if err := a.imageCheckStep(ctx, "source_fetch", imageCheckFetch, func() error {
 		if err := os.MkdirAll(a.Config.workspace(), 0700); err != nil {
 			return err
 		}
@@ -112,10 +115,10 @@ func (a App) CheckImages(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	if err := a.imageCheckStep(imageCheckTools, func() error { return prepareHelper(root) }); err != nil {
+	if err := a.imageCheckStep(ctx, "tools", imageCheckTools, func() error { return prepareHelper(root) }); err != nil {
 		return err
 	}
-	return a.imageCheckStep(imageCheckInventory, func() error {
+	return a.imageCheckStep(ctx, "inventory", imageCheckInventory, func() error {
 		a.progress("Verifying the pinned release image inventory, the demo image and the Azure plugin digest")
 		data, err := a.Runner.Run(ctx, Command{
 			Dir: root,

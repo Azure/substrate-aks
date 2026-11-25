@@ -46,6 +46,7 @@ func TestReportCommandErrorDistinguishesIntentionalCancellation(t *testing.T) {
 		{"cancelled", context.Canceled, []string{"Stopped by user.\n"}, []string{"WARN", "ERROR", "context canceled"}},
 		{"cancelled with recovery", recovery, []string{"Stopped by user.", recovery.Error()}, []string{"WARN", "ERROR"}},
 		{"failed", errors.New("deployment failed"), []string{"ERROR", "deployment failed"}, []string{"Stopped by user."}},
+		{"failed beside a cancellation", errors.Join(fmt.Errorf("importing release images stopped after 1 of 9: %w", context.Canceled), errors.New("[image a] unauthorized")), []string{"ERROR", "unauthorized"}, []string{"Stopped by user."}},
 		{"timed out", context.DeadlineExceeded, []string{"ERROR", "context deadline exceeded"}, []string{"Stopped by user."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

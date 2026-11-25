@@ -1,16 +1,19 @@
 package installer
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -202,7 +205,9 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if source == ImageSourceRelease && c.Substrate.Source.Tag == "" {
 		return BuildResult{}, errors.New(`release images need substrate.source.tag naming the release of substrate.source.commit; set it, or set substrate.imageSource to "source" to build the commit`)
 	}
+	stop := a.step(ctx, "images.registry")
 	r, err := a.registry(ctx)
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -214,7 +219,9 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 			return BuildResult{}, err
 		}
 	}
+	stop = a.step(ctx, "images.login")
 	dockerDir, err := a.loginRegistry(ctx, r)
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -223,7 +230,10 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		return BuildResult{}, err
 	}
 	defer os.RemoveAll(root)
-	if err := a.fetchPinnedSource(ctx, root); err != nil {
+	stop = a.step(ctx, "images.source_fetch")
+	err = a.fetchPinnedSource(ctx, root)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	if err := prepareHelper(root); err != nil {
@@ -244,11 +254,14 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		}
 		tag = sourceImageTag(c.Substrate.Source, time.Now())
 		a.progress("Building and pushing Substrate release images from source; this can take several minutes")
-		if _, err := a.Runner.Run(ctx, Command{
+		stop = a.step(ctx, "images.source_build")
+		_, err := a.Runner.Run(ctx, Command{
 			Dir: root, Env: append(append([]string{}, env...), "VERSION="+tag),
 			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-images",
 				"--no-dev-env", "--ko-docker-repo", repo, "--ko-default-platforms", "linux/amd64"},
-		}); err != nil {
+		})
+		stop(err)
+		if err != nil {
 			return BuildResult{}, err
 		}
 	}
@@ -258,10 +271,13 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	}
 	koEnv := []string{"DOCKER_CONFIG=" + dockerDir, "KO_DEFAULTPLATFORMS=linux/amd64"}
 	a.progress("Building and pushing the counter demo image, which releases do not publish")
-	if _, err := a.Runner.Run(ctx, Command{
+	stop = a.step(ctx, "images.demo_build")
+	_, err = a.Runner.Run(ctx, Command{
 		Dir: root, Env: append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+repo),
 		Args: []string{ko, "build", "--base-import-paths", "--tags", tag, "./" + demoImagePackage},
-	}); err != nil {
+	})
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	pluginRoot, err := os.MkdirTemp(c.workspace(), "plugin-")
@@ -269,16 +285,21 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 		return BuildResult{}, err
 	}
 	defer os.RemoveAll(pluginRoot)
-	if err := a.fetchPluginSource(ctx, pluginRoot); err != nil {
+	stop = a.step(ctx, "images.plugin_fetch")
+	err = a.fetchPluginSource(ctx, pluginRoot)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	a.progress("Building and pushing the Azure Blob plugin image")
 	pluginRepo := repo + "/plugins/objectstore/azure-blob"
+	stop = a.step(ctx, "images.plugin_build")
 	plugin, err := a.Runner.Run(ctx, Command{
 		Dir:  pluginRoot,
 		Env:  append(append([]string{}, koEnv...), "KO_DOCKER_REPO="+pluginRepo),
 		Args: []string{ko, "build", "--bare", "--tags", tag, "./cmd/azure-blob-objectstore-plugin"},
 	})
+	stop(err)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -290,16 +311,22 @@ func (a App) BuildImages(ctx context.Context) (BuildResult, error) {
 	if assetsDir == "" {
 		a.progress("Downloading and assembling the pinned amd64 microVM runtime assets")
 		assetsDir = filepath.Join(c.workspace(), "assets")
-		if _, err := a.Runner.Run(ctx, Command{
+		stop = a.step(ctx, "images.assets_download")
+		_, err := a.Runner.Run(ctx, Command{
 			Dir: root, Env: []string{"NO_DEV_ENV=1"},
 			Args: []string{"go", "run", "./cmd/ate-setup", "publish", "microvm-assets",
 				filepath.Join(root, sandboxTemplate), assetsDir, "amd64", "--no-dev-env", "--no-report-defaults"},
-		}); err != nil {
+		})
+		stop(err)
+		if err != nil {
 			return BuildResult{}, err
 		}
 	}
 	a.progress("Verifying runtime asset checksums")
-	if _, err := verifyRuntimeAssets(root, assetsDir); err != nil {
+	stop = a.step(ctx, "images.assets_verify")
+	_, err = verifyRuntimeAssets(root, assetsDir)
+	stop(err)
+	if err != nil {
 		return BuildResult{}, err
 	}
 	return BuildResult{
@@ -336,11 +363,13 @@ var imageNamePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
 // that each one was built from the configured commit.
 func (a App) importReleaseImages(ctx context.Context, root string, r Registry, repo, tag string) error {
 	a.progress("Verifying that the %s release images were built from the configured commit", tag)
+	stop := a.step(ctx, "images.release_inventory")
 	data, err := a.Runner.Run(ctx, Command{
 		Dir: root, Env: []string{"NO_DEV_ENV=1"},
 		Args: []string{"go", "run", "./cmd/ate-setup", "publish", "release-inventory",
 			DefaultReleaseImages, tag, a.Config.Substrate.Source.Commit, "--no-dev-env", "--no-report-defaults"},
 	})
+	stop(err)
 	if err != nil {
 		return fmt.Errorf("verifying release images (nothing was imported): %w", err)
 	}
@@ -351,30 +380,191 @@ func (a App) importReleaseImages(ctx context.Context, root string, r Registry, r
 		return errors.New("the pinned release inventory returned no usable image list")
 	}
 	prefix := strings.TrimPrefix(repo, r.LoginServer+"/")
+	return a.importImages(ctx, r, prefix, tag, inventory)
+}
+
+// Release images import a few at a time. An ACR import is a server-side copy,
+// so the installer mostly waits on Azure; a small pool overlaps those waits
+// without starting many Azure CLI processes at once.
+const (
+	importWorkers    = 4
+	maxImportWorkers = 8
+)
+
+// importResult is one image's outcome and the command output it buffered.
+type importResult struct {
+	index        int
+	err          error
+	log, verbose *bytes.Buffer
+}
+
+// importImages imports and verifies every inventory image with a bounded
+// worker pool. It attempts every image and reports all failures in inventory
+// order. Command logs are buffered per image and written in inventory order,
+// so concurrent imports never interleave in the log or verbose output.
+func (a App) importImages(ctx context.Context, r Registry, prefix, tag string, inventory []releaseImage) error {
+	seen := make(map[string]bool, len(inventory))
 	for _, image := range inventory {
 		if !imageNamePattern.MatchString(image.Name) || !digestPattern.MatchString("image@"+image.Digest) {
 			return errors.New("the pinned release inventory returned an invalid image reference")
 		}
-		target := prefix + "/" + image.Name + ":" + tag
-		a.progress("Importing %s into %s", image.Name, r.LoginServer)
-		// Imports are server-side and keep the digest; --force only retags the
-		// verified digest on a retry.
-		if _, err := a.az(ctx, "acr", "import", "--name", r.Name,
-			"--source", DefaultReleaseImages+"/"+image.Name+"@"+image.Digest,
-			"--image", target, "--force"); err != nil {
-			return fmt.Errorf("importing %s (the upload identity needs Container Registry Data Importer and Data Reader on the owned registry; provision grants it, and new grants can take a few minutes to propagate): %w", image.Name, err)
+		if seen[image.Name] {
+			return fmt.Errorf("the pinned release inventory lists %s more than once; nothing was imported", image.Name)
 		}
-		shown, err := a.az(ctx, "acr", "repository", "show", "--name", r.Name, "--image", target)
-		if err != nil {
-			return err
+		seen[image.Name] = true
+	}
+	workers := a.importWorkers
+	if workers <= 0 {
+		workers = importWorkers
+	}
+	workers = max(1, min(workers, maxImportWorkers, len(inventory)))
+	a.progress("Importing %d release images into %s, up to %d at a time", len(inventory), r.LoginServer, workers)
+	stop := timingStep(ctx, "images.imports", workers)
+	err := a.runImports(ctx, r, prefix, tag, inventory, workers)
+	stop(err)
+	return err
+}
+
+// runImports runs the pool. An ExecRunner is copied per image with buffered
+// logs; any other Runner is shared and must be safe for concurrent use.
+func (a App) runImports(ctx context.Context, r Registry, prefix, tag string, inventory []releaseImage, workers int) error {
+	base, buffered := a.Runner.(ExecRunner)
+	jobs := make(chan int)
+	results := make(chan importResult)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for i := range jobs {
+				if ctx.Err() != nil {
+					// Cancelled after scheduling: leave the image unstarted.
+					continue
+				}
+				worker, result := a, importResult{index: i}
+				if buffered {
+					runner := base
+					if base.Log != nil {
+						result.log = &bytes.Buffer{}
+						runner.Log = result.log
+					}
+					if base.Verbose != nil {
+						result.verbose = &bytes.Buffer{}
+						runner.Verbose = result.verbose
+					}
+					worker.Runner = runner
+				}
+				result.err = worker.importImage(ctx, r, prefix, tag, inventory[i])
+				results <- result
+			}
+		})
+	}
+	go func() {
+		defer close(jobs)
+		for i := range inventory {
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case jobs <- i:
+			case <-ctx.Done():
+				return
+			}
 		}
-		var manifest struct {
-			Digest string `json:"digest"`
-		}
-		if err := json.Unmarshal(shown, &manifest); err != nil || manifest.Digest != image.Digest {
-			return fmt.Errorf("imported %s does not have the verified release digest", target)
+	}()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	pending := make([]*importResult, len(inventory))
+	errs := make([]error, len(inventory))
+	next, completed, failed := 0, 0, 0
+	flush := func(result *importResult) {
+		name := inventory[result.index].Name
+		for _, out := range []struct {
+			dst io.Writer
+			buf *bytes.Buffer
+		}{{base.Log, result.log}, {base.Verbose, result.verbose}} {
+			if out.dst != nil && out.buf != nil && out.buf.Len() > 0 {
+				fmt.Fprintf(out.dst, "[image %s]\n", name)
+				out.dst.Write(out.buf.Bytes())
+			}
 		}
 	}
+	for result := range results {
+		completed++
+		name := inventory[result.index].Name
+		if result.err != nil {
+			failed++
+			errs[result.index] = result.err
+			a.progress("Could not import and verify %s (%d/%d)", name, completed, len(inventory))
+		} else {
+			a.progress("Imported and verified %s (%d/%d)", name, completed, len(inventory))
+		}
+		pending[result.index] = &result
+		for next < len(pending) && pending[next] != nil {
+			flush(pending[next])
+			pending[next] = nil
+			next++
+		}
+	}
+	// After a cancellation, images that never started leave gaps.
+	for _, result := range pending {
+		if result != nil {
+			flush(result)
+		}
+	}
+	var failure error
+	switch failed {
+	case 0:
+	case 1:
+		for _, err := range errs {
+			if err != nil {
+				failure = err
+			}
+		}
+	default:
+		failure = fmt.Errorf("%d of %d release images were not imported and verified:\n%w", failed, len(inventory), errors.Join(errs...))
+	}
+	if completed < len(inventory) {
+		cause := ctx.Err()
+		if cause == nil {
+			cause = errors.New("an import worker stopped")
+		}
+		return errors.Join(fmt.Errorf("importing release images stopped after %d of %d: %w", completed, len(inventory), cause), failure)
+	}
+	return failure
+}
+
+// importImage imports one image by digest and verifies the digest the
+// registry recorded.
+func (a App) importImage(ctx context.Context, r Registry, prefix, tag string, image releaseImage) error {
+	target := prefix + "/" + image.Name + ":" + tag
+	// Imports are server-side and keep the digest; --force only retags the
+	// verified digest on a retry.
+	stop := a.step(ctx, "images.import."+image.Name)
+	_, err := a.az(ctx, "acr", "import", "--name", r.Name,
+		"--source", DefaultReleaseImages+"/"+image.Name+"@"+image.Digest,
+		"--image", target, "--force")
+	stop(err)
+	if err != nil {
+		return fmt.Errorf("importing %s (the upload identity needs Container Registry Data Importer and Data Reader on the owned registry; provision grants it, and new grants can take a few minutes to propagate): %w", image.Name, err)
+	}
+	stop = a.step(ctx, "images.verify."+image.Name)
+	shown, err := a.az(ctx, "acr", "repository", "show", "--name", r.Name, "--image", target)
+	if err != nil {
+		err = fmt.Errorf("verifying imported %s: %w", image.Name, err)
+		stop(err)
+		return err
+	}
+	var manifest struct {
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal(shown, &manifest); err != nil || manifest.Digest != image.Digest {
+		err = fmt.Errorf("imported %s does not have the verified release digest", target)
+		stop(err)
+		return err
+	}
+	stop(nil)
 	return nil
 }
 

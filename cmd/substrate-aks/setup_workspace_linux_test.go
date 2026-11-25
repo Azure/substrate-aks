@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/Azure/substrate-aks/internal/installer"
 	"github.com/charmbracelet/x/ansi"
@@ -217,22 +218,31 @@ func testWorkspacePTYRetryAndPersistentHandoff(t *testing.T, noColor string) {
 		}
 	})
 	attempts := 0
+	// Publishing fails while the cluster approval is open, so the retry
+	// follows that approval and the cluster is previewed again.
+	clusterPrompt := make(chan struct{})
+	published := make(chan (<-chan struct{}), 1)
 	go func() {
 		defer close(finished)
-		done <- setupForTest(ctx, setupOptions{home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t)},
-			p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
-				s := setupSessionFrom(ctx)
-				if args[0] == "plan" {
-					s.send(setupPlanMsg{"test-subscription", []installer.ResourceChange{{ChangeType: "Create", ResourceID: "/subscriptions/test/resourceGroups/disposable"}}})
-				}
-				if args[0] == "images" && !strings.Contains(strings.Join(args, " "), "--check") {
-					attempts++
-					if attempts == 1 {
-						return errors.New("publication failed for PTY retry test")
+		done <- setupForTest(ctx, setupOptions{
+			home: recordHome(path), name: recordName(path), withDemo: true, discovery: subscriptionDisplayRunner(t),
+			backgroundStarted: func(done <-chan struct{}) { published <- done },
+		}, p.slave, p.slave, p.slave, func(ctx context.Context, args []string, _, _ io.Writer) error {
+			s := setupSessionFrom(ctx)
+			if args[0] == "plan" {
+				s.send(setupPlanMsg{"test-subscription", []installer.ResourceChange{{ChangeType: "Create", ResourceID: "/subscriptions/test/resourceGroups/disposable"}}})
+			}
+			if args[0] == "images" && !strings.Contains(strings.Join(args, " "), "--check") {
+				attempts++
+				if attempts == 1 {
+					if err := waitFor(clusterPrompt, "the cluster approval"); err != nil {
+						return err
 					}
+					return errors.New("publication failed for PTY retry test")
 				}
-				return nil
-			})
+			}
+			return nil
+		})
 	}()
 	p.until(t, "Quick start")
 	p.send(t, "\r")
@@ -240,8 +250,26 @@ func testWorkspacePTYRetryAndPersistentHandoff(t *testing.T, noColor string) {
 	p.send(t, "y\r")
 	p.until(t, "Apply these planned changes")
 	p.send(t, "y\r")
+	// The registry approval may be redrawn, so wait for the cluster's.
+	p.untilFunc(t, "the cluster approval", func(s string) bool {
+		s = ansi.Strip(s)
+		i := strings.Index(s, "Check cluster compatibility")
+		return i >= 0 && strings.Contains(s[i:], "Apply these planned changes")
+	})
+	close(clusterPrompt)
+	select {
+	case background := <-published:
+		if err := waitFor(background, "image publishing"); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("image publishing did not start in the background")
+	}
+	p.send(t, "y\r")
 	p.until(t, "Retry this stage")
-	if !strings.Contains(p.all, "publication failed for PTY retry test") {
+	// The warning wraps inside its box, beside the phase rail, so match the
+	// end of the error only.
+	if !strings.Contains(screenWords(p.all), "failedforPTYretrytest") {
 		t.Fatalf("retry prompt hid the failed operation's explanation:\n%s", p.all)
 	}
 	p.send(t, "y\r")
@@ -319,10 +347,14 @@ func TestWorkspacePTYRegistryChecklistPrecedesProgressAndApproval(t *testing.T) 
 	p.send(t, "y\r")
 	p.until(t, "Checking Azure subscription access")
 	for _, want := range []string{"Preview registry bootstrap", "○ Provision the private registry",
-		"○ Publish images and prepare runtime assets", "○ Fetch pinned Substrate source"} {
+		"○ Publish images and prepare runtime assets"} {
 		if !strings.Contains(p.all, want) {
 			t.Fatalf("registry work began without its preset checklist %q:\n%s", want, p.all)
 		}
+	}
+	// Published images are verified at the start of the Substrate phase.
+	if strings.Contains(p.all, "Fetch pinned Substrate source") {
+		t.Fatalf("registry checklist listed image verification:\n%s", p.all)
 	}
 	if strings.Contains(p.all[phaseStart:], "[work]") {
 		t.Fatal("registry stage fell back to the rolling progress list")
@@ -385,6 +417,17 @@ func TestWorkspacePTYCancellationStopsOwnedSubprocess(t *testing.T) {
 	}
 }
 
+// screenWords strips styles, spaces and box drawing from terminal output,
+// so text matches across wrapped lines.
+func screenWords(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || r >= 0x2500 && r <= 0x257f {
+			return -1
+		}
+		return r
+	}, ansi.Strip(s))
+}
+
 func newSetupPTY(t *testing.T, width, height int) *setupPTY {
 	t.Helper()
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
@@ -441,14 +484,23 @@ func (p *setupPTY) send(t *testing.T, text string) {
 
 func (p *setupPTY) until(t *testing.T, text string) {
 	t.Helper()
+	// Styled key hints split text into separate SGR runs, so also match the unstyled stream.
+	p.untilFunc(t, fmt.Sprintf("%q", text), func(s string) bool {
+		return strings.Contains(s, text) || strings.Contains(ansi.Strip(s), text)
+	})
+}
+
+// untilFunc reads output until done accepts what arrived since the last
+// match.
+func (p *setupPTY) untilFunc(t *testing.T, what string, done func(string) bool) {
+	t.Helper()
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
-	// Styled key hints split text into separate SGR runs, so also match the unstyled stream.
-	for !strings.Contains(p.text, text) && !strings.Contains(ansi.Strip(p.text), text) {
+	for !done(p.text) {
 		select {
 		case chunk, ok := <-p.chunks:
 			if !ok {
-				t.Fatalf("PTY closed waiting for %q:\n%s", text, p.text)
+				t.Fatalf("PTY closed waiting for %s:\n%s", what, p.text)
 			}
 			p.text += chunk
 			p.all += chunk
@@ -460,7 +512,7 @@ func (p *setupPTY) until(t *testing.T, text string) {
 				p.send(t, "\x1b[1;1R")
 			}
 		case <-deadline.C:
-			t.Fatalf("PTY timed out waiting for %q:\n%s", text, p.text)
+			t.Fatalf("PTY timed out waiting for %s:\n%s", what, p.text)
 		}
 	}
 	p.text = ""

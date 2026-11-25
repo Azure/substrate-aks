@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/Azure/substrate-aks/internal/installer"
 )
 
 func (m *setupWorkspace) View() tea.View {
@@ -409,7 +409,11 @@ func (m *setupWorkspace) rail() string {
 			mark, markStyle, titleStyle = "✓", st.ok, m.renderer.NewStyle()
 		case phase == m.phase && failed:
 			mark, markStyle, titleStyle, timerStyle = "✗", st.fail, st.fail, st.fail
-		case phase == m.phase:
+		case installer.Interrupted(m.backgroundErr[phase]):
+			mark = "–"
+		case m.backgroundErr[phase] != nil:
+			mark, markStyle, titleStyle, timerStyle = "✗", st.fail, st.fail, st.fail
+		case phase == m.phase || m.background[phase]:
 			mark, markStyle, titleStyle, timerStyle = "●", st.accent, st.accentBold, st.accent
 		default:
 			timed = false
@@ -441,7 +445,7 @@ func (m *setupWorkspace) checklistRows(checks []setupCheck) string {
 		switch {
 		case check.done && check.err != nil:
 			mark, markStyle, nameStyle, status, statusStyle = "✗", st.fail, st.fail, "failed", st.fail
-			if errors.Is(check.err, context.Canceled) {
+			if installer.Interrupted(check.err) {
 				mark, markStyle, nameStyle, status = "–", st.muted, st.muted, "stopped"
 			}
 		case check.done:
